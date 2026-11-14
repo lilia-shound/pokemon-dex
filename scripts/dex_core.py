@@ -17,7 +17,7 @@ SHINY_ODDS: dict[int, float] = {
 
 # 达标线：默认 30 分钟。微信读书的官方计数会漏掉一部分（实测读 25 分钟只记 17 分钟），
 # 所以这个数字是「官方口径」的实际成本。改这里或设 DEX_THRESHOLD 环境变量都能调。
-THRESHOLD_SECONDS = int(os.environ.get("DEX_THRESHOLD", "1800"))
+THRESHOLD_SECONDS = int(os.environ.get("DEX_THRESHOLD", "900"))
 
 
 def shiny_probability(streak: int) -> float:
