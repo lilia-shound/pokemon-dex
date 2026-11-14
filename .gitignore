@@ -4,3 +4,4 @@ __pycache__/
 site-preview.png
 plugin-preview.png
 .DS_Store
+.preview/
