@@ -34,8 +34,7 @@ fi
 
 echo "[3/4] 推送 gh-pages 分支"
 if [ -n "$AUTH" ]; then
-  git subtree push --prefix site "https://${AUTH}@github.com/lilia-should/pokemon-dex.git" gh-pages 2>/dev/null \
-    || git subtree push --prefix site "https://${AUTH}@github.com/lilia-shound/pokemon-dex.git" gh-pages
+  git subtree push --prefix site "https://${AUTH}@github.com/lilia-shound/pokemon-dex.git" gh-pages
 else
   git subtree push --prefix site origin gh-pages
 fi
