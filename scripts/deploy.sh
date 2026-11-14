@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # 部署：把图鉴站推到 GitHub Pages
-#   main 分支     —— 源码 + 数据（site/ 里含静态文件）
+#   main 分支     —— 源码 + 数据 + site/ 里的静态文件
 #   gh-pages 分支 —— 只含 site/ 的内容，作为 Pages 源
+#
+# gh-pages 用「独立 worktree + orphan 分支 + force push」重建。
+# 不用 git subtree 的原因：
+#   1) git 2.39 的 subtree 没有 --force，main 一旦 force push 就会非 fast-forward 推不上去
+#   2) subtree 的历史会把 main 的历史带进 Pages 分支，越来越臃肿
 #
 # token 通过 GIT_ASKPASS 传入，绝不出现在命令行参数或 git 配置里。
 set -euo pipefail
@@ -9,6 +14,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 REPO="lilia-shound/pokemon-dex"
+PUSH_URL="https://github.com/${REPO}.git"
 
 echo "[1/4] 同步数据到 site/"
 cp data/pokedex.json site/pokedex.json
@@ -36,17 +42,40 @@ EOF
   chmod +x "$ASKPASS"
   export GIT_ASKPASS="$ASKPASS"
   export GIT_TERMINAL_PROMPT=0
-  PUSH_URL="https://github.com/${REPO}.git"
-else
-  PUSH_URL="origin"
 fi
 
-git push "$PUSH_URL" HEAD:main
+for attempt in 1 2 3 4 5; do
+  if git push "$PUSH_URL" HEAD:main; then break; fi
+  echo "      第 ${attempt} 次推送失败，重试…"
+  sleep 7
+  [ "$attempt" = "5" ] && { echo "[失败] main 推送失败"; exit 1; }
+done
 
-echo "[3/4] 推送 gh-pages 分支"
-git subtree push --prefix site "$PUSH_URL" gh-pages
+echo "[3/4] 重建并推送 gh-pages"
+WT="$(mktemp -d)"
+cleanup() {
+  git worktree remove --force "$WT" >/dev/null 2>&1 || true
+  rm -rf "$WT"
+  [ -n "${ASKPASS:-}" ] && rm -f "$ASKPASS"
+}
+trap cleanup EXIT
 
-[ -n "${ASKPASS:-}" ] && rm -f "$ASKPASS"
+git worktree add --detach "$WT" >/dev/null 2>&1
+(
+  cd "$WT"
+  git checkout --orphan ghp >/dev/null 2>&1
+  git rm -rf --cached . -q >/dev/null 2>&1 || true
+  find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} + 2>/dev/null || true
+  cp -r "$ROOT/site/." .
+  git add -A
+  git -c user.name="Mavis" -c user.email="mavis@local" commit -q -m "chore: 图鉴站 $(date -u +%FT%TZ)"
+)
+for attempt in 1 2 3 4 5; do
+  if (cd "$WT" && git push --force "$PUSH_URL" HEAD:gh-pages); then break; fi
+  echo "      第 ${attempt} 次推送失败，重试…"
+  sleep 7
+  [ "$attempt" = "5" ] && { echo "[失败] gh-pages 推送失败"; exit 1; }
+done
 
 echo "[4/4] 完成"
-echo "图鉴页： https://${REPO%/*}/$(echo "$REPO" | cut -d/ -f2)/"
+echo "图鉴页： https://lilia-shound.github.io/pokemon-dex/"
