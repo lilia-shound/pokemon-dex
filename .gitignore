@@ -1,0 +1,6 @@
+.cache/
+__pycache__/
+*.pyc
+site-preview.png
+plugin-preview.png
+.DS_Store
