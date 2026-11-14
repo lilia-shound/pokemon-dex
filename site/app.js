@@ -4,6 +4,7 @@ let DEX = { collected: [], streak: 0, today: {} };
 let FILTER = "all";
 
 const $ = (id) => document.getElementById(id);
+const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
 
 // 世代边界
 const GENS = [
@@ -54,25 +55,27 @@ function render() {
   const total = POKEDEX.length;
 
   $("ring").style.setProperty("--p", total ? (n / total) * 100 : 0);
-  $("ringText").textContent = `${n}/${total}`;
-  $("summary").textContent = `图鉴 ${n}/${total} · 完成 ${((n / total) * 100).toFixed(1)}%`;
-  $("streak").textContent = `连读 ${DEX.streak || 0} 天 · 闪光概率 ${
+  setText("ringText", `${n}/${total}`);
+  setText("summary", `图鉴 ${n}/${total} · 完成 ${((n / total) * 100).toFixed(1)}%`);
+  setText("streak", `连读 ${DEX.streak || 0} 天 · 闪光概率 ${
     DEX.streak >= 100 ? "100%" :
     DEX.streak >= 30 ? "1/16" :
     DEX.streak >= 7 ? "1/32" :
-    DEX.streak >= 3 ? "1/48" : "1/96"}`;
+    DEX.streak >= 3 ? "1/48" : "1/96"}`);
 
   const t = todayInfo();
   $("todayMini").hidden = false;
-  $("todayMiniVal").textContent = `${Math.round(t.sec / 60)}/${Math.round(t.thr / 60)} 分`;
+  setText("todayMiniVal", `${Math.round(t.sec / 60)}/${Math.round(t.thr / 60)} 分`);
 
   // 今日开箱卡
   const collected = DEX.collected || [];
-  const last = collected[collected.length - 1];
+  const todays = collected.filter((c) => c.date === t.date);
+  const last = todays.length ? todays[todays.length - 1]
+    : (collected.length ? collected[collected.length - 1] : null);
   const lp = last ? POKEDEX.find((x) => x.id === last.id) : null;
   if (last && lp && DEX.lastAwardDate === t.date) {
     $("today").hidden = false;
-    $("todayLabel").textContent = `今日捕获 · ${t.date}`;
+    setText("todayLabel", `今日捕获 · ${t.date}`);
     const art = last.shiny && lp.artShiny ? lp.artShiny : lp.art;
     $("todayCard").innerHTML = `
       <img src="${IMG}${encodeURIComponent(art)}" alt="${esc(lp.nameZh)}">
@@ -148,4 +151,4 @@ function openSheet(id) {
 $("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) $("sheet").hidden = true; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sheet").hidden = true; });
 
-load().catch((e) => { $("summary").textContent = "载入失败：" + e.message; });
+load().catch((e) => { setText("summary", "载入失败：" + e.message); });
