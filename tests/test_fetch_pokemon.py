@@ -39,6 +39,11 @@ class ExtractTest(unittest.TestCase):
         self.assertTrue(self.out["artShiny"], "必须选到闪光立绘")
         self.assertTrue(self.out["art"].endswith(".png"))
 
+    def test_art_is_absolute_cdn_url(self):
+        """立绘存的是完整直链，浏览器直接拉，不落盘。"""
+        self.assertTrue(self.out["art"].startswith("https://raw.githubusercontent.com/"))
+        self.assertTrue(self.out["artShiny"].startswith("https://raw.githubusercontent.com/"))
+
     def test_art_prefers_standard_form_over_variants(self):
         """标准形态优先于极巨化/帽子等变体。"""
         self.assertNotIn("极巨化", self.out["art"])

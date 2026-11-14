@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""宝可梦素材管线：42arch/pokemon-dataset-zh -> data/pokedex.json + site/img/
+"""宝可梦素材管线：42arch/pokemon-dataset-zh -> data/pokedex.json
 
 数据源：
   - 42arch/pokemon-dataset-zh（MIT，抓取自神奇宝贝百科）—— 中文名/图鉴文案/属性/进化链
@@ -19,6 +19,8 @@ import time
 import urllib.request
 
 REPO = "https://github.com/42arch/pokemon-dataset-zh.git"
+RAW_HOME = "https://raw.githubusercontent.com/42arch/pokemon-dataset-zh/main/data/images/home"
+RAW_FALLBACK = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / ".cache" / "pokemon-dataset-zh"
 OUT_JSON = ROOT / "data" / "pokedex.json"
@@ -80,31 +82,15 @@ def _first_flavor(src: dict) -> str:
     return ""
 
 
-def _fallback_name(pid: str) -> str:
-    return f"fallback-{pid}.png"
+def _home_url(fname: str) -> str:
+    """42arch 的 home 立绘直链（raw.githubusercontent 有 CDN）。"""
+    from urllib.parse import quote
+    return f"{RAW_HOME}/{quote(fname)}"
 
 
-def _fetch_fallback_art(pid: str) -> bool:
-    """HOME 造型缺失的少数宝可梦，用 PokeAPI 官方立绘兜底。
-
-    走 jsdelivr 代理（沙箱可达）；文件名统一为 fallback-{编号}.png。
-    """
-    url = (f"https://cdn.jsdelivr.net/gh/PokeAPI/sprites@master/sprites/pokemon/"
-           f"other/official-artwork/{int(pid)}.png")
-    dest = OUT_IMG / _fallback_name(pid)
-    if dest.exists() and dest.stat().st_size > 1024:
-        return True
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(url, timeout=40) as resp:
-                data = resp.read()
-            if len(data) > 1024:
-                dest.write_bytes(data)
-                return True
-        except Exception as exc:  # noqa: BLE001
-            print(f"[管线] 兜底立绘 {pid} 第 {attempt + 1} 次失败：{exc}")
-            time.sleep(2)
-    return False
+def _fallback_url(pid: str) -> str:
+    """没有 HOME 造型的少数宝可梦，用 PokeAPI 官方立绘兜底。"""
+    return f"{RAW_FALLBACK}/{int(pid)}.png"
 
 
 def _fetch_pokeapi_flavor(pid: str) -> str:
@@ -156,8 +142,8 @@ def extract(src: dict) -> dict:
         "summary": (src.get("description") or "").strip(),
         "profile": (src.get("profile") or "").strip(),
         "evolution": chain,
-        "art": art or _fallback_name(pid),
-        "artShiny": art_shiny,
+        "art": _home_url(art) if art else _fallback_url(pid),
+        "artShiny": _home_url(art_shiny) if art_shiny else "",
         "artSource": "home" if art else "pokeapi-official",
     }
 
@@ -207,17 +193,6 @@ def build() -> int:
         if entry["nameZh"]:
             entries.append(entry)
 
-    # 图片：先整目录同步（不整目录删，避免 NAS 上 rmtree 竞态）
-    src_img = src_dir / "data" / "images" / "home"
-    OUT_IMG.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src_img, OUT_IMG, dirs_exist_ok=True)
-
-    # 缺 HOME 立绘的，用 PokeAPI 官方立绘兜底
-    for e in entries:
-        if e["artSource"] != "home":
-            ok = _fetch_fallback_art(e["id"])
-            print(f"[管线] 兜底立绘 {e['id']} {e['nameZh']}: {'ok' if ok else '失败'}")
-
     # 缺中文图鉴文案的，依次尝试 PokeAPI -> 外观描述
     for e in entries:
         if not e["flavor"]:
@@ -241,7 +216,7 @@ def build() -> int:
     )
 
     print(f"[完成] {len(entries)} 只 -> {OUT_JSON.relative_to(ROOT)}")
-    print(f"[完成] 图片 {sum(1 for _ in OUT_IMG.glob('*.png'))} 张 -> {OUT_IMG.relative_to(ROOT)}")
+    print("[完成] 立绘使用 raw.githubusercontent 直链，不落盘")
     if still_empty:
         print(f"[注意] {len(still_empty)} 只既无图鉴文案也无外观描述: {', '.join(still_empty)}")
     return 0

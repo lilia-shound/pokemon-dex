@@ -71,6 +71,7 @@
   .tx-cell .no{font-size:10px;color:#9a8d80}
   .tx-cell .nm{font-size:12px;margin-top:2px;min-height:1.4em}
   .tx-cell.shiny{box-shadow:0 0 0 2px #c9a227 inset}
+  img.broken{opacity:.1}
   .tx-empty{padding:30px;text-align:center;color:#9a8d80;font-size:13px}
   `;
 
@@ -81,8 +82,8 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function artUrl(name) {
-    return name ? `${BASE}/img/${encodeURIComponent(name)}` : "";
+  function artUrl(u) {
+    return u || "";   // pokedex.json 里已经是完整直链
   }
 
   function todayInfo() {
@@ -177,7 +178,7 @@
 
     const open = last && lp && DEX.lastAwardDate === t.date ? `
       <div class="tx-open">
-        <img src="${artUrl(last.shiny && lp.artShiny ? lp.artShiny : lp.art)}">
+        <img src="${artUrl(last.shiny && lp.artShiny ? lp.artShiny : lp.art)}" onerror="this.classList.add('broken')">
         <div>
           <div class="nm">${esc(lp.nameZh)}${last.shiny ? '<span class="tx-shiny">✦ 闪光</span>' : ""}</div>
           <div class="sub">No.${esc(lp.id)} · ${esc((lp.types || []).join(" / "))} · ${esc(lp.category)}
@@ -192,7 +193,7 @@
           const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
           return `<div class="tx-cell ${c ? "" : "locked"} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
             <div class="no">No.${esc(p.id)}</div>
-            <img src="${artUrl(art)}" loading="lazy">
+            <img src="${artUrl(art)}" loading="lazy" onerror="this.classList.add('broken')">
             <div class="nm">${c ? esc(p.nameZh) : "???"}</div>
           </div>`;
         }).join("")

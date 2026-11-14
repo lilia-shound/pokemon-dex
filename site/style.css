@@ -123,3 +123,5 @@ p{margin:0}
 }
 .sheetInner .close:hover{background:var(--accent-soft);color:var(--ink)}
 .lockedMsg{text-align:center;color:var(--dim);padding:26px 0;font-size:14px}
+
+img.broken{opacity:.1}

@@ -1,4 +1,3 @@
-const IMG = "img/";
 let POKEDEX = null;
 let DEX = { collected: [], streak: 0, today: {} };
 let FILTER = "all";
@@ -78,7 +77,7 @@ function render() {
     setText("todayLabel", `今日捕获 · ${t.date}`);
     const art = last.shiny && lp.artShiny ? lp.artShiny : lp.art;
     $("todayCard").innerHTML = `
-      <img src="${IMG}${encodeURIComponent(art)}" alt="${esc(lp.nameZh)}">
+      <img src="${art}" alt="${esc(lp.nameZh)}" onerror="this.classList.add('broken')">
       <div class="body">
         <div class="nm">${esc(lp.nameZh)}${last.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
         <div class="sub">No.${esc(lp.id)} · ${esc((lp.types || []).join(" / "))} · ${esc(lp.category)}
@@ -106,7 +105,7 @@ function render() {
     const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
     return `<div class="cell ${c ? "" : "locked"} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
       <div class="no">No.${esc(p.id)}</div>
-      <img src="${IMG}${encodeURIComponent(art)}" alt="${esc(p.nameZh)}" loading="lazy">
+      <img src="${art}" alt="${esc(p.nameZh)}" loading="lazy" onerror="this.classList.add('broken')">
       <div class="nm">${c ? esc(p.nameZh) : "???"}</div>
       <div class="ty">${esc((p.types || []).join("/"))}</div>
     </div>`;
@@ -124,14 +123,14 @@ function openSheet(id) {
   const inner = $("sheetInner");
   if (!c) {
     inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
-      <img src="${IMG}${encodeURIComponent(p.art)}" alt="">
+      <img src="${p.art}" alt="" onerror="this.classList.add('broken')">
       <div class="nm">???</div>
       <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))}</div>
       <div class="lockedMsg">还没收服这一只。<br>读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟就能遇上新的宝可梦。</div>`;
   } else {
     const art = c.shiny && p.artShiny ? p.artShiny : p.art;
     inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
-      <img src="${IMG}${encodeURIComponent(art)}" alt="${esc(p.nameZh)}">
+      <img src="${art}" alt="${esc(p.nameZh)}">
       <div class="nm">${esc(p.nameZh)}${c.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
       <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))} · ${esc(p.category)}</div>
       <div class="rows">
