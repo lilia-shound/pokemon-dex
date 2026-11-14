@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""宝可梦素材管线：42arch/pokemon-dataset-zh -> data/pokedex.json + data/images/home/
+"""宝可梦素材管线：42arch/pokemon-dataset-zh -> data/pokedex.json + site/img/
 
 数据源：
   - 42arch/pokemon-dataset-zh（MIT，抓取自神奇宝贝百科）—— 中文名/图鉴文案/属性/进化链
@@ -22,7 +22,7 @@ REPO = "https://github.com/42arch/pokemon-dataset-zh.git"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / ".cache" / "pokemon-dataset-zh"
 OUT_JSON = ROOT / "data" / "pokedex.json"
-OUT_IMG = ROOT / "data" / "images" / "home"
+OUT_IMG = ROOT / "site" / "img"
 
 # 文件名形如 "0025-皮卡丘" / "0025-皮卡丘-雄性" / "0906-新叶喵-世界帽子"
 _STEM_RE = re.compile(r"^(\d+)-(.*)$")

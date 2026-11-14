@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "collected": [],
+  "streak": 0,
+  "lastAwardDate": null,
+  "today": {
+    "date": null,
+    "seconds": 0,
+    "threshold": 1800
+  },
+  "updatedAt": null
+}
