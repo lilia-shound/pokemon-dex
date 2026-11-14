@@ -82,8 +82,8 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function artUrl(u) {
-    return u || "";   // pokedex.json 里已经是完整直链
+  function artUrl(fname) {
+    return fname ? `${BASE}/img/${fname}` : "";
   }
 
   function todayInfo() {
