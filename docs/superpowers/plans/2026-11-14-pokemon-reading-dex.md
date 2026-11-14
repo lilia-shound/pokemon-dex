@@ -1540,3 +1540,39 @@ git commit -m "docs: 记录第一圈实测结论"
 **已知遗留（有意为之，不阻塞）**
 - `dex_core.new_state` 里 `compute_streak` 依赖 `collected[].date`，该字段在 Task 4 Step 1 才补上 —— Task 3 的测试用 `new_state` 时传的 award 不含 date，故 streak 断言依赖 `lastAwardDate == today` 分支。Task 4 Step 1 补字段后行为一致，Task 3 的测试需在 Task 4 之后仍通过（`new_state` 追加时写 `date=today`，streak 计算结果不变）。
 - 第 9 代部分宝可梦的 `home` 立绘缺失（实测 1013/1025 有），`extract` 会让 `art` 为空，图鉴页用 CSS 占位，不影响收集逻辑。
+
+
+---
+
+## 执行偏差记录（2026-11-14 实做后补记）
+
+计划是在实现前写的，实做中有 6 处偏离，全部记录在此。
+
+| # | 计划写的 | 实际做的 | 为什么 |
+|---|---|---|---|
+| 1 | 测试用 `pytest` | 改用标准库 `unittest` + `run_tests.py` | 沙箱 PyPI 不通（`pip install pytest` 报 `No matching distribution`），零依赖更稳 |
+| 2 | 图片落到 `data/images/home/`，再用 `site/img/` | 图片**不落盘**，`pokedex.json` 里存完整直链 | 52MB 仓库 push 反复断连（`GnuTLS recv error` ×4）；且图鉴页/插件本来就跑在姜来浏览器里，够得到 raw CDN。仓库 54MB → 1.8MB |
+| 3 | 立绘选「编号-名字」标准形态 | 加了分层优先级：标准形态 > 性别变体 > 其它变体 > 形态/超极巨化/帽子 | 阿尔宙斯、厄诡椪只有形态立绘，得挑一个最像"本体"的 |
+| 4 | 12 只无 HOME 立绘 → 占位 | PokeAPI `official-artwork` 直链兜底 | 抽到它们时开箱卡不能是空白 |
+| 5 | streak 今天没达标就归零 | 今天没达标时显示**截至昨天的连续天数** | "已经连读 5 天，今天还没读"和"连读 0 天"体感完全不同 |
+| 6 | 闪光/开箱卡取 `collected` 数组最后一条 | 改为**按日期找今天那条** | 数组顺序与 `lastAwardDate` 不一致时会开错宝可梦（实测踩到） |
+
+### 额外修掉的两个真 bug
+
+1. **闪光记录被覆盖**：同一只宝可梦收集多次时，`Map` 后者覆盖前者，导致闪光版被后来的普通版盖掉 → 改为保留闪光的那次
+2. **开箱卡开错宝可梦**：见上表第 6 项
+
+### 部署方式
+
+- repo：`lilia-shound/pokemon-dex`（public —— Pages 免费账户不支持 private repo）
+- `main` 分支：源码 + 数据
+- `gh-pages` 分支：只含 `site/` 内容，Pages 源设在这里
+- 图片不落仓库 → 不存在同一份 blob 存两遍的问题
+- `scripts/deploy.sh` 用 `GIT_ASKPASS` 传 token，**不出现在命令行或 git 配置里**
+  （最初版本把 token 拼进 URL，`git subtree push` 直接把 token 明文打印到了输出里，已改）
+
+### 定时判定
+
+主力用 mavis 的定时任务（每 3 小时），密钥留在本地 secret，不进 GitHub。
+`.github/workflows/daily-award.yml` 作为可选兜底 —— 需要在 repo 里手动加
+`WEREAD_API_KEY` secret 才生效，否则会优雅跳过。

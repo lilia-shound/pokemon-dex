@@ -1,0 +1,55 @@
+name: 每日宝可梦判定
+
+on:
+  schedule:
+    # UTC 每 3 小时跑一次（北京时间 8/11/14/17/20/23/2/5 点）
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dex-award
+  cancel-in-progress: false
+
+jobs:
+  award:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 判定今日阅读时长并发奖
+        env:
+          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          if [ -z "$WEREAD_API_KEY" ]; then
+            echo "未配置 WEREAD_API_KEY secret，跳过本轮。"
+            echo "到 repo 的 Settings -> Secrets and variables -> Actions 添加即可启用。"
+            exit 0
+          fi
+          python3 scripts/check_today.py || true
+          python3 scripts/award.py
+
+      - name: 同步状态并发布图鉴页
+        run: |
+          cp data/dex.json site/dex.json
+          cp data/pokedex.json site/pokedex.json
+          git config user.name "Mavis"
+          git config user.email "mavis@local"
+          git add data/dex.json site/dex.json
+          if git diff --cached --quiet; then
+            echo "状态无变化，跳过发布"
+          else
+            git commit -m "chore: 每日发放 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push origin HEAD:main
+            git subtree push --prefix site origin gh-pages
+          fi

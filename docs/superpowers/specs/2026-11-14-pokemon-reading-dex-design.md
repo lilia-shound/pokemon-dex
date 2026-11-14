@@ -135,6 +135,11 @@ Authorization: Bearer ${WEREAD_API_KEY}     # wrk-...  存于 secret
 - 每次达标发 **1 只**。
 - streak 满 100 天后保底闪光持续生效，直到 streak 断。
 
+**streak 的显示语义（实现时修正）**：
+今天还没达标时，streak 显示的是「截至昨天的连续天数」而不是 0。
+因为「已经连读 5 天，今天还没读」和「连读 0 天」体感完全不同 —— 后者会让人以为断了。
+今天读满就变 6 天。中间断过则停下重数。
+
 ## 6. 数据源
 
 ### 6.1 宝可梦（42arch/pokemon-dataset-zh，MIT）
@@ -154,27 +159,42 @@ data/images/home/*-shiny.png           闪光变体 ★
 **`pokedex_entries[].versions[].text`（各代官方中文图鉴描述）★** /
 `evolution_chains`（进化链）/ `home_images`（含 shiny 文件名）
 
-### 6.2 图片分发
+### 6.2 图片分发 —— **实测后改为直链，不落盘**
 
-沙箱内 `raw.githubusercontent.com` **不可达**，但 `cdn.jsdelivr.net` 可达。
+原计划把 3018 张 PNG 落到仓库里。实测被两个问题逼改了方案：
 
-- 构建期：用 jsdelivr / GitHub API 下载，落到本 repo（自持、可控）。
-- 运行时：图鉴页与插件都引用**本 repo 的 Pages 路径**，不依赖第三方。
+1. 仓库 52MB，`git push` 在沙箱网络下反复断连（`GnuTLS recv error`），推了 4 次才成功
+2. GitHub Pages 与插件都在**姜来的浏览器**里跑，那里本来就访问得到 `raw.githubusercontent.com`
 
-体积控制：每只用 1 张 `home` 立绘 + 1 张 `-shiny`（约 2000 张 PNG）。先测单图体积再定是否全量落地；必要时改用 `dream`（像素风，与原帖墨水屏更搭，体积更小）或直接远程引用不落地。
+**最终方案**：`data/pokedex.json` 里直接存**完整直链**。
+
+| 来源 | URL 模板 | 数量 |
+|---|---|---|
+| HOME 造型 | `raw.githubusercontent.com/42arch/pokemon-dataset-zh/main/data/images/home/{文件名}` | 2013 只（含闪光变体） |
+| PokeAPI 兜底 | `raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/{编号}.png` | 12 只（无 HOME 造型） |
+
+- 仓库因此从 54MB 降到 **1.8MB**，push 秒过
+- 中文文件名已 URL 编码，浏览器直接拉
+- **正确性已全量校验**：用 GitHub trees API 拉出 42arch 全部 3006 个 home 文件名，
+  与 pokedex.json 里的 2026 个 URL 逐一比对 —— **0 个对不上**；12 个 PokeAPI 兜底逐个查 API 确认存在
+- 页面与插件都加了 `onerror` 降级：图裂了就淡成轮廓，不留破图
+
+代价：依赖 42arch 仓库不被删。可接受（该仓库 2026-03 仍在更新）。
 
 ## 7. 组件
 
 | 模块 | 职责 | 技术 |
 |---|---|---|
-| `scripts/fetch_pokemon.py` | 下载 42arch 数据 → 抽取精简字段 → 生成 `data/pokedex.json` + 图片 | Python + GitHub API/jsdelivr |
+| `scripts/fetch_pokemon.py` | 下载 42arch 数据 → 抽取精简字段 → 生成 `data/pokedex.json`（立绘存直链） | Python + git sparse checkout |
 | `scripts/weread_client.py` | 调微信读书 gateway，封装 readTimes 取数 | Python，仅用标准库 |
 | `scripts/award.py` | 判定（阈值 + streak）→ 抽卡 → 更新 `dex.json` → commit → 推送 | Python + git |
 | `scripts/check_today.py` | **自检**：打印今天的桶、原始值、时区对齐情况 | Python |
 | `site/` | 图鉴页（静态） | 单页 HTML + JSON |
 | `plugin/weread-dex.user.js` | 油猴脚本：胶囊进度条 + 图鉴墙 + 开箱卡 | 原生 JS，无依赖 |
 | `data/dex.json` | 唯一状态文件 | JSON，公开 |
-| `data/pokedex.json` | 1025 只精简资料 | JSON |
+| `data/pokedex.json` | 1025 只精简资料（含立绘直链） | JSON |
+| `scripts/push_notify.py` | 微信推送（pushplus） | Python 标准库 |
+| `scripts/deploy.sh` | 推 main + gh-pages，发布图鉴页 | bash |
 
 ### 7.1 插件形态
 
