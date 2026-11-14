@@ -109,6 +109,17 @@ def main(argv: list[str] | None = None) -> int:
     if pending:
         print(f"待补发：{', '.join(f'{d}({v}s)' for d, v in pending)}")
 
+    # 今天已经发过奖 → 不能再抽一张。
+    # new_state 按日期去重，抽到的卡会被悄悄丢掉，但上面已经打印了「★ 获得」——
+    # 那就是假消息（每 3 小时跑一次的定时任务当天会连报好几次）。
+    if not pending and today in awarded_dates:
+        streak = dc.compute_streak(sorted(awarded_dates), today)
+        hint = "（--force 也不重复发奖；想换日期用 --date）" if args.force else ""
+        print(f"今天已经发过奖了{hint}   图鉴 {len(owned)}/{TOTAL_POKEMON}   连读 {streak} 天")
+        if not args.dry_run:
+            save_state(dc.new_state(old, None, today, today_secs))
+        return 0
+
     # 选定发奖日：补发优先取最早那天，否则取今天
     if pending and not args.force:
         award_day, award_secs = pending[0]

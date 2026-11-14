@@ -18,6 +18,7 @@ import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from scripts import dex_core as dc  # noqa: E402
 from scripts import weread_client as wc  # noqa: E402
 
 SH = zoneinfo.ZoneInfo("Asia/Shanghai")
@@ -45,8 +46,8 @@ def main() -> int:
         "todayBucketKey": key,
         "todaySeconds": secs,
         "todayMinutes": round(secs / 60, 1),
-        "thresholdSeconds": 1800,
-        "reached": secs >= 1800,
+        "thresholdSeconds": dc.THRESHOLD_SECONDS,
+        "reached": secs >= dc.THRESHOLD_SECONDS,
         "buckets": [
             {
                 "key": k,
@@ -63,7 +64,8 @@ def main() -> int:
     print(f"检查时间   {now:%Y-%m-%d %H:%M:%S} (Asia/Shanghai)")
     print(f"分桶模式   {args.mode}   桶数 {len(rt)}")
     print(f"今日秒数   {secs} 秒 ({round(secs / 60, 1)} 分)   "
-          f"达标线 1800 秒 → {'达标' if secs >= 1800 else '未达标'}")
+          f"达标线 {dc.THRESHOLD_SECONDS} 秒 → "
+          f"{'达标' if secs >= dc.THRESHOLD_SECONDS else '未达标'}")
     print(f"今日桶 key {key}")
     print("--- 全部桶 ---")
     for b in out["buckets"]:
