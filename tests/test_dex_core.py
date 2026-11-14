@@ -117,3 +117,50 @@ class NewStateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatchUpTest(unittest.TestCase):
+    """补发：微信读书延迟上报时，昨天读满的数据今天才到。"""
+
+    def _state_with(self, dates):
+        return {"collected": [{"id": f"{i:04d}", "date": d, "shiny": False}
+                              for i, d in enumerate(dates)],
+                "streak": 0, "lastAwardDate": None, "today": {}}
+
+    def test_awards_for_past_date_not_today(self):
+        old = self._state_with([])
+        award = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                 "at": "2026-11-15T00:20:00+08:00"}
+        new = dc.new_state(old, award, today="2026-11-15", today_secs=0,
+                            award_date="2026-11-14")
+        self.assertEqual(len(new["collected"]), 1)
+        self.assertEqual(new["collected"][0]["date"], "2026-11-14")
+        self.assertEqual(new["lastAwardDate"], "2026-11-14")
+        # 今天的秒数照常记，进度条要显示今天读了多久
+        self.assertEqual(new["today"]["seconds"], 0)
+        self.assertEqual(new["today"]["date"], "2026-11-15")
+
+    def test_streak_counts_up_to_award_date(self):
+        old = self._state_with(["2026-11-12", "2026-11-13"])
+        award = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                 "at": "2026-11-15T00:20:00+08:00"}
+        new = dc.new_state(old, award, today="2026-11-15", today_secs=0,
+                            award_date="2026-11-14")
+        self.assertEqual(new["streak"], 3)
+
+    def test_same_date_never_awarded_twice(self):
+        old = self._state_with(["2026-11-14"])
+        award = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
+                 "at": "2026-11-15T00:20:00+08:00"}
+        new = dc.new_state(old, award, today="2026-11-15", today_secs=0,
+                            award_date="2026-11-14")
+        self.assertEqual(len(new["collected"]), 1)
+        self.assertEqual(new["collected"][0]["id"], "0000")
+
+    def test_last_award_date_is_max_of_collected(self):
+        old = self._state_with(["2026-11-14"])
+        award = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
+                 "at": "2026-11-15T22:00:00+08:00"}
+        new = dc.new_state(old, award, today="2026-11-15", today_secs=2000)
+        self.assertEqual(new["lastAwardDate"], "2026-11-15")
+        self.assertEqual(len(new["collected"]), 2)

@@ -78,3 +78,18 @@ class TodaySecondsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BucketSecondsTest(unittest.TestCase):
+    def test_returns_seconds_for_given_day(self):
+        rt = {_ts(2026, 11, 13): 600, _ts(2026, 11, 14): 900}
+        day = datetime.date(2026, 11, 14)
+        self.assertEqual(wc.bucket_seconds(rt, day), 900)
+
+    def test_missing_day_is_zero(self):
+        rt = {_ts(2026, 11, 14): 900}
+        day = datetime.date(2026, 11, 13)
+        self.assertEqual(wc.bucket_seconds(rt, day), 0)
+
+    def test_empty_read_times(self):
+        self.assertEqual(wc.bucket_seconds({}, datetime.date(2026, 11, 14)), 0)

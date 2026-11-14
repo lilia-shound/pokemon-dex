@@ -73,6 +73,17 @@ def read_times(mode: str = "monthly") -> dict[int, int]:
     return out
 
 
+def bucket_seconds(rt: dict[int, int], day: datetime.date) -> int:
+    """取指定那一天的阅读秒数。桶不存在就是 0。
+
+    用于「补发」：微信读书的时长是延迟上报的，
+    当天读满的数据可能到次日凌晨才到，那时"今天"的桶已经翻页，
+    只能按日期回看昨天。
+    """
+    key = int(datetime.datetime.combine(day, datetime.time.min, tzinfo=SH).timestamp())
+    return int(rt.get(key, 0))
+
+
 def today_seconds(rt: dict[int, int], now: datetime.datetime | None = None) -> tuple[int | None, int]:
     """返回 (今日桶 key 或 None, 今日阅读秒数)。
 

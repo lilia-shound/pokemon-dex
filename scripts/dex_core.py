@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import random
 
 # streak 阈值 -> 闪光概率。达到该阈值即生效（取最高档）
@@ -14,7 +15,9 @@ SHINY_ODDS: dict[int, float] = {
     100: 1.0,
 }
 
-THRESHOLD_SECONDS = 1800  # 30 分钟
+# 达标线：默认 30 分钟。微信读书的官方计数会漏掉一部分（实测读 25 分钟只记 17 分钟），
+# 所以这个数字是「官方口径」的实际成本。改这里或设 DEX_THRESHOLD 环境变量都能调。
+THRESHOLD_SECONDS = int(os.environ.get("DEX_THRESHOLD", "1800"))
 
 
 def shiny_probability(streak: int) -> float:
@@ -60,27 +63,33 @@ def pick(owned_ids: set[str], pool: list[dict], streak: int, rng: random.Random)
     return chosen
 
 
-def new_state(old: dict, award: dict | None, today: str, today_secs: int) -> dict:
+def new_state(old: dict, award: dict | None, today: str, today_secs: int,
+              award_date: str | None = None) -> dict:
     """算出新的 dex.json。
 
-    幂等：若 old['lastAwardDate'] == today，不再追加。
+    幂等：按**日期**判重——同一个日期只发一次。
+    award_date 用于「补发」：微信读书延迟上报时，昨天读满的数据可能今天才到，
+    这时要发的是昨天那一份，对 streak 也按昨天算。
     """
+    ad = award_date or today
     collected = list(old.get("collected") or [])
-    last = old.get("lastAwardDate")
-    if award is not None and last != today:
+    awarded = {c.get("date") for c in collected if c.get("date")}
+
+    if award is not None and ad not in awarded:
         collected.append(
             {
                 "id": award.get("id"),
                 "nameZh": award.get("nameZh", ""),
                 "shiny": bool(award.get("shiny")),
                 "at": award.get("at"),
-                "date": today,
+                "date": ad,
             }
         )
-        last = today
+        awarded = {c.get("date") for c in collected if c.get("date")}
 
-    award_dates = [c.get("date") for c in collected if c.get("date")]
-    streak = compute_streak(award_dates, today)
+    last = max(awarded) if awarded else None
+    # 发过奖就用发奖日算连续，没发过就按今天算（显示截至昨天的连续天数）
+    streak = compute_streak(sorted(awarded), ad if award is not None else today)
 
     return {
         "version": 1,
