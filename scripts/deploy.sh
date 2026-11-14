@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # 部署：把图鉴站推到 GitHub Pages
-#   main 分支    —— 源码 + 数据（site/ 里含图片与静态文件）
+#   main 分支     —— 源码 + 数据（site/ 里含静态文件）
 #   gh-pages 分支 —— 只含 site/ 的内容，作为 Pages 源
-# git 内容寻址，同一张图片 blob 不会存两份。
+#
+# token 通过 GIT_ASKPASS 传入，绝不出现在命令行参数或 git 配置里。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-REPO_URL="https://github.com/lilia-shound/pokemon-dex.git"
+REPO="lilia-shound/pokemon-dex"
 
 echo "[1/4] 同步数据到 site/"
 cp data/pokedex.json site/pokedex.json
@@ -21,23 +22,31 @@ if git diff --cached --quiet; then
 else
   git -c user.name="Mavis" -c user.email="mavis@local" commit -q -m "chore: 更新图鉴站与状态"
 fi
+
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-  AUTH=$(printf 'x-access-token:%s' "$GITHUB_TOKEN")
+  ASKPASS="$(mktemp)"
+  cat > "$ASKPASS" <<'EOF'
+#!/bin/sh
+case "$1" in
+  *sername*) echo "x-access-token" ;;
+  *assword*) echo "$GITHUB_TOKEN" ;;
+  *) echo "" ;;
+esac
+EOF
+  chmod +x "$ASKPASS"
+  export GIT_ASKPASS="$ASKPASS"
+  export GIT_TERMINAL_PROMPT=0
+  PUSH_URL="https://github.com/${REPO}.git"
 else
-  AUTH=""
+  PUSH_URL="origin"
 fi
-if [ -n "$AUTH" ]; then
-  git push "https://${AUTH}@github.com/lilia-shound/pokemon-dex.git" HEAD:main
-else
-  git push origin HEAD:main
-fi
+
+git push "$PUSH_URL" HEAD:main
 
 echo "[3/4] 推送 gh-pages 分支"
-if [ -n "$AUTH" ]; then
-  git subtree push --prefix site "https://${AUTH}@github.com/lilia-shound/pokemon-dex.git" gh-pages
-else
-  git subtree push --prefix site origin gh-pages
-fi
+git subtree push --prefix site "$PUSH_URL" gh-pages
+
+[ -n "${ASKPASS:-}" ] && rm -f "$ASKPASS"
 
 echo "[4/4] 完成"
-echo "图鉴页： https://lilia-shound.github.io/pokemon-dex/"
+echo "图鉴页： https://${REPO%/*}/$(echo "$REPO" | cut -d/ -f2)/"
