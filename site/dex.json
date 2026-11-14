@@ -1,12 +1,20 @@
 {
   "version": 1,
-  "collected": [],
-  "streak": 0,
-  "lastAwardDate": null,
+  "collected": [
+    {
+      "id": "0563",
+      "nameZh": "迭失棺",
+      "shiny": false,
+      "at": "2026-11-14T14:43:44.097585+08:00",
+      "date": "2026-11-14"
+    }
+  ],
+  "streak": 1,
+  "lastAwardDate": "2026-11-14",
   "today": {
-    "date": null,
-    "seconds": 0,
-    "threshold": 1800
+    "date": "2026-11-14",
+    "seconds": 1076,
+    "threshold": 900
   },
-  "updatedAt": null
+  "updatedAt": "2026-11-14T14:43:44.097585+08:00"
 }
