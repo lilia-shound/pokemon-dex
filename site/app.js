@@ -30,6 +30,11 @@ async function load() {
   ]);
   POKEDEX = pd.pokemon;
   DEX = dx;
+  // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
+  try {
+    const g = new URL(location.href).searchParams.get("gen");
+    if (g && (g === "all" || (Number(g) >= 1 && Number(g) <= GENS.length))) FILTER = g;
+  } catch (e) { /* 忽略 */ }
   render();
 }
 
@@ -99,7 +104,17 @@ function render() {
         `<button data-f="${v}" class="${String(v) === String(FILTER) ? "on" : ""}">${label}</button>`)
       .join("");
   $("filters").querySelectorAll("button").forEach((b) => {
-    b.onclick = () => { FILTER = b.dataset.f; render(); };
+    b.onclick = () => {
+      FILTER = b.dataset.f;
+      // 写回地址栏，这样「?gen=10」可以直接分享/收藏某个世代
+      try {
+        const u = new URL(location.href);
+        if (FILTER === "all") u.searchParams.delete("gen");
+        else u.searchParams.set("gen", FILTER);
+        history.replaceState(null, "", u);
+      } catch (e) { /* file:// 下没有 history，忽略 */ }
+      render();
+    };
   });
 
   // 图鉴墙
@@ -113,7 +128,7 @@ function render() {
     const cls = c ? "" : (prev ? "preview" : "locked");
     return `<div class="cell ${cls} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
       <div class="no">No.${esc(p.id)}${prev && p.provisionalNo ? "（暂定）" : ""}</div>
-      <img src="${IMG}${art}" alt="${esc(p.nameZh)}" loading="lazy" onerror="this.classList.add('broken')">
+      <img src="${IMG}${art}" alt="${esc(p.nameZh)}" ${prev ? 'loading="eager"' : 'loading="lazy"'} onerror="this.classList.add('broken')">
       <div class="nm">${known ? esc(p.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
       <div class="ty">${esc((p.types || []).join("/"))}</div>
     </div>`;
