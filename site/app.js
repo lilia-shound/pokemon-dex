@@ -9,12 +9,14 @@ const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; }
 // 世代边界
 const GENS = [
   [1, 151], [152, 251], [252, 386], [387, 493], [494, 649],
-  [650, 721], [722, 809], [810, 905], [906, 1025],
+  [650, 721], [722, 809], [810, 905], [906, 1025], [1026, 9999],
 ];
+// 预告世代：游戏还没发售，资料来自公开预告，编号暂定
+const PREVIEW_GENS = new Set([10]);
 function genOf(id) {
   const n = Number(id);
   for (let i = 0; i < GENS.length; i++) if (n >= GENS[i][0] && n <= GENS[i][1]) return i + 1;
-  return 9;
+  return GENS.length;
 }
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
@@ -91,7 +93,8 @@ function render() {
 
   // 筛选条
   $("filters").innerHTML =
-    [["all", "全部"], ...GENS.map((g, i) => [i + 1, `第 ${i + 1} 世代`])]
+    [["all", "全部"], ...GENS.map((g, i) => [
+      i + 1, `第 ${i + 1} 世代${PREVIEW_GENS.has(i + 1) ? " · 预告" : ""}`])]
       .map(([v, label]) =>
         `<button data-f="${v}" class="${String(v) === String(FILTER) ? "on" : ""}">${label}</button>`)
       .join("");
@@ -104,10 +107,14 @@ function render() {
   $("grid").innerHTML = list.map((p) => {
     const c = owned.get(p.id);
     const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
-    return `<div class="cell ${c ? "" : "locked"} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
-      <div class="no">No.${esc(p.id)}</div>
+    // 预告世代的条目：名字直接亮出来（本来就是公开资料），并挂个「预告」标记
+    const prev = !!p.preview;
+    const known = c || prev;
+    const cls = c ? "" : (prev ? "preview" : "locked");
+    return `<div class="cell ${cls} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
+      <div class="no">No.${esc(p.id)}${prev && p.provisionalNo ? "（暂定）" : ""}</div>
       <img src="${IMG}${art}" alt="${esc(p.nameZh)}" loading="lazy" onerror="this.classList.add('broken')">
-      <div class="nm">${c ? esc(p.nameZh) : "???"}</div>
+      <div class="nm">${known ? esc(p.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
       <div class="ty">${esc((p.types || []).join("/"))}</div>
     </div>`;
   }).join("");
@@ -123,11 +130,27 @@ function openSheet(id) {
   const sheet = $("sheet");
   const inner = $("sheetInner");
   if (!c) {
-    inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
-      <img src="${IMG}${p.art}" alt="" onerror="this.classList.add('broken')">
-      <div class="nm">???</div>
-      <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))}</div>
-      <div class="lockedMsg">还没收服这一只。<br>读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟就能遇上新的宝可梦。</div>`;
+    if (p.preview) {
+      inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
+        <img src="${IMG}${p.art}" alt="${esc(p.nameZh)}" onerror="this.classList.add('broken')">
+        <div class="nm">${esc(p.nameZh)}<span class="prevTag">预告</span></div>
+        <div class="sub">No.${esc(p.id)}${p.provisionalNo ? "（编号暂定）" : ""} · ${esc((p.types || []).join(" / "))} · ${esc(p.category || "")}</div>
+        <div class="rows">
+          <div class="row"><b>特性</b><span>${esc((p.abilities || []).join("、") || "-")}</span></div>
+          <div class="row"><b>身高</b><span>${esc(p.height || "-")}</span></div>
+          <div class="row"><b>体重</b><span>${esc(p.weight || "-")}</span></div>
+          <div class="row"><b>进化链</b><span>${esc((p.evolution || []).join(" → ") || "-")}</span></div>
+          <div class="row"><b>日文名</b><span>${esc(p.nameJa || "-")}</span></div>
+        </div>
+        <div class="flavor">${esc(p.flavor)}</div>
+        <div class="lockedMsg">第 10 世代《风/波》，2026-02-27 公布，游戏 2027 年发售。<br>编号与资料均为暂定 —— 但读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟，照样能在图鉴里遇上它。</div>`;
+    } else {
+      inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
+        <img src="${IMG}${p.art}" alt="" onerror="this.classList.add('broken')">
+        <div class="nm">???</div>
+        <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))}</div>
+        <div class="lockedMsg">还没收服这一只。<br>读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟就能遇上新的宝可梦。</div>`;
+    }
   } else {
     const art = c.shiny && p.artShiny ? p.artShiny : p.art;
     inner.innerHTML = `<button class="close" id="sheetClose">✕</button>

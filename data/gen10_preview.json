@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "note": "第 10 世代《宝可梦 风/波》(Pokémon Winds & Waves) —— 2026-02-27 宝可梦日（30 周年）官方公布，Switch 2 独占，官方发售窗口 2027 年。目前官方只公开了 3 只初始宝可梦；全国图鉴编号官方尚未指派，这里的 1026/1029/1032 沿用公开资料惯例（每只御三家占 3 个编号位）。资料来源：中文神奇宝贝百科 52poke（页面已标注「预告内容」）、Reko Wiki、任天堂公开图。",
+  "pokemon": [
+    {
+      "id": "1026",
+      "nameZh": "叶眉鸟",
+      "nameJa": "ハブロウ",
+      "nameEn": "Browt",
+      "types": ["草"],
+      "category": "小鸡丁宝可梦",
+      "abilities": ["茂盛"],
+      "height": "0.3m",
+      "weight": "3.5kg",
+      "flavor": "叶眉鸟会用眉毛叶片进行光合作用，精神十足地到处跑动。虽然充满活力，但也有笨手笨脚的一面。",
+      "flavorSource": "preview",
+      "summary": "第 10 世代草属性御三家。用眉毛上的叶片进行光合作用，活泼好动但也有笨手笨脚的一面。",
+      "profile": "名字来自英文 brow（眉毛）与 root（根），以及日文名 ハブロウ 的音译。原型是雏鸟，官方公开时因为外形偏搞笑而讨论度一度垫底，看久了却很可爱。",
+      "evolution": ["叶眉鸟"],
+      "artSrc": "https://s1.52poke.com/wiki/e/ec/1026Browt.png",
+      "preview": true,
+      "provisionalNo": true
+    },
+    {
+      "id": "1029",
+      "nameZh": "博姆耿",
+      "nameJa": "ポムケン",
+      "nameEn": "Pombon",
+      "types": ["火"],
+      "category": "小狗宝可梦",
+      "abilities": ["猛火"],
+      "height": "0.4m",
+      "weight": "6.7kg",
+      "flavor": "博姆耿肺部的发热器官让脖子下方发出微弱的光亮。性格友善，天真无邪。",
+      "flavorSource": "preview",
+      "summary": "第 10 世代火属性御三家。系列史上第一只犬类御三家，原型是博美犬，官方公开后讨论度最高。",
+      "profile": "名字来自「博美犬」和「耿」（明亮、正直、包含偏旁「火」），以及日文名 ポムケン 的音译。因为太可爱，还专属成立了「博姆耿站起来」的讨论标签。",
+      "evolution": ["博姆耿"],
+      "artSrc": "https://s1.52poke.com/wiki/9/9d/1029Pombon.png",
+      "preview": true,
+      "provisionalNo": true
+    },
+    {
+      "id": "1032",
+      "nameZh": "妙澪儿",
+      "nameJa": "ミオリー",
+      "nameEn": "Gecqua",
+      "types": ["水"],
+      "category": "水壁虎宝可梦",
+      "abilities": ["激流"],
+      "height": "0.3m",
+      "weight": "4.3kg",
+      "flavor": "妙澪儿会从尾巴射出具有弹力的水球。智商很高，会表现得比实际的能力更强，精于算计。",
+      "flavorSource": "preview",
+      "summary": "第 10 世代水属性御三家。水壁虎原型，眼睛旁边那圈其实是睫毛——官方公开后立刻成了本世代热门。",
+      "profile": "名字来自「巧妙」「妙龄」「澪」（日文名前两个音节的汉字写法，含偏旁「水」），以及日文名 ミオリー 的音译。日文名本身又是「水守宮」的组合。",
+      "evolution": ["妙澪儿"],
+      "artSrc": "https://s1.52poke.com/wiki/d/de/1032Gecqua.png",
+      "preview": true,
+      "provisionalNo": true
+    }
+  ]
+}

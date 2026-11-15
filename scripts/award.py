@@ -31,12 +31,17 @@ from scripts import weread_client as wc  # noqa: E402
 SH = zoneinfo.ZoneInfo("Asia/Shanghai")
 DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
 POKEDEX_PATH = ROOT / "data" / "pokedex.json"
-TOTAL_POKEMON = 1025
 
 
 def load_pokedex() -> list[dict]:
     data = json.loads(POKEDEX_PATH.read_text(encoding="utf-8"))
     return data["pokemon"]
+
+
+def pokedex_total() -> int:
+    """总数从 pokedex.json 读（预告世代并进来后不再是 1025）。"""
+    data = json.loads(POKEDEX_PATH.read_text(encoding="utf-8"))
+    return int(data.get("count") or len(data.get("pokemon", [])))
 
 
 def load_state() -> dict:
@@ -103,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"今天 {today}   官方已记 {today_secs} 秒 ({round(today_secs / 60, 1)} 分)   "
           f"达标线 {dc.THRESHOLD_SECONDS} 秒")
-    print(f"已收集 {len(owned)}/{TOTAL_POKEMON}   周期内桶数 {len(buckets)}")
+    print(f"已收集 {len(owned)}/{pokedex_total()}   周期内桶数 {len(buckets)}")
 
     pending = pending_award_days(buckets, awarded_dates, dc.THRESHOLD_SECONDS)
     if pending:
@@ -115,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     if not pending and today in awarded_dates:
         streak = dc.compute_streak(sorted(awarded_dates), today)
         hint = "（--force 也不重复发奖；想换日期用 --date）" if args.force else ""
-        print(f"今天已经发过奖了{hint}   图鉴 {len(owned)}/{TOTAL_POKEMON}   连读 {streak} 天")
+        print(f"今天已经发过奖了{hint}   图鉴 {len(owned)}/{pokedex_total()}   连读 {streak} 天")
         if not args.dry_run:
             save_state(dc.new_state(old, None, today, today_secs))
         return 0
@@ -147,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"连读 {streak_after} 天   闪光概率 {dc.shiny_probability(streak_after):.4f}")
     award = dc.pick(owned, pool, streak_after, random.Random())
     if award is None:
-        print(f"池子空了 —— {TOTAL_POKEMON} 只全部收集完成！")
+        print(f"池子空了 —— {pokedex_total()} 只全部收集完成！")
         return 0
 
     award_full = {
@@ -165,14 +170,14 @@ def main(argv: list[str] | None = None) -> int:
 
     state = dc.new_state(old, award_full, today, today_secs, award_date=award_day)
     save_state(state)
-    print(f"已写入 {DEX_PATH}   图鉴 {len(state['collected'])}/{TOTAL_POKEMON}   连读 {state['streak']} 天")
+    print(f"已写入 {DEX_PATH}   图鉴 {len(state['collected'])}/{pokedex_total()}   连读 {state['streak']} 天")
 
     if not args.no_push:
         try:
             push_notify.send(
                 f"{tag} 捕获 {'闪光' if award['shiny'] else ''}{award['nameZh']}",
                 f"今日已读 {round(today_secs / 60)} 分钟 · 连读 {state['streak']} 天 · "
-                f"图鉴 {len(state['collected'])}/{TOTAL_POKEMON}",
+                f"图鉴 {len(state['collected'])}/{pokedex_total()}",
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[推送] 跳过: {exc}")

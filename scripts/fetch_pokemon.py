@@ -14,6 +14,7 @@ import json
 import pathlib
 import re
 import shutil
+import sys
 import subprocess
 import time
 import urllib.request
@@ -214,6 +215,13 @@ def build() -> int:
         json.dumps({"count": len(entries), "pokemon": entries}, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
+
+    # 预告世代（还没进素材源的）要单独并进来，否则重跑管线会把它们冲掉
+    try:
+        from scripts import preview_pokemon
+        preview_pokemon.merge_preview(build_images=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[注意] 预告条目合并失败：{exc}", file=sys.stderr)
 
     print(f"[完成] {len(entries)} 只 -> {OUT_JSON.relative_to(ROOT)}")
     print("[完成] 立绘使用 raw.githubusercontent 直链，不落盘")

@@ -62,6 +62,12 @@ p{margin:0}
   display:inline-block;margin-left:8px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;
   color:#fff;background:linear-gradient(120deg,#e3c05a,#c9a227);vertical-align:middle;
 }
+/* 预告世代（第 10 代）标记：游戏还没发售，资料与编号都是暂定的 */
+.prevTag{
+  display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:600;
+  color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent);vertical-align:middle;
+  white-space:nowrap;
+}
 
 /* ── 筛选 ───────────────────────────── */
 .filters{max-width:1120px;margin:20px auto 0;padding:0 20px;display:flex;gap:7px;flex-wrap:wrap}
@@ -88,6 +94,8 @@ p{margin:0}
   transition:filter .25s ease}
 .cell.locked img{filter:grayscale(1) opacity(.18)}
 .cell.locked .nm{color:var(--dim)}
+/* 预告条目：立绘保持彩色（本来就是公开图），只给个淡边提示 */
+.cell.preview{border-style:dashed;border-color:var(--accent);background:linear-gradient(180deg,var(--accent-soft),var(--card) 60%)}
 .cell .nm{font-size:13px;margin-top:3px;min-height:2.5em;display:flex;align-items:center;justify-content:center;line-height:1.35}
 .cell .ty{font-size:11px;color:var(--dim);margin-top:1px}
 .cell.shiny{box-shadow:0 0 0 2px var(--shiny) inset,var(--shadow)}
