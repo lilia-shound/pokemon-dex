@@ -60,10 +60,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git worktree add --detach "$WT" >/dev/null 2>&1
+# 上一次部署会在本地留下 orphan 分支 ghp。沙箱是持久的，同一个 clone 里第二次部署时
+# `git checkout --orphan ghp` 会因为分支已存在而失败 —— 而且原来那行是 >/dev/null 2>&1，
+# 报错被吞掉，表现就是「main 推了、gh-pages 没推」。这里先清掉旧分支。
+git worktree prune
+git branch -D ghp >/dev/null 2>&1 || true
+
+git worktree add --detach "$WT" >/dev/null
 (
   cd "$WT"
-  git checkout --orphan ghp >/dev/null 2>&1
+  git checkout --orphan ghp
   git rm -rf --cached . -q >/dev/null 2>&1 || true
   find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} + 2>/dev/null || true
   cp -r "$ROOT/site/." .
