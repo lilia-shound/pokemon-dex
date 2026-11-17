@@ -14,7 +14,12 @@ import urllib.request
 import zoneinfo
 
 GATEWAY = "https://i.weread.qq.com/api/agent/gateway"
-SKILL_VERSION = "1.0.5"
+# 微信读书 Agent Skill 版本。网关每次请求都比对 skill_version，
+# 版本落后会回 upgrade_info（要求去 upgrade_url 下载新 SKILL.md 并替换本地版本），
+# 见到就必须升级，否则所有取数都会失败。
+# 升级办法：curl -L https://cdn.weread.qq.com/skills/weread-skills.zip -o weread-skills.zip
+#           解压后把 SKILL.md 顶部的 version 字段填到这里。
+SKILL_VERSION = os.environ.get("WEREAD_SKILL_VERSION", "1.0.6")
 SH = zoneinfo.ZoneInfo("Asia/Shanghai")
 
 
@@ -47,7 +52,12 @@ def call(api_name: str, **params) -> dict:
 
     upgrade = payload.get("upgrade_info")
     if upgrade:
-        raise WeReadError(f"微信读书 Skill 需要升级: {upgrade.get('message')}")
+        url = upgrade.get("upgrade_url", "")
+        ver = upgrade.get("latest_version", "")
+        raise WeReadError(
+            f"微信读书 Skill 需要升级（当前 {upgrade.get('current_version', '?')} → 最新 {ver}）："
+            f"{upgrade.get('message', '')} 下载地址：{url}"
+        )
 
     errcode = payload.get("errcode")
     if errcode not in (None, 0):
