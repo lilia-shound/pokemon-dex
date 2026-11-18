@@ -13,6 +13,11 @@
 当天读满的数据可能到次日凌晨才到，那时「今天」的桶已经翻页。
 所以判定不只看今天，而是扫账本里所有「额度够了但还没发奖」的日期，
 一次结清（升序，最多 maxBackfill 天）。
+
+**`--migrate-only` 只在迁移当天跑一次**：它直接覆盖 `data/dex.json`、**不带自动备份**。
+备份在 git 里 —— 需要回退时用 `git show <commit>:data/dex.json` 取回旧版。
+隔天再跑会把上一天的 `today.seconds` 清零
+（`today_sources_from` 只在 `today.date == 今天` 时还原今天的读数）。
 """
 
 from __future__ import annotations
@@ -117,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true", help="无视达标线强制发奖")
     ap.add_argument("--no-push", action="store_true", help="不发微信推送")
     ap.add_argument("--migrate-only", action="store_true",
-                    help="只把 dex.json 升到 v2，不抽卡（一次性迁移用）")
+                    help="只把 dex.json 升到 v2，不抽卡（一次性迁移用）。"
+                         "备份在 git 里（git show <commit>:data/dex.json 可取回旧版），"
+                         "只该在迁移当天跑一次")
     ap.add_argument("--date", default=None, help="指定发奖日期 YYYY-MM-DD，默认今天")
     args = ap.parse_args(argv)
 

@@ -17,8 +17,9 @@ SHINY_ODDS: dict[int, float] = {
     100: 1.0,
 }
 
-# 达标线：默认 30 分钟。微信读书的官方计数会漏掉一部分（实测读 25 分钟只记 17 分钟），
-# 所以这个数字是「官方口径」的实际成本。改这里或设 DEX_THRESHOLD 环境变量都能调。
+# 已废弃的兼容常量：权威值在 `data/sources.json` 的 `sources.weread.per`。
+# 全仓没有第二个引用点，改这个数字（或 DEX_THRESHOLD 环境变量）**没有任何效果** ——
+# 真实阈值由注册表决定，别再照着老注释调这个。
 THRESHOLD_SECONDS = int(os.environ.get("DEX_THRESHOLD", "900"))
 
 

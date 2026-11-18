@@ -2002,7 +2002,10 @@ def main() -> int:
         "todayBucketKey": key,
         "todaySeconds": secs,
         "todayMinutes": round(secs / 60, 1),
-        "thresholdSeconds": weread_per,
+        # 掉 1 只实际需要的微信读书秒数（与 dex.json 的 today.threshold 同义）
+        "thresholdSeconds": per_award * weread_per,
+        # 1 个额度 = 多少微信读书秒数
+        "creditSeconds": weread_per,
         "reached": credit >= per_award,
         "credit": credit,
         "perAward": per_award,
@@ -2044,7 +2047,9 @@ if __name__ == "__main__":
 cd /workspace/pokemon-reading-dex && python3 scripts/check_today.py --json | head -30
 ```
 
-Expected: 打印 JSON，里面有 `thresholdSeconds: 900`、`perAward: 2`、`credit: <某个数>`。
+Expected: 打印 JSON，里面有 `thresholdSeconds: 1800`、`creditSeconds: 900`、`perAward: 2`、`credit: <某个数>`。
+（`thresholdSeconds` 是**掉 1 只实际需要的秒数**，与 `data/dex.json` 的 `today.threshold` 同义；
+1 个额度多少秒看 `creditSeconds`。`todaySeconds >= thresholdSeconds` 与 `reached` 必须同真同假。）
 （`WEREAD_API_KEY` 没配的话这一步会失败 —— 那就只验证脚本能 import：
 `python3 -c "import scripts.check_today"`。）
 

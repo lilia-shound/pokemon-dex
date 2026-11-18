@@ -41,7 +41,13 @@ def main() -> int:
     except src.SourceConfigError as exc:
         print(f"[失败] 源注册表有问题：{exc}", file=sys.stderr)
         return 1
-    weread_per = int(cfg["sources"]["weread"]["per"])
+    # 注册表里没有微信读书源：给出脚本自己的提示，别让调用方看到裸 KeyError traceback
+    weread_per = cfg.get("sources", {}).get("weread", {}).get("per")
+    if weread_per is None:
+        print("[失败] 源注册表有问题：缺少微信读书源（sources.weread）",
+              file=sys.stderr)
+        return 1
+    weread_per = int(weread_per)
     per_award = int(cfg["perAward"])
 
     try:
@@ -60,7 +66,10 @@ def main() -> int:
         "todayBucketKey": key,
         "todaySeconds": secs,
         "todayMinutes": round(secs / 60, 1),
-        "thresholdSeconds": weread_per,
+        # 掉 1 只实际需要的微信读书秒数（与 dex.json 的 today.threshold 同义）
+        "thresholdSeconds": per_award * weread_per,
+        # 1 个额度 = 多少微信读书秒数
+        "creditSeconds": weread_per,
         "reached": credit >= per_award,
         "credit": credit,
         "perAward": per_award,

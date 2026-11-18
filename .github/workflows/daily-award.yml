@@ -46,7 +46,7 @@ jobs:
           cp data/pokedex.json site/pokedex.json
           git config user.name "Mavis"
           git config user.email "mavis@local"
-          git add data/dex.json site/dex.json site/sources.json data/sources.json
+          git add data/dex.json site/dex.json site/sources.json data/sources.json site/pokedex.json
           if git diff --cached --quiet; then
             echo "状态无变化，跳过发布"
           else
