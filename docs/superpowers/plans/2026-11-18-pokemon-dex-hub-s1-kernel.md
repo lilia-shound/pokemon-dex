@@ -535,9 +535,9 @@ class MigrateStateTest(unittest.TestCase):
     def test_already_v2_keeps_ledger(self):
         st = lg.migrate_state({"version": 2, "collected": [],
                                "ledger": {"2026-11-16": {"weread": 900}},
-                               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}})
+                               "chains": {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}}})
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}})
 
     def test_v2_entry_keeps_explicit_sources(self):
         st = lg.migrate_state({"version": 2, "collected": [
@@ -811,13 +811,13 @@ class BuildStateTest(unittest.TestCase):
         old = {"collected": [{"id": "0001", "date": "2026-11-14"}]}
         today_sources = {"weread": 900}
         ledger_data = {"2026-11-16": {"weread": 900}}
-        chains = {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}
+        chains = {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}}
         dc.build_state(old, cfg(), "2026-11-16", today_sources, ledger_data, chains,
                        [{"id": "0002", "date": "2026-11-16"}])
         self.assertEqual(old, {"collected": [{"id": "0001", "date": "2026-11-14"}]})
         self.assertEqual(today_sources, {"weread": 900})
         self.assertEqual(ledger_data, {"2026-11-16": {"weread": 900}})
-        self.assertEqual(chains, {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
+        self.assertEqual(chains, {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}})
 
     def test_same_day_two_awards_are_kept(self):
         """build_state 不按日期去重 —— 幂等由调用方保证（见 docstring）。"""
@@ -853,9 +853,9 @@ class BuildStateTest(unittest.TestCase):
     def test_ledger_and_chains_passed_through(self):
         st = dc.build_state({"collected": []}, cfg(), "2026-11-16", {},
                             {"2026-11-16": {"weread": 900}},
-                            {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}, [])
+                            {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}}, [])
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}})
 
 
 if __name__ == "__main__":
@@ -978,41 +978,37 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_dex_
 ## Task 4: 进化链分组与养成
 
 **Files:**
-- Modify: `scripts/dex_core.py`（追加 `chain_key` / `advance_chain`）
-- Create: `tests/test_chains.py`
+- Modify: `scripts/dex_core.py`（追加 `chain_key` / `advance_chain` / `chain_care` / `chain_shiny_ready`）
+- Modify: `tests/test_chains.py`
 
 **Interfaces:**
 - Consumes: 无
 - Produces:
   - `scripts.dex_core.chain_key(pokemon: dict) -> str` —— 进化链的唯一标识（基础形态名）
-  - `scripts.dex_core.advance_chain(chains: dict, pokemon: dict) -> dict` —— **原地修改** `chains` 并返回它
+  - `scripts.dex_core.advance_chain(chains: dict, pokemon: dict, day: str) -> dict`
+    —— **原地修改** `chains`（建/取该链条目）并返回它的链状态；无链名时返回 `{}`
+  - `scripts.dex_core.chain_care(chain: dict, day: str) -> int` —— 这条链养了多少天
+  - `scripts.dex_core.chain_shiny_ready(chain: dict, day: str) -> bool` —— 保底能不能兑现
 
-链状态结构：`{"care": int, "pendingShiny": int, "nextShinyAt": int}`
+链状态结构：`{"firstDate": "YYYY-MM-DD", "lastShinyDate": "YYYY-MM-DD" | None}`
 
-> **★ 这一层为什么只做「分组 + 养成 + 保底闪光」，不做形态改写**
+> **★ care 为什么必须按日历天（2026-11-18 人类裁决）**
 >
-> 真实数据（`data/pokedex.json`，1028 只，42arch 抓的）把**分叉的进化关系拍平成了直线**：
-> 伊布的 8 个分支被拍成一条 9 级的直线、走路草链的 3 条支线混在一起，
-> 而且**同一条链的成员拿到的 `evolution` 数组并不一致**
-> （走路草是 6 个名字 `['走路草','臭臭花','霸王花','走路草','臭臭花','美丽花']`，
-> 霸王花只有 3 个 `['走路草','臭臭花','霸王花']`）。
+> 旧口径是「每次抽到这条链 `care += 1`」，但 `pick` 只从**未收服**池里抽
+> ⇒ 同一条链最多被抽「链大小」次，而最大链只有 **9 只**（伊布族）
+> ⇒ `care` 的理论上限是 9，永远够不到 30 ⇒ **保底闪光数学上不可能触发**。
+> 而且 202/543 条链只有 1 个成员（37%）、414 条 ≤ 2 个成员 —— 靠抽卡次数根本养不起来。
 >
-> 后果（已实测）：
-> - 用「整条数组拼起来」当链 key → **543 条生物链被拆成 588 个 key**，19 条链被拆开，
->   care 被摊薄到不同 key 上；
-> - 「这一阶对应哪只宝可梦」在分叉链上**没有唯一答案**（美丽花和霸王花是兄弟形态，
->   但在拍平的数据里被排成同一级）。
+> 改成**按日历天**（该链首次被收服日起算）后可行：任意 30 天窗口里她抽到 ~20 条链
+> ⇒ 同时有 ~20 条已养满，每张卡命中「已养满且还有成员没收齐」的链约 2~3%
+> ⇒ **期望 1~2 个月出一次必闪**。
 >
-> 所以：**链分组用「基础形态名」**（同链所有成员共有的第一个名字，本地可算、不需要全局上下文；
-> 实测分组结果 = 543 组，正好等于生物链数），
-> **形态改写（`form` 字段随阶数变化）整层挪到 S6** —— S6 届时要么修数据管线重生成
-> `pokedex.json`，要么改成「按基础形态分组、显示组内代表形态」的简化规则。
->
-> 本层保留的是真正值钱的那半：**养 → 保底出闪**。
+> **★ care 必须是从日期算出来的，不能是累加计数器**：cron 的纪律是「只有真抽到才推状态」
+> ⇒ 平时不推 ⇒ 累加计数器会整天数丢失。日期锚点不受影响。
 
 - [ ] **Step 1: 写失败的测试**
 
-创建 `tests/test_chains.py`：
+改写 `tests/test_chains.py`：
 
 ```python
 import json
@@ -1029,13 +1025,13 @@ VENUSAUR = {"id": "0003", "nameZh": "妙蛙花",
             "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
 PIKACHU = {"id": "0025", "nameZh": "皮卡丘",
            "evolution": ["皮丘", "皮卡丘", "雷丘", "皮丘", "皮卡丘", "雷丘"]}
-PIKACHU_DUPE = {"id": "0025b", "nameZh": "皮卡丘",
-                "evolution": ["皮丘", "皮卡丘", "雷丘"]}
 # 真实数据里同链成员的 evolution 数组并不一致 —— 这正是旧 key 算法的坑
 WALKING_GRASS = {"id": "0004", "nameZh": "走路草",
                  "evolution": ["走路草", "臭臭花", "霸王花", "走路草", "臭臭花", "美丽花"]}
 BEAUTIFUL_FLOWER = {"id": "0005", "nameZh": "霸王花",
                      "evolution": ["走路草", "臭臭花", "霸王花"]}
+
+DAY = "2026-11-14"
 
 
 class ChainKeyTest(unittest.TestCase):
@@ -1057,60 +1053,76 @@ class ChainKeyTest(unittest.TestCase):
 
 
 class AdvanceChainTest(unittest.TestCase):
-    def test_first_care_creates_entry(self):
+    def test_creates_entry_with_first_date(self):
         chains = {}
-        dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["care"], 1)
-        self.assertEqual(st["pendingShiny"], 0)
-        self.assertEqual(st["nextShinyAt"], 30)
+        st = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertEqual(st["firstDate"], DAY)
+        self.assertIsNone(st["lastShinyDate"])
+        self.assertEqual(chains["妙蛙种子"], st)
 
     def test_mutates_in_place_and_returns_same_object(self):
         chains = {}
-        got = dc.advance_chain(chains, BULBASAUR)
-        self.assertIs(got, chains)
+        got = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertIs(got, chains["妙蛙种子"])
+        self.assertIs(got, dc.advance_chain(chains, BULBASAUR, "2026-11-20"))
 
-    def test_care_accumulates(self):
+    def test_existing_first_date_is_kept(self):
+        """再次抽到同一条链不重置计时起点。"""
         chains = {}
-        for _ in range(5):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子"]["care"], 5)
-
-    def test_thirty_care_grants_one_guarantee(self):
-        chains = {}
-        for _ in range(30):
-            dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 1)
-        self.assertEqual(st["nextShinyAt"], 60)
-
-    def test_sixty_care_grants_second_guarantee(self):
-        chains = {}
-        for _ in range(60):
-            dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 2)
-        self.assertEqual(st["nextShinyAt"], 90)
-
-    def test_guarantee_rhythm_is_fixed_not_sliding(self):
-        """care 跳变时保底节奏不该整体后移：nextShinyAt 每次 +30，不是 care+30。"""
-        chains = {"妙蛙种子": {"care": 35, "pendingShiny": 0, "nextShinyAt": 30}}
-        dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 1)
-        self.assertEqual(st["nextShinyAt"], 60)
-
-    def test_other_chain_is_independent(self):
-        chains = {}
-        dc.advance_chain(chains, BULBASAUR)
-        dc.advance_chain(chains, PIKACHU)
-        self.assertEqual(chains["妙蛙种子"]["care"], 1)
-        self.assertEqual(chains["皮丘"]["care"], 1)
+        dc.advance_chain(chains, BULBASAUR, DAY)
+        st = dc.advance_chain(chains, IVYSAUR, "2026-12-01")
+        self.assertEqual(st["firstDate"], DAY)
 
     def test_no_evolution_creates_no_entry(self):
         chains = {}
-        dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"})
+        self.assertEqual(dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"}, DAY), {})
         self.assertEqual(chains, {})
+
+
+class ChainCareTest(unittest.TestCase):
+    def test_care_is_days_since_first_collection(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertEqual(dc.chain_care(chain, "2026-11-14"), 0)
+        self.assertEqual(dc.chain_care(chain, "2026-11-15"), 1)
+        self.assertEqual(dc.chain_care(chain, "2026-12-14"), 30)
+
+    def test_care_zero_without_first_date(self):
+        self.assertEqual(dc.chain_care({}, "2026-11-14"), 0)
+
+    def test_care_zero_on_bad_date(self):
+        chain = {"firstDate": "不是日期", "lastShinyDate": None}
+        self.assertEqual(dc.chain_care(chain, "2026-11-14"), 0)
+
+
+class ChainShinyReadyTest(unittest.TestCase):
+    def test_not_ready_before_thirty_days(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertFalse(dc.chain_shiny_ready(chain, "2026-12-13"))   # 29 天
+
+    def test_ready_at_thirty_days(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertTrue(dc.chain_shiny_ready(chain, "2026-12-14"))    # 30 天
+
+    def test_not_ready_again_right_after_a_shiny(self):
+        """兑现过一次后，要再养满 30 天才能再兑现。"""
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": "2026-12-14"}
+        self.assertFalse(dc.chain_shiny_ready(chain, "2026-12-20"))
+
+    def test_ready_again_thirty_days_after_the_last_shiny(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": "2026-12-14"}
+        self.assertTrue(dc.chain_shiny_ready(chain, "2027-01-13"))   # 距上次 30 天
+
+    def test_care_grows_with_calendar_not_with_chain_size(self):
+        """★ 这条是「旧口径的 bug」的护栏。
+
+        旧实现按抽卡次数累计 care，而 pick 只从未收服池抽 ⇒ 一条链最多被抽「链大小」次
+        （最大链只有 9 只）⇒ care 上限 9，永远够不到 30 ⇒ 保底闪光数学上不可能触发。
+        改成按日历天后，链的大小不再影响可达性。
+        """
+        chains = {}
+        dc.advance_chain(chains, VENUSAUR, DAY)          # 只有 1 只成员的链
+        self.assertEqual(dc.chain_care(chains["妙蛙种子"], "2026-12-14"), 30)
+        self.assertTrue(dc.chain_shiny_ready(chains["妙蛙种子"], "2026-12-14"))
 
 
 class RealPokedexTest(unittest.TestCase):
@@ -1141,11 +1153,27 @@ class RealPokedexTest(unittest.TestCase):
         self.assertEqual(dc.chain_key(self.by_name["皮卡丘"]), "皮丘")
 
     def test_grouping_matches_biological_chain_count(self):
-        """用基础形态名分组 → 543 组，正好等于生物链数。"""
+        """543 = 真实生物链数。
+
+        推导：按「evolution 数组共现」建连通分量（另一种自然的链定义），
+        得到的连通分量数 = 543，且与基础形态名分组逐组一致。
+        pokedex.json 重生成后这个数会变 —— 那时该重新核对，而不是直接改数字。
+        """
         groups = {}
         for x in self.pokedex:
             groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
         self.assertEqual(len(groups), 543)
+
+    def test_no_chain_is_longer_than_nine_members(self):
+        """★ 「按抽卡次数累计 care」为什么不可能触发 —— 链的大小上限。
+
+        pick 只从未收服池抽 ⇒ 同一条链最多被抽「链大小」次。
+        最大链是伊布族（9 只）⇒ 旧口径的 care 上限是 9 < 30。
+        """
+        groups = {}
+        for x in self.pokedex:
+            groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
+        self.assertLessEqual(max(len(v) for v in groups.values()), 9)
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
@@ -1154,13 +1182,17 @@ class RealPokedexTest(unittest.TestCase):
 cd /workspace/pokemon-reading-dex && python3 -B run_tests.py
 ```
 
-Expected: FAIL，报 `AttributeError: module 'scripts.dex_core' has no attribute 'chain_key'`
+Expected: FAIL，报 `AttributeError: module 'scripts.dex_core' has no attribute 'advance_chain'`
 
 - [ ] **Step 3: 在 `scripts/dex_core.py` 里实现**
 
 追加到 `scripts/dex_core.py` 末尾：
 
 ```python
+# 这条链要养多少天才能兑现一次保底闪光
+SHINY_CARE_DAYS = 30
+
+
 def _chain_names(pokemon: dict) -> list[str]:
     """进化链上的名字，去重并保留顺序。
 
@@ -1189,26 +1221,62 @@ def chain_key(pokemon: dict) -> str:
     return names[0] if names else ""
 
 
-def advance_chain(chains: dict, pokemon: dict) -> dict:
-    """给这条链加一天培养。原地修改并返回 chains。
+def advance_chain(chains: dict, pokemon: dict, day: str) -> dict:
+    """登记「这个发奖日抽到了这条链的宝可梦」。原地修改 chains 并返回链状态。
 
-    care 每多 30 天给一次保底闪光（pendingShiny += 1）——
-    下次抽到这个链的宝可梦时可以强制闪光。把「一次性运气」换成「持续投入」。
+    链状态：
+        firstDate     —— 该链首次被收服的日期（care 的计时起点）
+        lastShinyDate —— 上次兑现保底的日期（None = 还没兑现过）
 
-    注：形态改写（进化阶数 → collected[].form）不在本层做 ——
-    分叉的进化关系在拍平的数据里没有唯一的「这一阶对应哪只」，那是 S6 的活。
+    注意是**原地修改**，且返回的是链状态本身（不是链状态的拷贝）。
     """
     key = chain_key(pokemon)
     if not key:
-        return chains
-    st = chains.setdefault(key, {"care": 0, "pendingShiny": 0, "nextShinyAt": 30})
-    st["care"] = int(st.get("care", 0)) + 1
-    if st["care"] >= int(st.get("nextShinyAt", 30)):
-        st["pendingShiny"] = int(st.get("pendingShiny", 0)) + 1
-        # 节奏固定：每次 +30，而不是 care + 30 —— care 跳变时不该整体后移
-        st["nextShinyAt"] = int(st.get("nextShinyAt", 30)) + 30
-    return chains
+        return {}
+    st = chains.get(key)
+    if st is None:
+        st = {"firstDate": day, "lastShinyDate": None}
+        chains[key] = st
+    return st
+
+
+def chain_care(chain: dict, day: str) -> int:
+    """这条链养了多少天（从首次被收服那天算起）。
+
+    按**日历天**算，不是按抽卡次数 —— 后者数学上不可能够到保底门槛
+    （pick 只从未收服池抽 ⇒ 一条链最多被抽「链大小」次，最大链只有 9 只）。
+    """
+    first = (chain or {}).get("firstDate")
+    if not first:
+        return 0
+    try:
+        start = datetime.date.fromisoformat(str(first))
+        now = datetime.date.fromisoformat(str(day))
+    except ValueError:
+        return 0
+    return (now - start).days
+
+
+def chain_shiny_ready(chain: dict, day: str) -> bool:
+    """这条链的保底闪光能不能兑现。
+
+    规则：养满 SHINY_CARE_DAYS 天 → 可以兑现；
+    兑现过一次后，要再养满 SHINY_CARE_DAYS 天才能再兑现。
+    """
+    if chain_care(chain, day) < SHINY_CARE_DAYS:
+        return False
+    last = (chain or {}).get("lastShinyDate")
+    if not last:
+        return True
+    try:
+        last_day = datetime.date.fromisoformat(str(last))
+        now = datetime.date.fromisoformat(str(day))
+    except ValueError:
+        return True
+    return (now - last_day).days >= SHINY_CARE_DAYS
 ```
+
+（`scripts/dex_core.py` 需要 `import datetime` —— 已有就复用。）
 
 - [ ] **Step 4: 跑测试，确认通过**
 
@@ -1221,7 +1289,7 @@ Expected: 全部 PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chains.py && git commit -m "feat: 进化链分组与养成（基础形态名分组 + 保底闪光）"
+cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chains.py && git commit -m "feat: 进化链养成改按日历天（保底不再数学上不可达）"
 ```
 
 ---
@@ -1370,8 +1438,8 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
        def test_migrate_state_does_not_alias_ledger_or_chains(self):
            """返回值与入参不能共享 ledger / chains 的内层 dict。"""
            src = {"ledger": {"2026-11-14": {"weread": 900}},
-                  "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0,
-                                          "nextShinyAt": 30}}}
+                  "chains": {"妙蛙种子": "firstDate": "2026-11-14",
+                                          "lastShinyDate": None}}
            out = lg.migrate_state(src)
            out["ledger"]["2026-11-14"]["weread"] = 1800
            out["chains"]["妙蛙种子"]["care"] = 99
@@ -1637,26 +1705,27 @@ class MultiSourceAwardTest(unittest.TestCase):
         chains = self._state()["chains"]
         self.assertEqual(len(chains), 1)
         entry = list(chains.values())[0]
-        self.assertEqual(entry["care"], 1)
-        self.assertEqual(entry["pendingShiny"], 0)
-        self.assertEqual(entry["nextShinyAt"], 30)
+        self.assertEqual(entry["firstDate"], DAY)
+        self.assertIsNone(entry["lastShinyDate"])
         self.assertNotIn("stage", entry)   # 形态改写在 S6，S1 的链状态没有 stage
 
     # ---- 保底闪光：消费与强制闪光 ----
 
-    def _seed_chain(self, key, care=30, pending=1):
-        """往状态里塞一条已经养到保底线的链。"""
+    def _seed_chain(self, key, first_date):
+        """往状态里塞一条链。first_date 是它首次被收服的日期（care 的计时起点）。"""
         state = {
             "version": 2, "collected": [], "streak": 0, "lastAwardDate": None,
             "ledger": {},
-            "chains": {key: {"care": care, "pendingShiny": pending,
-                             "nextShinyAt": care + 30}},
+            "chains": {key: {"firstDate": first_date, "lastShinyDate": None}},
         }
         self.dex_path.write_text(json.dumps(state), encoding="utf-8")
 
     def test_guarantee_is_consumed_and_forces_shiny(self):
-        """养到保底线 → 这条链下一次发奖必闪，且保底次数减 1。"""
-        self._seed_chain("妙蛙种子", care=30, pending=1)
+        """养满 30 天后抽到这条链 → 必闪，并记下兑现日。
+
+        first_date = 2026-10-15 → 距 DAY(2026-11-14) 正好 30 天。
+        """
+        self._seed_chain("妙蛙种子", "2026-10-15")
         fake = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
                 "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
         with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
@@ -1664,22 +1733,34 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertIn("[保底]", out)
         state = self._state()
         self.assertTrue(state["collected"][0]["shiny"])
-        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 0)
+        self.assertEqual(state["chains"]["妙蛙种子"]["lastShinyDate"], DAY)
+
+    def test_guarantee_not_ready_one_day_early(self):
+        """养到第 29 天还不兑现。"""
+        self._seed_chain("妙蛙种子", "2026-10-16")
+        fake = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+        with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
+            rc, out = self._run({KEY_20261114: 1800})
+        self.assertNotIn("[保底]", out)
+        state = self._state()
+        self.assertFalse(state["collected"][0]["shiny"])
+        self.assertIsNone(state["chains"]["妙蛙种子"]["lastShinyDate"])
 
     def test_guarantee_not_consumed_by_other_chain(self):
         """保底是按链算的 —— 抽到别的链不吃这条链的保底。"""
-        self._seed_chain("妙蛙种子", care=30, pending=1)
+        self._seed_chain("妙蛙种子", "2026-10-15")
         fake = {"id": "0025", "nameZh": "皮卡丘", "shiny": False,
                 "evolution": ["皮丘", "皮卡丘", "雷丘"]}
         with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
             rc, out = self._run({KEY_20261114: 1800})
         self.assertNotIn("[保底]", out)
         state = self._state()
-        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 1)
-        self.assertEqual(state["chains"]["皮丘"]["care"], 1)
+        self.assertIsNone(state["chains"]["妙蛙种子"]["lastShinyDate"])
+        self.assertEqual(state["chains"]["皮丘"]["firstDate"], DAY)
 
-    def test_chain_care_counts_days_not_cards(self):
-        """两天补发各抽到同一链 → care +2（一天一次），不是 +4。"""
+    def test_chain_first_date_is_the_earliest_award_day(self):
+        """两天补发各抽到同一链 → firstDate 取最早那个发奖日，不被覆盖。"""
         fake_a = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
                   "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
         fake_b = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
@@ -1689,7 +1770,7 @@ class MultiSourceAwardTest(unittest.TestCase):
             rc, out = self._run({KEY_20261113: 1800, KEY_20261114: 1800})
         state = self._state()
         self.assertEqual(len(state["collected"]), 2)
-        self.assertEqual(state["chains"]["妙蛙种子"]["care"], 2)
+        self.assertEqual(state["chains"]["妙蛙种子"]["firstDate"], "2026-11-13")
 
 
 if __name__ == "__main__":
@@ -1834,12 +1915,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"池子空了 —— {pokedex_total()} 只全部收集完成！")
             break
 
-        key = dc.chain_key(award)
-        chain_state = chains.get(key)
-        if chain_state and int(chain_state.get("pendingShiny", 0)) > 0:
+        # 链养成：登记「今天抽到了这条链」，再判断保底能不能兑现
+        chain_state = dc.advance_chain(chains, award, day)
+        if chain_state and dc.chain_shiny_ready(chain_state, day):
             award["shiny"] = True
-            chain_state["pendingShiny"] = int(chain_state["pendingShiny"]) - 1
-            print(f"[保底] {key} 养到 {chain_state.get('care', 0)} 天，这次必闪")
+            chain_state["lastShinyDate"] = day
+            print(f"[保底] {dc.chain_key(award)} 养到 "
+                  f"{dc.chain_care(chain_state, day)} 天，这次必闪")
 
         day_credits = src.credit_for_day(cfg, ledger_data.get(day) or {})
         contributors = [sid for sid, n in day_credits.items() if n > 0]
@@ -1860,7 +1942,6 @@ def main(argv: list[str] | None = None) -> int:
         new_awards.append(award_full)
         owned.add(award["id"])
         awarded_dates.add(day)
-        dc.advance_chain(chains, award)
 
     state = dc.build_state(old, cfg, today, today_sources, ledger_data,
                            chains, new_awards)
@@ -2230,6 +2311,9 @@ cd /workspace/pokemon-reading-dex && export GIT_SSL_NO_VERIFY=1 && git -c http.e
 - `dex_core.build_state(old, cfg, today, today_sources, ledger_data, chains, new_awards)`
   —— 参数顺序在 Task 3 的测试与 Task 5 的调用里一致。
 - `dex_core.advance_chain(chains, pokemon)` **原地修改** `chains` 并返回它 —— Task 4 的测试锁定。
-- 链状态键：**`care` / `pendingShiny` / `nextShinyAt`**（**没有 `stage`** —— 形态改写是 S6 的活）——
-  Task 4 定义，Task 5 读 `pendingShiny`，Task 3 的 `build_state` 原样透传 `chains`。三处一致。
+- 链状态键：**`firstDate` / `lastShinyDate`**（**没有 `stage`** —— 形态改写是 S6 的活；
+  也没有 `care` / `pendingShiny` / `nextShinyAt` —— care 改成**按日历天从 firstDate 算出来**，
+  2026-11-18 人类裁决：旧口径「按抽卡次数累计」在真实数据下数学上不可能触发）——
+  Task 4 定义，Task 5 读 `chain_shiny_ready` / 写 `lastShinyDate`，
+  Task 3 的 `build_state` 原样透传 `chains`。三处一致。
 - `collected[]` 条目字段：`id` / `nameZh` / `shiny` / `at` / `date` / `sources` / `form` —— Task 3、4、5 一致。
