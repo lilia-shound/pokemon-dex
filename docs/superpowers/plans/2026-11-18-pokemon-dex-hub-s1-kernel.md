@@ -19,7 +19,7 @@
 - **Python 3.11，标准库 only。** 不引入 pytest、不引入 requests、不引入 pydantic。`run_tests.py` 用 `unittest.TestLoader().discover()`，新测试文件必须能被它自动发现。
 - **测试放 `tests/`，文件名 `test_*.py`，类名 `XxxTest`，方法名 `test_xxx`。** 参考既有 `tests/test_dex_core.py` 的写法。
 - **中文注释与中文 docstring。** 现有代码全是中文，follow 它。
-- **`scripts/sources.py` / `scripts/ledger.py` / `scripts/dex_core.py` 三个模块一律不碰网络、不碰文件。** 唯一的 IO 在 `scripts/award.py`（读配置、读状态、写状态）。
+- **`scripts/ledger.py` / `scripts/dex_core.py` 一律不碰网络、不碰文件；`scripts/sources.py` 只有 `load_config` 一处 IO（读注册表）。** 其余 IO 在 `scripts/award.py`（读状态、写状态）。纯函数（`validate_config` / `credit_for_day` / `day_credit` / `merge_amounts` / `prune` / `pick` …）全部不碰 IO，可直接单测。
 - **结算只认北京时间（Asia/Shanghai）。** 所有日期是 `YYYY-MM-DD` 字符串。
 - **额度按天分桶，跨天清零。** 当天攒超的额度不结转。
 - **一天最多 1 只。** 由注册表根级 `maxPerDay` 表达，当前值 1。

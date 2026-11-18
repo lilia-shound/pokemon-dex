@@ -363,7 +363,7 @@ GitHub Actions 里用 `${{ github.token }}`（workflow 已有 `permissions: cont
 | `scripts/dex_core.py` | 抽卡、streak、状态机（保持纯逻辑） | 无 |
 | `scripts/award.py` | 编排：取数 → 折算 → 判定 → 抽 → 写盘 → 推送 | 全部 |
 
-`sources.py` / `ledger.py` / `dex_core.py` 全部不碰网络、不碰文件（便于单测）。
+`scripts/sources.py` / `scripts/ledger.py` / `scripts/dex_core.py` 里，**除了 `sources.load_config` 读注册表这一处，其余一律不碰网络、不碰文件**（便于单测）。状态文件的读写在 `scripts/award.py`。
 
 ### 8.2 S2 网页版番茄钟
 
