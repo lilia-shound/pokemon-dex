@@ -78,9 +78,9 @@ class MigrateStateTest(unittest.TestCase):
     def test_already_v2_keeps_ledger(self):
         st = lg.migrate_state({"version": 2, "collected": [],
                                "ledger": {"2026-11-16": {"weread": 900}},
-                               "chains": {"a→b": {"care": 1, "stage": 0}}})
+                               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}})
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
     def test_v2_entry_keeps_explicit_sources(self):
         st = lg.migrate_state({"version": 2, "collected": [

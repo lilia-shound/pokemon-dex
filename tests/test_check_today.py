@@ -143,11 +143,10 @@ class CheckTodayJsonSemanticsTest(unittest.TestCase):
     def test_threshold_is_award_cost_not_one_credit(self):
         """thresholdSeconds = 掉 1 只实际需要的秒数（1800），creditSeconds = 1 个额度（900）。"""
         d = self._json(1776)
+        # 与 data/dex.json 的 today.threshold 同名同义
         self.assertEqual(d["thresholdSeconds"], 1800)
         self.assertEqual(d["creditSeconds"], 900)
         self.assertEqual(d["perAward"], 2)
-        # 与 data/dex.json 的 today.threshold 同名同义
-        self.assertEqual(d["thresholdSeconds"], 1800)
 
     def test_reached_agrees_with_threshold_comparison(self):
         """todaySeconds >= thresholdSeconds 必须和 reached 同真同假。"""

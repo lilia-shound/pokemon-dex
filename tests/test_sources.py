@@ -94,6 +94,18 @@ class ValidateConfigTest(unittest.TestCase):
         with self.assertRaises(src.SourceConfigError):
             src.validate_config(c)
 
+    def test_rejects_config_without_weread_source(self):
+        """缺微信读书源 → 注册表非法。
+
+        少了它，发放器会算出 `threshold = 0` 并写进对外的 dex.json
+        （图鉴页渲染成「30/0 分」、进度条满格），而且没有任何报错。
+        这条要求放在 validate_config 里，award.py 与 check_today.py 两个入口自动一致。
+        """
+        c = cfg()
+        del c["sources"]["weread"]
+        with self.assertRaises(src.SourceConfigError):
+            src.validate_config(c)
+
 
 class EnabledSourcesTest(unittest.TestCase):
     def test_only_enabled_returned(self):
@@ -225,6 +237,38 @@ class LoadConfigTest(unittest.TestCase):
             p.write_text(json.dumps({"version": 1}), encoding="utf-8")
             with self.assertRaises(src.SourceConfigError):
                 src.load_config(p)
+
+
+class RegistryDexConsistencyTest(unittest.TestCase):
+    """对外的 dex.json 的 today.threshold 必须等于注册表算出来的值。
+
+    两份文件是各自写各自更新的：改了注册表**不会**自动改已发布的 dex.json
+    （dex.json 是发放器跑出来的，注册表是人手改的）—— 于是图鉴页会显示一个
+    和实际口径不一致的进度条（甚至「30/0 分」）。这条测试把这个缝钉住：
+    改了注册表就要重跑发放器并把新的 dex.json 一起提交。
+    """
+
+    @staticmethod
+    def _expected_threshold(registry: dict) -> int:
+        """掉 1 只实际需要的微信读书秒数 = perAward × weread.per。"""
+        return int(registry["perAward"]) * int(registry["sources"]["weread"]["per"])
+
+    def _dex_threshold(self, path: pathlib.Path) -> int:
+        dex = json.loads(path.read_text(encoding="utf-8"))
+        return int(dex["today"]["threshold"])
+
+    def test_state_dex_threshold_matches_registry(self):
+        registry = registry_raw()
+        dex_path = REGISTRY_PATH.parent / "dex.json"
+        self.assertEqual(self._dex_threshold(dex_path),
+                         self._expected_threshold(registry))
+
+    def test_published_site_dex_threshold_matches_registry(self):
+        """发布到 gh-pages 的那份也要一致（deploy.sh 是 cp 出来的，但两边各自提交）。"""
+        registry = registry_raw()
+        site_dex = REGISTRY_PATH.parent.parent / "site" / "dex.json"
+        self.assertEqual(self._dex_threshold(site_dex),
+                         self._expected_threshold(registry))
 
 
 if __name__ == "__main__":

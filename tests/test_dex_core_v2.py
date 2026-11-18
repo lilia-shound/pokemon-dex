@@ -131,13 +131,13 @@ class BuildStateTest(unittest.TestCase):
         old = {"collected": [{"id": "0001", "date": "2026-11-14"}]}
         today_sources = {"weread": 900}
         ledger_data = {"2026-11-16": {"weread": 900}}
-        chains = {"a→b": {"care": 1, "stage": 0}}
+        chains = {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}
         dc.build_state(old, cfg(), "2026-11-16", today_sources, ledger_data, chains,
                        [{"id": "0002", "date": "2026-11-16"}])
         self.assertEqual(old, {"collected": [{"id": "0001", "date": "2026-11-14"}]})
         self.assertEqual(today_sources, {"weread": 900})
         self.assertEqual(ledger_data, {"2026-11-16": {"weread": 900}})
-        self.assertEqual(chains, {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(chains, {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
     def test_same_day_two_awards_are_kept(self):
         """build_state 不按日期去重 —— 幂等由调用方保证（见 docstring）。"""
@@ -173,9 +173,9 @@ class BuildStateTest(unittest.TestCase):
     def test_ledger_and_chains_passed_through(self):
         st = dc.build_state({"collected": []}, cfg(), "2026-11-16", {},
                             {"2026-11-16": {"weread": 900}},
-                            {"a→b": {"care": 1, "stage": 0}}, [])
+                            {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}, [])
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
 
 if __name__ == "__main__":
