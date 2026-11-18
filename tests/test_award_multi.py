@@ -134,6 +134,28 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertEqual([c["date"] for c in state["collected"]],
                          ["2026-11-10", "2026-11-11", "2026-11-12"])
 
+    def test_backlog_converges_across_runs(self):
+        """积压 5 天、maxBackfill=3 → 下一轮把剩下的发完，今天不会被饿死。"""
+        keys = {1794240000: 1800,   # 11-10
+                1794326400: 1800,   # 11-11
+                1794412800: 1800,   # 11-12
+                1794499200: 1800,   # 11-13
+                1794585600: 1800}   # 11-14
+        rc, out = self._run(keys)
+        self.assertEqual(rc, 0)
+        state = self._state()
+        self.assertEqual(len(state["collected"]), 3)          # 第一轮只发 3 天
+        self.assertIn("[跳过]", out)
+
+        # 第二轮：剩下 2 天 + 今天，一次结清
+        rc, out = self._run(keys)
+        self.assertEqual(rc, 0)
+        state = self._state()
+        self.assertEqual(len(state["collected"]), 5)
+        self.assertEqual([c["date"] for c in state["collected"]],
+                         ["2026-11-10", "2026-11-11", "2026-11-12",
+                          "2026-11-13", "2026-11-14"])
+
     def test_one_day_one_award_even_with_large_amount(self):
         """一天不管读多久都只掉一只（额度够多也不多发）。"""
         rc, out = self._run({KEY_20261114: 3600})
@@ -242,7 +264,12 @@ class MultiSourceAwardTest(unittest.TestCase):
     # ---- --force：无视达标线发今天，积压日照常补发 ----
 
     def test_force_adds_today_on_top_of_backlog(self):
-        """--force = 无视达标线把今天也发掉；积压日仍然照常补发。"""
+        """--force 会补今天这一张（今天没达标也发）。
+
+        **这条不覆盖「积压日 + 今天 一次发两张」** —— 11-13 在第一轮就发掉了，
+        force 那一轮 `pending_days` 返回 `[]`，根本没有积压日可补发。
+        那个场景由下面的 `test_force_awards_backlog_and_today_in_one_run` 覆盖。
+        """
         self._run({KEY_20261113: 1800})          # 先补掉 11-13
         rc, out = self._run({KEY_20261114: 100},  # 今天没达标
                             argv=["--force"])
@@ -251,6 +278,20 @@ class MultiSourceAwardTest(unittest.TestCase):
         state = self._state()
         self.assertEqual(len(state["collected"]), 2)
         self.assertEqual(state["collected"][1]["date"], DAY)
+
+    def test_force_awards_backlog_and_today_in_one_run(self):
+        """同一轮里既有积压日待补发、又带 --force → 积压日 + 今天各一张。
+
+        这条钉的是「force 是往 pending 里追加今天，而不是替换整个列表」。
+        """
+        rc, out = self._run({KEY_20261113: 1800, KEY_20261114: 100},
+                            argv=["--force"])
+        self.assertEqual(rc, 0)
+        self.assertIn("补发 2026-11-13", out)
+        state = self._state()
+        self.assertEqual(len(state["collected"]), 2)
+        self.assertEqual([c["date"] for c in state["collected"]],
+                         ["2026-11-13", "2026-11-14"])
 
     # ---- 迁移（--migrate-only）----
 
