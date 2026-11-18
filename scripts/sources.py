@@ -1,0 +1,97 @@
+"""源注册表：读 sources.json、校验结构、把各源的原始量折算成额度。
+
+额度是中枢的中间货币：不同行为的单位不可通约（秒 / 分钟 / 个词），
+但「每天掉一只宝可梦」的名额是统一的。每个源自己声明「多少原始单位 = 1 额度」。
+
+本模块不碰网络；读文件只在 load_config 一处。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+
+ROOT_KEYS = ("perAward", "maxPerDay", "maxBackfill", "ledgerDays")
+SOURCE_KEYS = ("name", "unit", "per")
+
+
+class SourceConfigError(RuntimeError):
+    """sources.json 结构不对，或读不出来。"""
+
+
+def _is_int(v) -> bool:
+    # bool 是 int 的子类，但 True 不该被当成 1 接受
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def validate_config(cfg: dict) -> None:
+    """校验注册表结构。任何不合法的形状都抛 SourceConfigError。"""
+    if not isinstance(cfg, dict):
+        raise SourceConfigError("sources.json 顶层必须是对象")
+    for key in ROOT_KEYS:
+        if key not in cfg:
+            raise SourceConfigError(f"sources.json 缺少 {key}")
+        if not _is_int(cfg[key]) or cfg[key] < 1:
+            raise SourceConfigError(f"{key} 必须是 >=1 的整数，实际 {cfg[key]!r}")
+    sources = cfg.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise SourceConfigError("sources.json 的 sources 必须是非空对象")
+    for sid, s in sources.items():
+        if not isinstance(s, dict):
+            raise SourceConfigError(f"源 {sid} 必须是对象")
+        for key in SOURCE_KEYS:
+            if key not in s:
+                raise SourceConfigError(f"源 {sid} 缺少 {key}")
+        if not _is_int(s["per"]) or s["per"] < 1:
+            raise SourceConfigError(f"源 {sid} 的 per 必须是 >=1 的整数，实际 {s['per']!r}")
+        if s.get("mode") not in ("pull", "push"):
+            raise SourceConfigError(f"源 {sid} 的 mode 必须是 pull 或 push，实际 {s.get('mode')!r}")
+        if "maxPerDay" in s and (not _is_int(s["maxPerDay"]) or s["maxPerDay"] < 1):
+            raise SourceConfigError(f"源 {sid} 的 maxPerDay 必须是 >=1 的整数")
+
+
+def load_config(path) -> dict:
+    """读 sources.json 并校验。失败抛 SourceConfigError。"""
+    p = pathlib.Path(path)
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise SourceConfigError(f"找不到源注册表：{p}") from exc
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SourceConfigError(f"{p} 不是合法 JSON：{exc}") from exc
+    validate_config(cfg)
+    # 旧的环境变量旋钮继续有效：覆盖微信读书的 per
+    env = os.environ.get("DEX_THRESHOLD")
+    if env:
+        try:
+            cfg["sources"]["weread"]["per"] = int(env)
+        except (KeyError, ValueError) as exc:
+            raise SourceConfigError(f"DEX_THRESHOLD 不是整数：{env!r}") from exc
+    return cfg
+
+
+def enabled_sources(cfg: dict) -> dict:
+    """只返回参与结算的源。"""
+    return {sid: s for sid, s in cfg["sources"].items() if s.get("enabled", False)}
+
+
+def credit_for_day(cfg: dict, ledger_day: dict) -> dict[str, int]:
+    """每个启用的源当天折算出多少额度（向下取整，零头不计）。"""
+    out: dict[str, int] = {}
+    for sid, s in enabled_sources(cfg).items():
+        amount = int((ledger_day or {}).get(sid, 0) or 0)
+        out[sid] = amount // int(s["per"])
+    return out
+
+
+def day_credit(cfg: dict, ledger_day: dict) -> int:
+    """当天全源额度之和。"""
+    return sum(credit_for_day(cfg, ledger_day).values())
+
+
+def credits_for_days(cfg: dict, ledger: dict) -> dict[str, int]:
+    """逐日算出额度：{日期: 额度}。"""
+    return {day: day_credit(cfg, amounts) for day, amounts in (ledger or {}).items()}
