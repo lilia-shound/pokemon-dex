@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "perAward": 2,
+  "perAward": 1,
   "maxPerDay": 1,
   "maxBackfill": 3,
   "ledgerDays": 30,

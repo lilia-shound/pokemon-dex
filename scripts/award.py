@@ -7,7 +7,8 @@
     python3 scripts/award.py --migrate-only  # 只把 dex.json 升到 v2，不抽卡
 
 **额度模型**：每个源声明「多少原始单位 = 1 额度」（sources.json 的 per），
-当天额度 = 各启用源折算后之和；满 perAward 个额度才掉一只（现在恒为 2）。
+当天额度 = 各启用源折算后之和；满 perAward 个额度才掉一只
+（perAward 在 data/sources.json 里：S1 阶段 = 1，S2 番茄钟上线后改回 2）。
 
 **补发机制**：微信读书的阅读时长是延迟上报的（实测滞后 3~10 分钟，且持续回补）。
 当天读满的数据可能到次日凌晨才到，那时「今天」的桶已经翻页。

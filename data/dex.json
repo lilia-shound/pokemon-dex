@@ -62,12 +62,12 @@
   "today": {
     "date": "2026-11-18",
     "seconds": 1776,
-    "threshold": 1800,
+    "threshold": 900,
     "sources": {
       "weread": 1776
     },
     "credit": 1,
-    "perAward": 2
+    "perAward": 1
   },
   "ledger": {},
   "chains": {},
