@@ -645,16 +645,27 @@ cd /workspace/pokemon-reading-dex && git add scripts/ledger.py tests/test_ledger
 ## Task 3: 结算骨架（`pending_days` / `build_state`）
 
 **Files:**
-- Modify: `scripts/dex_core.py`（新增两个函数，移除 `new_state`）
-- Modify: `tests/test_dex_core.py`（`NewStateTest` / `CatchUpTest` 改写成 `build_state`）
+- Modify: `scripts/dex_core.py`（**只新增** `pending_days` / `build_state`；**不删** `new_state`）
 - Create: `tests/test_dex_core_v2.py`
+- （`tests/test_dex_core.py` 本 Task **一个字都不动** —— 见下方说明）
+
+> **为什么本 Task 不删 `new_state`**
+>
+> `scripts/award.py` 目前有 3 处 `dc.new_state(...)` 调用（`award.py:125`、`:146`、`:171`）。
+> `new_state` 是 `award.py` 还在用的活状态机 —— **调用方没迁移就先删函数，等于把发布流水线打断**
+> （实测删掉后 `tests/test_award_flow.py` 立刻 5 个 error）。
+> 而 `award.py` 不在本 Task 的可改文件里，全局约束又要求「提交前 `run_tests.py` 必须全绿」。
+>
+> 所以：**删 `new_state` + 改写 `tests/test_dex_core.py` 里依赖它的 v1 测试，统一挪到 Task 5** ——
+> Task 5 正是把 `award.py` 迁到 v2 的那一刀，迁完 caller 再杀 callee，顺序才是对的。
+> 最终状态与原计划完全一致，只是把这一步挪后一个 Task。
 
 **Interfaces:**
 - Consumes: `scripts.sources.day_credit(cfg, ledger_day) -> int`
 - Produces:
   - `scripts.dex_core.pending_days(cfg: dict, ledger: dict, awarded_dates) -> list[str]`（升序）
   - `scripts.dex_core.build_state(old: dict, cfg: dict, today: str, today_sources: dict, ledger_data: dict, chains: dict, new_awards: list) -> dict`
-  - **移除** `scripts.dex_core.new_state` —— 由 `build_state` 取代
+- **不改动**：`scripts.dex_core.new_state` 本 Task 保留原样（`award.py` 还在用），Task 5 再删
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -837,79 +848,16 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     }
 ```
 
-- [ ] **Step 4: 删掉旧的 `new_state`**
+- [ ] **Step 4: 保留旧的 `new_state`（本 Task 不删）**
 
-把 `scripts/dex_core.py` 里整个 `new_state` 函数删掉（从 `def new_state(` 到文件末尾那段）。
-理由：v2 的状态形状已经变了，留着两套状态机会分叉。`build_state` 覆盖了它的全部职责。
+`scripts/dex_core.py` 里的 `new_state` **原样留着**，一个字都不改。
+理由见上面「为什么本 Task 不删 `new_state`」：它是 `award.py` 还在用的活状态机，删了就打断流水线。
+删它的那一刀在 Task 5。
 
-- [ ] **Step 5: 改写 `tests/test_dex_core.py` 里的 v1 测试**
+- [ ] **Step 5: `tests/test_dex_core.py` 本 Task 不动**
 
-把 `tests/test_dex_core.py` 里的 `NewStateTest` 和 `CatchUpTest` 两个类整体删掉，
-换成下面这个类（追加到文件里 `if __name__ == "__main__"` 之前）：
-
-```python
-class BuildStateRegressionTest(unittest.TestCase):
-    """v1 的 new_state 已被 build_state 取代，这些是它的回归等价物。"""
-
-    def _cfg(self):
-        return {
-            "version": 1, "perAward": 2, "maxPerDay": 1, "maxBackfill": 3,
-            "ledgerDays": 30,
-            "sources": {"weread": {"name": "微信读书", "unit": "秒", "per": 900,
-                                   "mode": "pull", "enabled": True,
-                                   "maxPerDay": 86400}},
-        }
-
-    def _award(self, pid="0001", day="2026-11-14", shiny=False):
-        return {"id": pid, "nameZh": "妙蛙种子", "shiny": shiny,
-                "at": f"{day}T22:00:00+08:00", "date": day,
-                "sources": ["weread"], "form": pid}
-
-    def test_appends_award(self):
-        st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
-                            {"weread": 1800}, {}, {}, [self._award()])
-        self.assertEqual(len(st["collected"]), 1)
-        self.assertEqual(st["collected"][0]["id"], "0001")
-        self.assertEqual(st["lastAwardDate"], "2026-11-14")
-        self.assertEqual(st["streak"], 1)
-        self.assertEqual(st["today"]["seconds"], 1800)
-        self.assertEqual(st["today"]["threshold"], 900)
-
-    def test_is_idempotent_same_day(self):
-        """同一天重复结算不会多出一条 —— 幂等由调用方保证，这里验证状态组装。"""
-        once = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
-                              {"weread": 1800}, {}, {}, [self._award()])
-        twice = dc.build_state(once, self._cfg(), "2026-11-14",
-                               {"weread": 2400}, {}, {}, [])
-        self.assertEqual(len(twice["collected"]), 1)
-        self.assertEqual(twice["today"]["seconds"], 2400)
-
-    def test_awards_for_past_date_not_today(self):
-        old = {"collected": []}
-        st = dc.build_state(old, self._cfg(), "2026-11-15", {},
-                            {}, {}, [self._award("0001", "2026-11-14")])
-        self.assertEqual(st["collected"][0]["date"], "2026-11-14")
-        self.assertEqual(st["lastAwardDate"], "2026-11-14")
-        self.assertEqual(st["today"]["seconds"], 0)
-        self.assertEqual(st["today"]["date"], "2026-11-15")
-
-    def test_streak_counts_up_to_award_date(self):
-        old = {"collected": [self._award("0001", "2026-11-12"),
-                             self._award("0002", "2026-11-13")]}
-        st = dc.build_state(old, self._cfg(), "2026-11-15", {}, {}, {},
-                            [self._award("0003", "2026-11-14")])
-        self.assertEqual(st["streak"], 3)
-
-    def test_shiny_flag_preserved(self):
-        st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
-                            {}, {}, {}, [self._award(shiny=True)])
-        self.assertTrue(st["collected"][0]["shiny"])
-
-    def test_collected_entries_carry_date(self):
-        st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
-                            {}, {}, {}, [self._award()])
-        self.assertEqual(st["collected"][0]["date"], "2026-11-14")
-```
+v1 的 `NewStateTest` / `CatchUpTest` 依赖 `new_state`，现在还能跑，**保持原样**。
+它们在 Task 5 里随 `new_state` 一起被替换成 `BuildStateRegressionTest`（那个类的完整代码在 Task 5 的简报里）。
 
 - [ ] **Step 6: 跑测试，确认通过**
 
@@ -1222,9 +1170,87 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 >    「中文注释与中文 docstring」不一致。补一行中文 docstring。
 > 4. `scripts/ledger.py` 的 `merge_amounts` 注解写成 `days: dict`，简报 Produces 声明的是
 >    `days: dict[str, int]`。补上类型参数。
+>
+> **另外，Task 3 挪过来的两件事（也要在本 Task 做掉）**：
+>
+> 5. **删掉 `scripts/dex_core.py` 的 `new_state`** —— 本 Task 把 `award.py` 迁到 v2 之后，
+>    它就没有调用方了。留两套状态机会分叉（v2 的形状已经变了）。
+> 6. **改写 `tests/test_dex_core.py` 里依赖 `new_state` 的 v1 测试** ——
+>    删掉 `NewStateTest` 和 `CatchUpTest` 两个类，换成 `BuildStateRegressionTest`：
+>
+>    ```python
+>    class BuildStateRegressionTest(unittest.TestCase):
+>        """v1 的 new_state 已被 build_state 取代，这些是它的回归等价物。"""
+>
+>        def _cfg(self):
+>            return {
+>                "version": 1, "perAward": 2, "maxPerDay": 1, "maxBackfill": 3,
+>                "ledgerDays": 30,
+>                "sources": {"weread": {"name": "微信读书", "unit": "秒", "per": 900,
+>                                       "mode": "pull", "enabled": True,
+>                                       "maxPerDay": 86400}},
+>            }
+>
+>        def _award(self, pid="0001", day="2026-11-14", shiny=False):
+>            return {"id": pid, "nameZh": "妙蛙种子", "shiny": shiny,
+>                    "at": f"{day}T22:00:00+08:00", "date": day,
+>                    "sources": ["weread"], "form": pid}
+>
+>        def test_appends_award(self):
+>            st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
+>                                {"weread": 1800}, {}, {}, [self._award()])
+>            self.assertEqual(len(st["collected"]), 1)
+>            self.assertEqual(st["collected"][0]["id"], "0001")
+>            self.assertEqual(st["lastAwardDate"], "2026-11-14")
+>            self.assertEqual(st["streak"], 1)
+>            self.assertEqual(st["today"]["seconds"], 1800)
+>            self.assertEqual(st["today"]["threshold"], 900)
+>
+>        def test_is_idempotent_same_day(self):
+>            """同一天重复结算不会多出一条 —— 幂等由调用方保证，这里验证状态组装。"""
+>            once = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
+>                                  {"weread": 1800}, {}, {}, [self._award()])
+>            twice = dc.build_state(once, self._cfg(), "2026-11-14",
+>                                   {"weread": 2400}, {}, {}, [])
+>            self.assertEqual(len(twice["collected"]), 1)
+>            self.assertEqual(twice["today"]["seconds"], 2400)
+>
+>        def test_awards_for_past_date_not_today(self):
+>            old = {"collected": []}
+>            st = dc.build_state(old, self._cfg(), "2026-11-15", {},
+>                                {}, {}, [self._award("0001", "2026-11-14")])
+>            self.assertEqual(st["collected"][0]["date"], "2026-11-14")
+>            self.assertEqual(st["lastAwardDate"], "2026-11-14")
+>            self.assertEqual(st["today"]["seconds"], 0)
+>            self.assertEqual(st["today"]["date"], "2026-11-15")
+>
+>        def test_streak_counts_up_to_award_date(self):
+>            old = {"collected": [self._award("0001", "2026-11-12"),
+>                                 self._award("0002", "2026-11-13")]}
+>            st = dc.build_state(old, self._cfg(), "2026-11-15", {}, {}, {},
+>                                [self._award("0003", "2026-11-14")])
+>            self.assertEqual(st["streak"], 3)
+>
+>        def test_shiny_flag_preserved(self):
+>            st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
+>                                {}, {}, {}, [self._award(shiny=True)])
+>            self.assertTrue(st["collected"][0]["shiny"])
+>
+>        def test_collected_entries_carry_date(self):
+>            st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
+>                                {}, {}, {}, [self._award()])
+>            self.assertEqual(st["collected"][0]["date"], "2026-11-14")
+>    ```
+>
+>    **注意排列陷阱**：`tests/test_dex_core.py` 里 `if __name__ == "__main__":` 那一段夹在
+>    `NewStateTest` 和 `CatchUpTest` **中间**。删 `NewStateTest` 时不要连带删掉后面的 `CatchUpTest`。
+>    完成后 `grep -n "class .*Test" tests/test_dex_core.py` 应该只看到 `BuildStateRegressionTest`
+>    （以及它前面那些原有的小测试类）。
 
 **Files:**
 - Modify: `scripts/award.py`
+- Modify: `scripts/dex_core.py`（**删掉 `new_state`** —— award.py 迁到 v2 之后就能杀它了）
+- Modify: `tests/test_dex_core.py`（删掉 `NewStateTest` / `CatchUpTest`，换成 `BuildStateRegressionTest`）
 - Modify: `tests/test_award_flow.py`
 - Create: `tests/test_award_multi.py`
 
