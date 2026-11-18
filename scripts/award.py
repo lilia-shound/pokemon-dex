@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""发放器：查今日阅读时长 → 判定 → 抽卡 → 写 dex.json → 推送。
+"""发放器：查各源今日数据 → 折算额度 → 结算 → 抽卡 → 写 dex.json → 推送。
 
-    python3 scripts/award.py             # 正常跑一轮
-    python3 scripts/award.py --dry-run   # 只看判定结果，不写文件
-    python3 scripts/award.py --force     # 无视达标线强制发奖（用于联调）
+    python3 scripts/award.py                 # 正常跑一轮
+    python3 scripts/award.py --dry-run       # 只看判定结果，不写文件
+    python3 scripts/award.py --force         # 无视达标线强制发奖（用于联调）
+    python3 scripts/award.py --migrate-only  # 只把 dex.json 升到 v2，不抽卡
+
+**额度模型**：每个源声明「多少原始单位 = 1 额度」（sources.json 的 per），
+当天额度 = 各启用源折算后之和；满 perAward 个额度才掉一只（现在恒为 2）。
 
 **补发机制**：微信读书的阅读时长是延迟上报的（实测滞后 3~10 分钟，且持续回补）。
-当天读满的数据可能到次日凌晨才到，那时"今天"的桶已经翻页。
-所以判定不只看今天，而是扫当前周期内所有「达标但还没发奖」的日期，补发最早的那一天。
+当天读满的数据可能到次日凌晨才到，那时「今天」的桶已经翻页。
+所以判定不只看今天，而是扫账本里所有「额度够了但还没发奖」的日期，
+一次结清（升序，最多 maxBackfill 天）。
 """
 
 from __future__ import annotations
@@ -25,11 +30,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts import dex_core as dc  # noqa: E402
+from scripts import ledger as lg  # noqa: E402
 from scripts import push_notify  # noqa: E402
+from scripts import sources as src  # noqa: E402
 from scripts import weread_client as wc  # noqa: E402
 
 SH = zoneinfo.ZoneInfo("Asia/Shanghai")
 DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
+SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
 POKEDEX_PATH = ROOT / "data" / "pokedex.json"
 
 
@@ -71,17 +79,30 @@ def fetch_buckets() -> dict[int, int]:
     return merged
 
 
-def pending_award_days(buckets: dict[int, int], awarded_dates: set[str],
-                       threshold: int) -> list[tuple[str, int]]:
-    """所有「达标但还没发奖」的日期，按时间正序。"""
-    out = []
-    for k, v in sorted(buckets.items()):
-        if v < threshold:
-            continue
+def load_config() -> dict:
+    """读源注册表。失败抛 SourceConfigError。"""
+    return src.load_config(SOURCES_PATH)
+
+
+def weread_days(buckets: dict[int, int]) -> dict[str, int]:
+    """把微信读书的时间桶换成 {日期: 秒数}，同一天取 max。"""
+    out: dict[str, int] = {}
+    for k, v in buckets.items():
         day = datetime.datetime.fromtimestamp(k, SH).date().isoformat()
-        if day not in awarded_dates:
-            out.append((day, v))
+        out[day] = max(out.get(day, 0), int(v))
     return out
+
+
+def today_sources_from(state: dict) -> dict:
+    """从旧状态里推出今天的各源量。
+
+    v2 走 today.sources；v1 只有 today.seconds，按微信读书口径还原。
+    """
+    t = (state or {}).get("today") or {}
+    if t.get("sources"):
+        return dict(t["sources"])
+    secs = int(t.get("seconds") or 0)
+    return {"weread": secs} if secs > 0 else {}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="只判定不写文件")
     ap.add_argument("--force", action="store_true", help="无视达标线强制发奖")
     ap.add_argument("--no-push", action="store_true", help="不发微信推送")
+    ap.add_argument("--migrate-only", action="store_true",
+                    help="只把 dex.json 升到 v2，不抽卡（一次性迁移用）")
     ap.add_argument("--date", default=None, help="指定发奖日期 YYYY-MM-DD，默认今天")
     args = ap.parse_args(argv)
 
@@ -96,87 +119,119 @@ def main(argv: list[str] | None = None) -> int:
     today = args.date or now.strftime("%Y-%m-%d")
 
     try:
+        cfg = load_config()
+    except src.SourceConfigError as exc:
+        print(f"[失败] 源注册表有问题，本轮不发奖：{exc}", file=sys.stderr)
+        return 1
+
+    old = lg.migrate_state(load_state())
+    # 深拷贝：advance_chain 会原地改内层链状态，直接用 old 里的会污染旧 state
+    chains = {k: dict(v) for k, v in (old.get("chains") or {}).items()}
+
+    if args.migrate_only:
+        state = dc.build_state(old, cfg, today, today_sources_from(old),
+                               old.get("ledger") or {}, chains, [])
+        if not args.dry_run:
+            save_state(state)
+        print(f"已迁移到 v2：{len(state['collected'])} 只已收服   "
+              f"（未抽卡）")
+        return 0
+
+    try:
         buckets = fetch_buckets()
     except Exception as exc:  # noqa: BLE001
         print(f"[失败] 取数失败，本轮不发奖：{exc}", file=sys.stderr)
         return 1
 
-    old = load_state()
+    ledger_data = lg.merge_amounts(old.get("ledger") or {}, "weread",
+                                   weread_days(buckets))
+    ledger_data = lg.prune(ledger_data, int(cfg["ledgerDays"]), today)
+
+    today_sources = dict(ledger_data.get(today) or {})
     owned = {c["id"] for c in old.get("collected") or []}
     awarded_dates = {c.get("date") for c in old.get("collected") or [] if c.get("date")}
-    _, today_secs = wc.today_seconds(buckets, now=now)
 
-    print(f"今天 {today}   官方已记 {today_secs} 秒 ({round(today_secs / 60, 1)} 分)   "
-          f"达标线 {dc.THRESHOLD_SECONDS} 秒")
-    print(f"已收集 {len(owned)}/{pokedex_total()}   周期内桶数 {len(buckets)}")
+    print(f"今天 {today}   各源原始量 {today_sources or '（无）'}   "
+          f"额度 {src.day_credit(cfg, today_sources)}/{cfg['perAward']}")
+    print(f"已收集 {len(owned)}/{pokedex_total()}   "
+          f"连读 {dc.compute_streak(sorted(awarded_dates), today)} 天")
 
-    pending = pending_award_days(buckets, awarded_dates, dc.THRESHOLD_SECONDS)
-    if pending:
-        print(f"待补发：{', '.join(f'{d}({v}s)' for d, v in pending)}")
+    pending = dc.pending_days(cfg, ledger_data, awarded_dates)
+    if len(pending) > int(cfg["maxBackfill"]):
+        skipped = pending[int(cfg["maxBackfill"]):]
+        pending = pending[:int(cfg["maxBackfill"])]
+        print(f"[跳过] 超过 maxBackfill，这些天先不发：{', '.join(skipped)}")
 
-    # 今天已经发过奖 → 不能再抽一张。
-    # new_state 按日期去重，抽到的卡会被悄悄丢掉，但上面已经打印了「★ 获得」——
-    # 那就是假消息（每 3 小时跑一次的定时任务当天会连报好几次）。
-    if not pending and today in awarded_dates:
-        streak = dc.compute_streak(sorted(awarded_dates), today)
-        hint = "（--force 也不重复发奖；想换日期用 --date）" if args.force else ""
-        print(f"今天已经发过奖了{hint}   图鉴 {len(owned)}/{pokedex_total()}   连读 {streak} 天")
+    if args.force and today not in awarded_dates and today not in pending:
+        pending = pending + [today]
+        pending.sort()
+
+    if not pending:
+        if today in awarded_dates:
+            print(f"今天已经发过奖了   图鉴 {len(owned)}/{pokedex_total()}")
+        else:
+            print("未达标，今天没有宝可梦。")
         if not args.dry_run:
-            save_state(dc.new_state(old, None, today, today_secs))
-        return 0
-
-    # 选定发奖日：补发优先取最早那天，否则取今天
-    if pending and not args.force:
-        award_day, award_secs = pending[0]
-    else:
-        award_day, award_secs = today, today_secs
-
-    if args.force:
-        award_day = today
-        award_secs = today_secs
-        print("[force] 无视达标线")
-    elif award_day != today:
-        print(f"→ 补发 {award_day}（{award_secs} 秒）")
-
-    reached = award_secs >= dc.THRESHOLD_SECONDS or args.force
-    if not reached:
-        streak = dc.compute_streak(sorted(awarded_dates), today)
-        print(f"未达标，今天没有宝可梦。（连读 {streak} 天）")
-        if not args.dry_run:
-            save_state(dc.new_state(old, None, today, today_secs))
+            save_state(dc.build_state(old, cfg, today, today_sources,
+                                      ledger_data, chains, []))
         return 0
 
     pool = load_pokedex()
-    # 发奖日的连读天数决定闪光概率
-    streak_after = dc.compute_streak(sorted(awarded_dates | {award_day}), award_day)
-    print(f"连读 {streak_after} 天   闪光概率 {dc.shiny_probability(streak_after):.4f}")
-    award = dc.pick(owned, pool, streak_after, random.Random())
-    if award is None:
-        print(f"池子空了 —— {pokedex_total()} 只全部收集完成！")
-        return 0
+    new_awards = []
+    for day in pending:
+        streak = dc.compute_streak(sorted(awarded_dates | {day}), day)
+        award = dc.pick(owned, pool, streak, random.Random())
+        if award is None:
+            print(f"池子空了 —— {pokedex_total()} 只全部收集完成！")
+            break
 
-    award_full = {
-        "id": award["id"],
-        "nameZh": award["nameZh"],
-        "shiny": award["shiny"],
-        "at": now.isoformat(),
-    }
-    tag = "✦ 闪光" if award["shiny"] else "●"
-    print(f"★ 获得 {tag} {award['nameZh']}（No.{award['id']}）")
+        key = dc.chain_key(award)
+        chain_state = chains.get(key)
+        if chain_state and int(chain_state.get("pendingShiny", 0)) > 0:
+            award["shiny"] = True
+            chain_state["pendingShiny"] = int(chain_state["pendingShiny"]) - 1
+            print(f"[保底] {key} 养到 {chain_state['care']} 天，这次必闪")
+
+        day_credits = src.credit_for_day(cfg, ledger_data.get(day) or {})
+        contributors = [sid for sid, n in day_credits.items() if n > 0]
+        award_full = {
+            "id": award["id"],
+            "nameZh": award["nameZh"],
+            "shiny": bool(award["shiny"]),
+            "at": now.isoformat(),
+            "date": day,
+            "sources": contributors,
+            "form": award["id"],
+        }
+        tag = "✦ 闪光" if award["shiny"] else "●"
+        prefix = f"补发 {day} " if day != today else ""
+        print(f"★ {prefix}获得 {tag} {award['nameZh']}（No.{award['id']}）"
+              f"   连读 {streak} 天")
+
+        new_awards.append(award_full)
+        owned.add(award["id"])
+        awarded_dates.add(day)
+        dc.advance_chain(chains, award)
+
+    state = dc.build_state(old, cfg, today, today_sources, ledger_data,
+                           chains, new_awards)
 
     if args.dry_run:
         print("[dry-run] 未写入文件")
         return 0
 
-    state = dc.new_state(old, award_full, today, today_secs, award_date=award_day)
     save_state(state)
-    print(f"已写入 {DEX_PATH}   图鉴 {len(state['collected'])}/{pokedex_total()}   连读 {state['streak']} 天")
+    print(f"已写入 {DEX_PATH}   图鉴 {len(state['collected'])}/{pokedex_total()}   "
+          f"连读 {state['streak']} 天")
 
-    if not args.no_push:
+    if new_awards and not args.no_push:
+        last = new_awards[-1]
+        tag = "✦ 闪光" if last["shiny"] else ""
         try:
             push_notify.send(
-                f"{tag} 捕获 {'闪光' if award['shiny'] else ''}{award['nameZh']}",
-                f"今日已读 {round(today_secs / 60)} 分钟 · 连读 {state['streak']} 天 · "
+                f"{tag} 捕获 {last['nameZh']}",
+                f"今日额度 {state['today']['credit']}/{cfg['perAward']} · "
+                f"连读 {state['streak']} 天 · "
                 f"图鉴 {len(state['collected'])}/{pokedex_total()}",
             )
         except Exception as exc:  # noqa: BLE001

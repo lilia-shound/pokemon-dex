@@ -124,48 +124,6 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     }
 
 
-def new_state(old: dict, award: dict | None, today: str, today_secs: int,
-              award_date: str | None = None) -> dict:
-    """算出新的 dex.json。
-
-    幂等：按**日期**判重——同一个日期只发一次。
-    award_date 用于「补发」：微信读书延迟上报时，昨天读满的数据可能今天才到，
-    这时要发的是昨天那一份，对 streak 也按昨天算。
-    """
-    ad = award_date or today
-    collected = list(old.get("collected") or [])
-    awarded = {c.get("date") for c in collected if c.get("date")}
-
-    if award is not None and ad not in awarded:
-        collected.append(
-            {
-                "id": award.get("id"),
-                "nameZh": award.get("nameZh", ""),
-                "shiny": bool(award.get("shiny")),
-                "at": award.get("at"),
-                "date": ad,
-            }
-        )
-        awarded = {c.get("date") for c in collected if c.get("date")}
-
-    last = max(awarded) if awarded else None
-    # 发过奖就用发奖日算连续，没发过就按今天算（显示截至昨天的连续天数）
-    streak = compute_streak(sorted(awarded), ad if award is not None else today)
-
-    return {
-        "version": 1,
-        "collected": collected,
-        "streak": streak,
-        "lastAwardDate": last,
-        "today": {
-            "date": today,
-            "seconds": int(today_secs),
-            "threshold": THRESHOLD_SECONDS,
-        },
-        "updatedAt": award.get("at") if award else old.get("updatedAt"),
-    }
-
-
 def _chain_names(pokemon: dict) -> list[str]:
     """进化链上的名字，去重并保留顺序。
 
