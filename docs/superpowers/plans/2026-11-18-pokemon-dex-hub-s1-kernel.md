@@ -1209,6 +1209,20 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 
 ## Task 5: 发放器编排改造
 
+> **承上：Task 2 审阅遗留（本任务必须一并修掉）**
+>
+> 1. `scripts/ledger.py` 的 `migrate_state` 只浅拷贝顶层，返回的 `ledger` / `chains` 与入参**是同一个对象**
+>    （实测 `out["ledger"] is in["ledger"]` → True）。这与本模块自己对 `merge_amounts` / `prune` 定的
+>    「两层拷贝」标准不一致，而账本是共享状态，就地改很容易出难查的 bug。**Task 5 要把账本接进发放器，
+>    正是最容易踩到它的地方。** 修法：
+>    `st["ledger"] = {d: dict(v) for d, v in (st.get("ledger") or {}).items()}`，`chains` 同理。
+> 2. `tests/test_ledger.py` 的 `test_does_not_mutate_input` 只断言 `collected[0]`，对上面那条别名零覆盖。
+>    补一条断言：改返回值不得回写入参。
+> 3. `scripts/ledger.py` 的 `empty_ledger` 是四个公开函数里唯一没有 docstring 的，与全局约束
+>    「中文注释与中文 docstring」不一致。补一行中文 docstring。
+> 4. `scripts/ledger.py` 的 `merge_amounts` 注解写成 `days: dict`，简报 Produces 声明的是
+>    `days: dict[str, int]`。补上类型参数。
+
 **Files:**
 - Modify: `scripts/award.py`
 - Modify: `tests/test_award_flow.py`
