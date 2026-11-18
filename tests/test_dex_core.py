@@ -134,13 +134,13 @@ class BuildStateRegressionTest(unittest.TestCase):
     def test_does_not_alias_ledger_or_chains(self):
         """账本与链状态是共享状态 —— 返回值不能跟入参共用内层 dict。"""
         ledger_data = {"2026-11-14": {"weread": 1800}}
-        chains = {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}
+        chains = {"妙蛙种子": {"firstDate": "2026-11-14", "lastShinyDate": None}}
         st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
                             {"weread": 1800}, ledger_data, chains, [])
         st["ledger"]["2026-11-14"]["weread"] = 9999
-        st["chains"]["妙蛙种子"]["care"] = 99
+        st["chains"]["妙蛙种子"]["firstDate"] = "2026-12-14"
         self.assertEqual(ledger_data["2026-11-14"]["weread"], 1800)
-        self.assertEqual(chains["妙蛙种子"]["care"], 1)
+        self.assertEqual(chains["妙蛙种子"]["firstDate"], "2026-11-14")
 
     def test_keeps_updated_at_when_no_new_award(self):
         """没有新发奖时沿用旧的 updatedAt —— v1 有这个字段，v2 别静默丢掉。"""

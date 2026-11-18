@@ -23,6 +23,9 @@ SHINY_ODDS: dict[int, float] = {
     100: 1.0,
 }
 
+# 这条链要养多少天才能兑现一次保底闪光（按日历天算，见 advance_chain 的说明）
+SHINY_CARE_DAYS = 30
+
 
 def shiny_probability(streak: int) -> float:
     """按连读天数返回闪光概率。streak>=100 保底必出。"""
@@ -158,26 +161,74 @@ def chain_key(pokemon: dict) -> str:
     return names[0] if names else ""
 
 
-def advance_chain(chains: dict, pokemon: dict) -> dict:
-    """给这条链加一天培养。原地修改并返回 chains。
+def advance_chain(chains: dict, pokemon: dict, day: str) -> dict:
+    """登记「这个发奖日抽到了这条链的宝可梦」。原地修改 chains 并返回链状态。
 
-    care 每多 30 天给一次保底闪光（pendingShiny += 1）——
-    下次抽到这个链的宝可梦时可以强制闪光。把「一次性运气」换成「持续投入」。
+    链状态：
+        firstDate     —— 该链首次被收服的日期（care 的计时起点）
+        lastShinyDate —— 上次兑现保底的日期（None = 还没兑现过）
 
-    保底判定用 while 而不是 if：state 是导入/手改出来的时 care 可能跳变，
-    跳过的保底要一次补齐（care=95、nextShinyAt=30 → 给 3 次，而不是 1 次）。
-    nextShinyAt 严格递增，不会死循环。
+    注意是**原地修改**，且返回的是链状态本身（不是链状态的拷贝）。
 
-    注：形态改写（进化阶数 → collected[].form）不在本层做 ——
-    分叉的进化关系在拍平的数据里没有唯一的「这一阶对应哪只」，那是 S6 的活。
+    **★ care 按日历天算，不按抽卡次数累加**（2026-11-18 人类裁决）：
+    旧口径是「每次抽到就 care += 1」，但 `pick` 只从**未收服**池里抽
+    ⇒ 同一条链最多被抽「链大小」次，而最大链只有 9 只（伊布族）
+    ⇒ care 的上限是 9，永远够不到 30 ⇒ **保底闪光数学上不可能触发**。
+    改成按日历天（首次被收服那天算起）后，链的大小不再影响可达性。
+
+    **★ care 必须是从日期算出来的，不能是累加计数器**：cron 的纪律是「只有真抽到才推状态」
+    ⇒ 平时不推 ⇒ 累加计数器会整天数丢失。日期锚点不受影响。
+
+    **旧结构的链条目没有 firstDate**（旧的是 care / pendingShiny / nextShinyAt）
+    ⇒ 计时起点缺失，chain_care 会一直返回 0，这条链永远养不起来
+    ⇒ 这里补上 firstDate = day（并确保 lastShinyDate 存在）。
     """
     key = chain_key(pokemon)
     if not key:
-        return chains
-    st = chains.setdefault(key, {"care": 0, "pendingShiny": 0, "nextShinyAt": 30})
-    st["care"] = int(st.get("care", 0)) + 1
-    while st["care"] >= int(st.get("nextShinyAt", 30)):
-        st["pendingShiny"] = int(st.get("pendingShiny", 0)) + 1
-        # 节奏固定：每次 +30，而不是 care + 30 —— care 跳变时不该整体后移
-        st["nextShinyAt"] = int(st.get("nextShinyAt", 30)) + 30
-    return chains
+        return {}
+    st = chains.get(key)
+    if st is None:
+        st = {"firstDate": day, "lastShinyDate": None}
+        chains[key] = st
+        return st
+    # 已有条目：补齐新结构缺的字段，但**不重置**已有的计时起点
+    if not st.get("firstDate"):
+        st["firstDate"] = day
+    st.setdefault("lastShinyDate", None)
+    return st
+
+
+def chain_care(chain: dict, day: str) -> int:
+    """这条链养了多少天（从首次被收服那天算起）。
+
+    按**日历天**算，不是按抽卡次数 —— 后者数学上不可能够到保底门槛
+    （pick 只从未收服池抽 ⇒ 一条链最多被抽「链大小」次，最大链只有 9 只）。
+    """
+    first = (chain or {}).get("firstDate")
+    if not first:
+        return 0
+    try:
+        start = datetime.date.fromisoformat(str(first))
+        now = datetime.date.fromisoformat(str(day))
+    except ValueError:
+        return 0
+    return (now - start).days
+
+
+def chain_shiny_ready(chain: dict, day: str) -> bool:
+    """这条链的保底闪光能不能兑现。
+
+    规则：养满 SHINY_CARE_DAYS 天 → 可以兑现；
+    兑现过一次后，要再养满 SHINY_CARE_DAYS 天才能再兑现。
+    """
+    if chain_care(chain, day) < SHINY_CARE_DAYS:
+        return False
+    last = (chain or {}).get("lastShinyDate")
+    if not last:
+        return True
+    try:
+        last_day = datetime.date.fromisoformat(str(last))
+        now = datetime.date.fromisoformat(str(day))
+    except ValueError:
+        return True
+    return (now - last_day).days >= SHINY_CARE_DAYS

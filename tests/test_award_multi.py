@@ -182,9 +182,8 @@ class MultiSourceAwardTest(unittest.TestCase):
         chains = self._state()["chains"]
         self.assertEqual(len(chains), 1)
         entry = list(chains.values())[0]
-        self.assertEqual(entry["care"], 1)
-        self.assertEqual(entry["pendingShiny"], 0)
-        self.assertEqual(entry["nextShinyAt"], 30)
+        self.assertEqual(entry["firstDate"], DAY)
+        self.assertIsNone(entry["lastShinyDate"])
         self.assertNotIn("stage", entry)   # 形态改写在 S6，S1 的链状态没有 stage
 
     # ---- 保底闪光：消费与强制闪光 ----
@@ -197,19 +196,21 @@ class MultiSourceAwardTest(unittest.TestCase):
         }
         self.dex_path.write_text(json.dumps(state), encoding="utf-8")
 
-    def _seed_chain(self, key, care=30, pending=1):
-        """往状态里塞一条已经养到保底线的链。"""
+    def _seed_chain(self, key, first_date):
+        """往状态里塞一条链。first_date 是它首次被收服的日期（care 的计时起点）。"""
         state = {
             "version": 2, "collected": [], "streak": 0, "lastAwardDate": None,
             "ledger": {},
-            "chains": {key: {"care": care, "pendingShiny": pending,
-                             "nextShinyAt": care + 30}},
+            "chains": {key: {"firstDate": first_date, "lastShinyDate": None}},
         }
         self.dex_path.write_text(json.dumps(state), encoding="utf-8")
 
     def test_guarantee_is_consumed_and_forces_shiny(self):
-        """养到保底线 → 这条链下一次发奖必闪，且保底次数减 1。"""
-        self._seed_chain("妙蛙种子", care=30, pending=1)
+        """养满 30 天后抽到这条链 → 必闪，并记下兑现日。
+
+        first_date = 2026-10-15 → 距 DAY(2026-11-14) 正好 30 天。
+        """
+        self._seed_chain("妙蛙种子", "2026-10-15")
         fake = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
                 "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
         with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
@@ -217,22 +218,34 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertIn("[保底]", out)
         state = self._state()
         self.assertTrue(state["collected"][0]["shiny"])
-        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 0)
+        self.assertEqual(state["chains"]["妙蛙种子"]["lastShinyDate"], DAY)
+
+    def test_guarantee_not_ready_one_day_early(self):
+        """养到第 29 天还不兑现。"""
+        self._seed_chain("妙蛙种子", "2026-10-16")
+        fake = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+        with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
+            rc, out = self._run({KEY_20261114: 1800})
+        self.assertNotIn("[保底]", out)
+        state = self._state()
+        self.assertFalse(state["collected"][0]["shiny"])
+        self.assertIsNone(state["chains"]["妙蛙种子"]["lastShinyDate"])
 
     def test_guarantee_not_consumed_by_other_chain(self):
         """保底是按链算的 —— 抽到别的链不吃这条链的保底。"""
-        self._seed_chain("妙蛙种子", care=30, pending=1)
+        self._seed_chain("妙蛙种子", "2026-10-15")
         fake = {"id": "0025", "nameZh": "皮卡丘", "shiny": False,
                 "evolution": ["皮丘", "皮卡丘", "雷丘"]}
         with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
             rc, out = self._run({KEY_20261114: 1800})
         self.assertNotIn("[保底]", out)
         state = self._state()
-        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 1)
-        self.assertEqual(state["chains"]["皮丘"]["care"], 1)
+        self.assertIsNone(state["chains"]["妙蛙种子"]["lastShinyDate"])
+        self.assertEqual(state["chains"]["皮丘"]["firstDate"], DAY)
 
-    def test_chain_care_counts_days_not_cards(self):
-        """两天补发各抽到同一链 → care +2（一天一次），不是 +4。"""
+    def test_chain_first_date_is_the_earliest_award_day(self):
+        """两天补发各抽到同一链 → firstDate 取最早那个发奖日，不被覆盖。"""
         fake_a = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
                   "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
         fake_b = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
@@ -242,11 +255,14 @@ class MultiSourceAwardTest(unittest.TestCase):
             rc, out = self._run({KEY_20261113: 1800, KEY_20261114: 1800})
         state = self._state()
         self.assertEqual(len(state["collected"]), 2)
-        self.assertEqual(state["chains"]["妙蛙种子"]["care"], 2)
+        self.assertEqual(state["chains"]["妙蛙种子"]["firstDate"], "2026-11-13")
 
     def test_guarantee_consumed_once_when_chain_picked_twice(self):
-        """同一轮里同一条链抽到两次 —— 保底只消费一次（第二次不再必闪）。"""
-        self._seed_chain("妙蛙种子", care=30, pending=1)
+        """同一轮里同一条链抽到两次 —— 保底只消费一次（第二次不再必闪）。
+
+        firstDate = 2026-10-14 → 11-13 正好养满 30 天（兑现），11-14 距上次兑现只有 1 天 ⇒ 不再必闪。
+        """
+        self._seed_chain("妙蛙种子", "2026-10-14")
         fake_a = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
                   "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
         fake_b = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
@@ -259,7 +275,8 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertEqual(len(state["collected"]), 2)
         shiniest = [c for c in state["collected"] if c["shiny"]]
         self.assertEqual(len(shiniest), 1)     # 保底只兑现一次
-        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 0)
+        # 兑现日是 11-13；11-14 距上次兑现只有 1 天 → 不再必闪
+        self.assertEqual(state["chains"]["妙蛙种子"]["lastShinyDate"], "2026-11-13")
 
     # ---- --force：无视达标线发今天，积压日照常补发 ----
 

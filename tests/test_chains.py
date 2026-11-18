@@ -6,6 +6,10 @@ from scripts import dex_core as dc
 
 BULBASAUR = {"id": "0001", "nameZh": "妙蛙种子",
              "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+IVYSAUR = {"id": "0002", "nameZh": "妙蛙草",
+           "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+VENUSAUR = {"id": "0003", "nameZh": "妙蛙花",
+            "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
 PIKACHU = {"id": "0025", "nameZh": "皮卡丘",
            "evolution": ["皮丘", "皮卡丘", "雷丘", "皮丘", "皮卡丘", "雷丘"]}
 # 真实数据里同链成员的 evolution 数组并不一致 —— 这正是旧 key 算法的坑
@@ -13,6 +17,8 @@ WALKING_GRASS = {"id": "0004", "nameZh": "走路草",
                  "evolution": ["走路草", "臭臭花", "霸王花", "走路草", "臭臭花", "美丽花"]}
 BEAUTIFUL_FLOWER = {"id": "0005", "nameZh": "霸王花",
                      "evolution": ["走路草", "臭臭花", "霸王花"]}
+
+DAY = "2026-11-14"
 
 
 class ChainKeyTest(unittest.TestCase):
@@ -34,69 +40,94 @@ class ChainKeyTest(unittest.TestCase):
 
 
 class AdvanceChainTest(unittest.TestCase):
-    def test_first_care_creates_entry(self):
+    def test_creates_entry_with_first_date(self):
         chains = {}
-        dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["care"], 1)
-        self.assertEqual(st["pendingShiny"], 0)
-        self.assertEqual(st["nextShinyAt"], 30)
+        st = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertEqual(st["firstDate"], DAY)
+        self.assertIsNone(st["lastShinyDate"])
+        self.assertEqual(chains["妙蛙种子"], st)
 
     def test_mutates_in_place_and_returns_same_object(self):
         chains = {}
-        got = dc.advance_chain(chains, BULBASAUR)
-        self.assertIs(got, chains)
+        got = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertIs(got, chains["妙蛙种子"])
+        self.assertIs(got, dc.advance_chain(chains, BULBASAUR, "2026-11-20"))
 
-    def test_care_accumulates(self):
+    def test_existing_first_date_is_kept(self):
+        """再次抽到同一条链不重置计时起点。"""
         chains = {}
-        for _ in range(5):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子"]["care"], 5)
-
-    def test_thirty_care_grants_one_guarantee(self):
-        chains = {}
-        for _ in range(30):
-            dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 1)
-        self.assertEqual(st["nextShinyAt"], 60)
-
-    def test_sixty_care_grants_second_guarantee(self):
-        chains = {}
-        for _ in range(60):
-            dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 2)
-        self.assertEqual(st["nextShinyAt"], 90)
-
-    def test_guarantee_rhythm_is_fixed_not_sliding(self):
-        """care 跳变时保底节奏不该整体后移：nextShinyAt 每次 +30，不是 care+30。"""
-        chains = {"妙蛙种子": {"care": 35, "pendingShiny": 0, "nextShinyAt": 30}}
-        dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["pendingShiny"], 1)
-        self.assertEqual(st["nextShinyAt"], 60)
-
-    def test_guarantee_catches_up_after_a_jump(self):
-        """care 跳变时保底要追补：care=95、nextShinyAt=30 → 按 30/60/90 给 3 次。"""
-        chains = {"妙蛙种子": {"care": 95, "pendingShiny": 0, "nextShinyAt": 30}}
-        dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子"]
-        self.assertEqual(st["care"], 96)
-        self.assertEqual(st["pendingShiny"], 3)
-        self.assertEqual(st["nextShinyAt"], 120)
-
-    def test_other_chain_is_independent(self):
-        chains = {}
-        dc.advance_chain(chains, BULBASAUR)
-        dc.advance_chain(chains, PIKACHU)
-        self.assertEqual(chains["妙蛙种子"]["care"], 1)
-        self.assertEqual(chains["皮丘"]["care"], 1)
+        dc.advance_chain(chains, BULBASAUR, DAY)
+        st = dc.advance_chain(chains, IVYSAUR, "2026-12-01")
+        self.assertEqual(st["firstDate"], DAY)
 
     def test_no_evolution_creates_no_entry(self):
         chains = {}
-        dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"})
+        self.assertEqual(dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"}, DAY), {})
         self.assertEqual(chains, {})
+
+    def test_legacy_entry_without_first_date_gets_one(self):
+        """★ 旧结构的链条目没有 firstDate ⇒ 补上，否则这条链永远养不起来。
+
+        旧结构是 {"care":…, "pendingShiny":…, "nextShinyAt":…}，
+        计时起点缺失 ⇒ chain_care 恒为 0 ⇒ 保底永远兑现不了。
+        """
+        chains = {"妙蛙种子": {"care": 3, "pendingShiny": 0, "nextShinyAt": 30}}
+        st = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertEqual(st["firstDate"], DAY)
+        self.assertIsNone(st["lastShinyDate"])
+        self.assertEqual(dc.chain_care(st, "2026-12-14"), 30)
+
+    def test_legacy_entry_keeps_existing_first_date(self):
+        """补 firstDate 只在缺的时候补 —— 已有起点不动。"""
+        chains = {"妙蛙种子": {"firstDate": "2026-10-01"}}
+        st = dc.advance_chain(chains, BULBASAUR, DAY)
+        self.assertEqual(st["firstDate"], "2026-10-01")
+
+
+class ChainCareTest(unittest.TestCase):
+    def test_care_is_days_since_first_collection(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertEqual(dc.chain_care(chain, "2026-11-14"), 0)
+        self.assertEqual(dc.chain_care(chain, "2026-11-15"), 1)
+        self.assertEqual(dc.chain_care(chain, "2026-12-14"), 30)
+
+    def test_care_zero_without_first_date(self):
+        self.assertEqual(dc.chain_care({}, "2026-11-14"), 0)
+
+    def test_care_zero_on_bad_date(self):
+        chain = {"firstDate": "不是日期", "lastShinyDate": None}
+        self.assertEqual(dc.chain_care(chain, "2026-11-14"), 0)
+
+
+class ChainShinyReadyTest(unittest.TestCase):
+    def test_not_ready_before_thirty_days(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertFalse(dc.chain_shiny_ready(chain, "2026-12-13"))   # 29 天
+
+    def test_ready_at_thirty_days(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": None}
+        self.assertTrue(dc.chain_shiny_ready(chain, "2026-12-14"))    # 30 天
+
+    def test_not_ready_again_right_after_a_shiny(self):
+        """兑现过一次后，要再养满 30 天才能再兑现。"""
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": "2026-12-14"}
+        self.assertFalse(dc.chain_shiny_ready(chain, "2026-12-20"))
+
+    def test_ready_again_thirty_days_after_the_last_shiny(self):
+        chain = {"firstDate": "2026-11-14", "lastShinyDate": "2026-12-14"}
+        self.assertTrue(dc.chain_shiny_ready(chain, "2027-01-13"))   # 距上次 30 天
+
+    def test_care_grows_with_calendar_not_with_chain_size(self):
+        """★ 这条是「旧口径的 bug」的护栏。
+
+        旧实现按抽卡次数累计 care，而 pick 只从未收服池抽 ⇒ 一条链最多被抽「链大小」次
+        （最大链只有 9 只）⇒ care 上限 9，永远够不到 30 ⇒ 保底闪光数学上不可能触发。
+        改成按日历天后，链的大小不再影响可达性。
+        """
+        chains = {}
+        dc.advance_chain(chains, VENUSAUR, DAY)          # 只有 1 只成员的链
+        self.assertEqual(dc.chain_care(chains["妙蛙种子"], "2026-12-14"), 30)
+        self.assertTrue(dc.chain_shiny_ready(chains["妙蛙种子"], "2026-12-14"))
 
 
 class RealPokedexTest(unittest.TestCase):
@@ -127,15 +158,28 @@ class RealPokedexTest(unittest.TestCase):
         self.assertEqual(dc.chain_key(self.by_name["皮卡丘"]), "皮丘")
 
     def test_grouping_matches_biological_chain_count(self):
-        """用基础形态名分组 → 543 组，正好等于生物链数。
+        """543 = 真实生物链数。
 
-        543 的来历：换一种独立的链定义 —— 把「evolution 数组里共现的名字」连成图，
-        取连通分量，数出来同样是 543 个分量，而且与基础形态名分组逐组一致。
-        两套互不依赖的算法给出同一个数，说明这个数不是碰巧撞出来的。
-
-        pokedex.json 重生成后这个数会变；那时该重新核对，而不是直接把数字改掉。
+        推导：按「evolution 数组共现」建连通分量（另一种自然的链定义），
+        得到的连通分量数 = 543，且与基础形态名分组逐组一致。
+        pokedex.json 重生成后这个数会变 —— 那时该重新核对，而不是直接改数字。
         """
         groups = {}
         for x in self.pokedex:
             groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
         self.assertEqual(len(groups), 543)
+
+    def test_no_chain_is_longer_than_nine_members(self):
+        """★ 「按抽卡次数累计 care」为什么不可能触发 —— 链的大小上限。
+
+        pick 只从未收服池抽 ⇒ 同一条链最多被抽「链大小」次。
+        最大链是伊布族（9 只）⇒ 旧口径的 care 上限是 9 < 30。
+        """
+        groups = {}
+        for x in self.pokedex:
+            groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
+        self.assertLessEqual(max(len(v) for v in groups.values()), 9)
+
+
+if __name__ == "__main__":
+    unittest.main()

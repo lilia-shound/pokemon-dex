@@ -78,9 +78,11 @@ class MigrateStateTest(unittest.TestCase):
     def test_already_v2_keeps_ledger(self):
         st = lg.migrate_state({"version": 2, "collected": [],
                                "ledger": {"2026-11-16": {"weread": 900}},
-                               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}})
+                               "chains": {"妙蛙种子": {"firstDate": "2026-11-14",
+                                                      "lastShinyDate": None}}})
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"firstDate": "2026-11-14",
+                                                    "lastShinyDate": None}})
 
     def test_v2_entry_keeps_explicit_sources(self):
         st = lg.migrate_state({"version": 2, "collected": [
@@ -96,13 +98,35 @@ class MigrateStateTest(unittest.TestCase):
     def test_migrate_state_does_not_alias_ledger_or_chains(self):
         """返回值与入参不能共享 ledger / chains 的内层 dict。"""
         src = {"ledger": {"2026-11-14": {"weread": 900}},
-               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0,
-                                       "nextShinyAt": 30}}}
+               "chains": {"妙蛙种子": {"firstDate": "2026-11-14",
+                                       "lastShinyDate": None}}}
         out = lg.migrate_state(src)
         out["ledger"]["2026-11-14"]["weread"] = 1800
-        out["chains"]["妙蛙种子"]["care"] = 99
+        out["chains"]["妙蛙种子"]["firstDate"] = "2026-12-14"
         self.assertEqual(src["ledger"]["2026-11-14"]["weread"], 900)
-        self.assertEqual(src["chains"]["妙蛙种子"]["care"], 1)
+        self.assertEqual(src["chains"]["妙蛙种子"]["firstDate"], "2026-11-14")
+
+    def test_legacy_chain_entries_are_dropped(self):
+        """★ 旧结构的链条目（care / pendingShiny / nextShinyAt）一律清掉。
+
+        旧结构没有 firstDate ⇒ 在「care 按日历天」的新模型下没有意义：
+        留着只会让 chain_care 恒返回 0，那条链永远养不起来。
+        """
+        st = lg.migrate_state({"version": 2, "collected": [],
+                               "chains": {"妙蛙种子": {"care": 5, "pendingShiny": 0,
+                                                       "nextShinyAt": 30}}})
+        self.assertEqual(st["chains"], {})
+
+    def test_chain_migration_is_idempotent(self):
+        """迁移跑两遍结果一样（migrate_state 每次都会被调用）。"""
+        state = {"version": 2, "collected": [],
+                 "chains": {"妙蛙种子": {"firstDate": "2026-11-14",
+                                         "lastShinyDate": None}}}
+        once = lg.migrate_state(state)
+        twice = lg.migrate_state(once)
+        self.assertEqual(twice["chains"], once["chains"])
+        self.assertEqual(twice["chains"], {"妙蛙种子": {"firstDate": "2026-11-14",
+                                                         "lastShinyDate": None}})
 
     def test_missing_date_falls_back_to_at(self):
         """缺 date 的条目用 at 的日期兜底 —— 幂等护栏完全依赖 collected[].date。"""

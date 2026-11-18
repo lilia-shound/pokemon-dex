@@ -60,7 +60,14 @@ def migrate_state(state: dict) -> dict:
     st["version"] = 2
     # 两层拷贝：账本与链状态是共享状态，调用方就地改内层 dict 时不能污染入参
     st["ledger"] = {d: dict(v) for d, v in (st.get("ledger") or {}).items()}
-    st["chains"] = {k: dict(v) for k, v in (st.get("chains") or {}).items()}
+    # 链条目统一成新结构 {"firstDate", "lastShinyDate"}（幂等）：
+    # 旧结构（care / pendingShiny / nextShinyAt）没有 firstDate，
+    # 在「care 按日历天」的新模型下没有意义 —— 留着只会让 chain_care 恒返回 0，
+    # 那条链永远养不起来 ⇒ 旧结构的条目一律清掉。
+    st["chains"] = {
+        k: {"firstDate": v.get("firstDate"), "lastShinyDate": v.get("lastShinyDate")}
+        for k, v in (st.get("chains") or {}).items() if v.get("firstDate")
+    }
     st.setdefault("streak", 0)
     st.setdefault("lastAwardDate", None)
     return st

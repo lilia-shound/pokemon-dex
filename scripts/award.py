@@ -217,12 +217,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"池子空了 —— {pokedex_total()} 只全部收集完成！")
             break
 
-        key = dc.chain_key(award)
-        chain_state = chains.get(key)
-        if chain_state and int(chain_state.get("pendingShiny", 0)) > 0:
+        # 链养成：登记「今天抽到了这条链」，再判断保底能不能兑现
+        chain_state = dc.advance_chain(chains, award, day)
+        if chain_state and dc.chain_shiny_ready(chain_state, day):
             award["shiny"] = True
-            chain_state["pendingShiny"] = int(chain_state["pendingShiny"]) - 1
-            print(f"[保底] {key} 养到 {chain_state.get('care', 0)} 天，这次必闪")
+            chain_state["lastShinyDate"] = day
+            print(f"[保底] {dc.chain_key(award)} 养到 "
+                  f"{dc.chain_care(chain_state, day)} 天，这次必闪")
 
         day_credits = src.credit_for_day(cfg, ledger_data.get(day) or {})
         contributors = [sid for sid, n in day_credits.items() if n > 0]
@@ -243,7 +244,6 @@ def main(argv: list[str] | None = None) -> int:
         new_awards.append(award_full)
         owned.add(award["id"])
         awarded_dates.add(day)
-        dc.advance_chain(chains, award)
 
     state = dc.build_state(old, cfg, today, today_sources, ledger_data,
                            chains, new_awards)
