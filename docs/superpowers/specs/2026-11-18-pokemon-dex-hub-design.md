@@ -163,7 +163,7 @@
   "today": {
     "date": "2026-11-16",
     "seconds": 1064,
-    "threshold": 900,
+    "threshold": 1800,
     "sources": { "weread": 1064, "pom": 50 },
     "credit": 3,
     "perAward": 2
@@ -189,8 +189,12 @@
 **向后兼容（关键约束）**
 `site/app.js` 与 `plugin/weread-dex.user.js` 现在读的是
 `collected[].id / .nameZh / .shiny / .at`、`streak`、`today.seconds`、`today.threshold`。
-这些字段**原样保留**，`today.seconds` 继续是微信读书口径的秒数、`today.threshold` 继续是 900。
-**现有两个读方一行都不用改**，多源信息全是**新增**字段。
+这些字段**原样保留**，`today.seconds` 继续是微信读书口径的秒数。
+
+**`today.threshold` = `perAward × weread.per`（当前 1800）**，不是 900。
+读方拿它当「掉一只宝可梦要读多久」用 —— 进度条和文案都靠它。
+发 900 会让进度条在 15 分钟就满、文案说「读满 15 分钟」，而实际要 30 分钟（`perAward = 2`）。
+发 1800 才与真实门槛一致。**现有两个读方一行都不用改**，多源信息全是**新增**字段。
 
 ### 5.3 v1 → v2 迁移
 
@@ -250,9 +254,15 @@ def pending_days(sources_cfg, ledger, awarded_dates, per_award) -> list[str]:
 
 ### 6.3 streak 与闪光概率
 
-`streak` = **连续发过奖的天数**。多日补发时按日期升序逐张发，
-每发一张后用 `compute_streak(awarded_dates | {day}, day)` 重算，
-保证那张牌的闪光概率用的是**那一天的真实连读天数**，不是补发时的当前值。
+`streak` = **连续发过奖的天数**。
+
+两处锚点，缺一不可：
+- **闪光概率**按**发奖那一天**算 —— 多日补发时按日期升序逐张发，
+  每发一张后用 `compute_streak(awarded_dates | {day}, day)` 重算，
+  保证那张牌的闪光概率用的是那一天的真实连读天数。
+- **状态里的 `streak` 字段**锚在**最后一次发奖日**（不是今天）。
+  否则补发几天前的奖励时，锚在今天会把补发日算成断签，显示成「连读 0 天」——
+  用户明明连着达标三天。
 
 闪光概率阶梯沿用现行表（不改）：
 

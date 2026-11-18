@@ -743,8 +743,74 @@ class BuildStateTest(unittest.TestCase):
         st = dc.build_state({"collected": []}, cfg(), "2026-11-16",
                             {"weread": 1800}, {}, {}, [])
         self.assertEqual(st["today"]["seconds"], 1800)
-        self.assertEqual(st["today"]["threshold"], 900)
+        self.assertEqual(st["today"]["threshold"], 1800)
         self.assertEqual(st["today"]["date"], "2026-11-16")
+
+    def test_threshold_is_cost_of_one_pokemon(self):
+        """threshold 是「掉一只实际要读多久」：perAward × weread.per。"""
+        st = dc.build_state({"collected": []}, cfg(per_award=3), "2026-11-16",
+                            {"weread": 1800}, {}, {}, [])
+        self.assertEqual(st["today"]["threshold"], 2700)
+
+    def test_threshold_follows_weread_per(self):
+        st = dc.build_state({"collected": []}, cfg(weread_per=600), "2026-11-16",
+                            {"weread": 600}, {}, {}, [])
+        self.assertEqual(st["today"]["threshold"], 1200)
+
+    def test_streak_anchored_at_last_award_day(self):
+        """补发几天前的奖励时，连读天数不能变成 0。"""
+        old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
+                              "date": "2026-11-12", "sources": ["weread"], "form": "0001"},
+                             {"id": "0002", "nameZh": "b", "shiny": False, "at": "x",
+                              "date": "2026-11-13", "sources": ["weread"], "form": "0002"}]}
+        st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {},
+                            [{"id": "0003", "nameZh": "c", "shiny": False, "at": "x",
+                              "date": "2026-11-14", "sources": ["weread"], "form": "0003"}])
+        self.assertEqual(st["streak"], 3)
+
+    def test_streak_breaks_when_new_day_awarded(self):
+        """今天也发了奖 → 断签重算，锚在今天。"""
+        old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
+                              "date": "2026-11-14", "sources": ["weread"], "form": "0001"}]}
+        st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {},
+                            [{"id": "0002", "nameZh": "b", "shiny": False, "at": "x",
+                              "date": "2026-11-16", "sources": ["weread"], "form": "0002"}])
+        self.assertEqual(st["streak"], 1)
+
+    def test_disabled_source_dropped_from_today_sources(self):
+        """today.sources 与 credit 口径一致：禁用源不参与。"""
+        c = cfg()
+        c["sources"]["words"] = {"name": "背单词", "unit": "个", "per": 20,
+                                 "mode": "push", "enabled": False}
+        st = dc.build_state({"collected": []}, c, "2026-11-16",
+                            {"weread": 900, "words": 100}, {}, {}, [])
+        self.assertEqual(st["today"]["sources"], {"weread": 900})
+        self.assertEqual(st["today"]["credit"], 1)
+
+    def test_empty_state(self):
+        st = dc.build_state({"collected": []}, cfg(), "2026-11-16", {}, {}, {}, [])
+        self.assertIsNone(st["lastAwardDate"])
+        self.assertEqual(st["streak"], 0)
+        self.assertEqual(st["collected"], [])
+
+    def test_does_not_mutate_inputs(self):
+        old = {"collected": [{"id": "0001", "date": "2026-11-14"}]}
+        today_sources = {"weread": 900}
+        ledger_data = {"2026-11-16": {"weread": 900}}
+        chains = {"a→b": {"care": 1, "stage": 0}}
+        dc.build_state(old, cfg(), "2026-11-16", today_sources, ledger_data, chains,
+                       [{"id": "0002", "date": "2026-11-16"}])
+        self.assertEqual(old, {"collected": [{"id": "0001", "date": "2026-11-14"}]})
+        self.assertEqual(today_sources, {"weread": 900})
+        self.assertEqual(ledger_data, {"2026-11-16": {"weread": 900}})
+        self.assertEqual(chains, {"a→b": {"care": 1, "stage": 0}})
+
+    def test_same_day_two_awards_are_kept(self):
+        """build_state 不按日期去重 —— 幂等由调用方保证（见 docstring）。"""
+        st = dc.build_state({"collected": []}, cfg(), "2026-11-16", {}, {}, {},
+                            [{"id": "0001", "date": "2026-11-16"},
+                             {"id": "0002", "date": "2026-11-16"}])
+        self.assertEqual(len(st["collected"]), 2)
 
     def test_today_has_new_fields(self):
         st = dc.build_state({"collected": []}, cfg(), "2026-11-16",
@@ -823,25 +889,39 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     """组装 v2 状态。
 
     new_awards 是本次要并入的发奖列表（调用方已经排好序、判过幂等）。
+    **这里绝不按日期去重** —— v1 的 new_state 曾静默丢掉重复的卡，
+    导致调用方打印了「★ 获得」而状态里没有（旧版的「假消息」坑）。
+    幂等由调用方保证。
     """
     collected = [dict(c) for c in (old.get("collected") or [])]
     for a in new_awards or []:
         collected.append(dict(a))
     awarded_dates = sorted({c["date"] for c in collected if c.get("date")})
-    today_map = {k: int(v) for k, v in (today_sources or {}).items() if int(v) > 0}
-    weread_per = int(cfg["sources"].get("weread", {}).get("per", 0))
+    # 连读天数锚在「最后一次发奖日」：补发几天前的奖励时，
+    # 显示「连读 N 天」而不是 0（锚在今天会把补发日算成断签）。
+    anchor = awarded_dates[-1] if awarded_dates else today
+    # 只保留启用源的原始量，和 credit 的口径保持一致
+    enabled = src.enabled_sources(cfg)
+    today_map = {
+        k: int(v) for k, v in (today_sources or {}).items()
+        if k in enabled and int(v) > 0
+    }
+    weread_per = int(cfg.get("sources", {}).get("weread", {}).get("per", 0))
+    per_award = int(cfg["perAward"])
     return {
         "version": 2,
         "collected": collected,
-        "streak": compute_streak(awarded_dates, today),
+        "streak": compute_streak(awarded_dates, anchor),
         "lastAwardDate": awarded_dates[-1] if awarded_dates else None,
         "today": {
             "date": today,
             "seconds": int(today_map.get("weread", 0)),
-            "threshold": weread_per,
+            # 读方（site/app.js、plugin）拿 threshold 当「掉一只要读多久」用，
+            # 所以这里发的是「掉一只实际需要的微信读书秒数」，不是 1 个额度的量。
+            "threshold": per_award * weread_per,
             "sources": today_map,
             "credit": src.day_credit(cfg, today_map),
-            "perAward": int(cfg["perAward"]),
+            "perAward": per_award,
         },
         "ledger": dict(ledger_data or {}),
         "chains": dict(chains or {}),
@@ -1204,7 +1284,7 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 >            self.assertEqual(st["lastAwardDate"], "2026-11-14")
 >            self.assertEqual(st["streak"], 1)
 >            self.assertEqual(st["today"]["seconds"], 1800)
->            self.assertEqual(st["today"]["threshold"], 900)
+>            self.assertEqual(st["today"]["threshold"], 1800)
 >
 >        def test_is_idempotent_same_day(self):
 >            """同一天重复结算不会多出一条 —— 幂等由调用方保证，这里验证状态组装。"""
@@ -1240,6 +1320,14 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 >            st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
 >                                {}, {}, {}, [self._award()])
 >            self.assertEqual(st["collected"][0]["date"], "2026-11-14")
+>
+>        def test_streak_anchored_at_last_award_day(self):
+>            """补发几天前的奖励时，连读天数不能变成 0。"""
+>            old = {"collected": [self._award("0001", "2026-11-12"),
+>                                 self._award("0002", "2026-11-13")]}
+>            st = dc.build_state(old, self._cfg(), "2026-11-16", {}, {}, {},
+>                                [self._award("0003", "2026-11-14")])
+>            self.assertEqual(st["streak"], 3)
 >    ```
 >
 >    **注意排列陷阱**：`tests/test_dex_core.py` 里 `if __name__ == "__main__":` 那一段夹在
