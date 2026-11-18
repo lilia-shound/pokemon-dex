@@ -42,10 +42,11 @@ jobs:
       - name: 同步状态并发布图鉴页
         run: |
           cp data/dex.json site/dex.json
+          cp data/sources.json site/sources.json
           cp data/pokedex.json site/pokedex.json
           git config user.name "Mavis"
           git config user.email "mavis@local"
-          git add data/dex.json site/dex.json
+          git add data/dex.json site/dex.json site/sources.json data/sources.json
           if git diff --cached --quiet; then
             echo "状态无变化，跳过发布"
           else

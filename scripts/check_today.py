@@ -13,15 +13,19 @@ import argparse
 import datetime
 import json
 import os
+import pathlib
 import sys
 import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts import dex_core as dc  # noqa: E402
+from scripts import sources as src  # noqa: E402
 from scripts import weread_client as wc  # noqa: E402
 
 SH = zoneinfo.ZoneInfo("Asia/Shanghai")
+SOURCES_PATH = pathlib.Path(os.environ.get(
+    "SOURCES_PATH",
+    pathlib.Path(__file__).resolve().parent.parent / "data" / "sources.json"))
 
 
 def main() -> int:
@@ -31,6 +35,15 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="只输出 JSON")
     args = ap.parse_args()
 
+    # 先校验配置，别让一个坏配置白白打一次 API
+    try:
+        cfg = src.load_config(SOURCES_PATH)
+    except src.SourceConfigError as exc:
+        print(f"[失败] 源注册表有问题：{exc}", file=sys.stderr)
+        return 1
+    weread_per = int(cfg["sources"]["weread"]["per"])
+    per_award = int(cfg["perAward"])
+
     try:
         rt = wc.read_times(args.mode)
     except wc.WeReadError as exc:
@@ -39,6 +52,7 @@ def main() -> int:
 
     key, secs = wc.today_seconds(rt)
     now = datetime.datetime.now(SH)
+    credit = src.day_credit(cfg, {"weread": secs})
     out = {
         "checkedAt": now.isoformat(),
         "mode": args.mode,
@@ -46,8 +60,10 @@ def main() -> int:
         "todayBucketKey": key,
         "todaySeconds": secs,
         "todayMinutes": round(secs / 60, 1),
-        "thresholdSeconds": dc.THRESHOLD_SECONDS,
-        "reached": secs >= dc.THRESHOLD_SECONDS,
+        "thresholdSeconds": weread_per,
+        "reached": credit >= per_award,
+        "credit": credit,
+        "perAward": per_award,
         "buckets": [
             {
                 "key": k,
@@ -64,8 +80,8 @@ def main() -> int:
     print(f"检查时间   {now:%Y-%m-%d %H:%M:%S} (Asia/Shanghai)")
     print(f"分桶模式   {args.mode}   桶数 {len(rt)}")
     print(f"今日秒数   {secs} 秒 ({round(secs / 60, 1)} 分)   "
-          f"达标线 {dc.THRESHOLD_SECONDS} 秒 → "
-          f"{'达标' if secs >= dc.THRESHOLD_SECONDS else '未达标'}")
+          f"额度 {credit}/{per_award} → "
+          f"{'达标' if credit >= per_award else '未达标'}")
     print(f"今日桶 key {key}")
     print("--- 全部桶 ---")
     for b in out["buckets"]:
