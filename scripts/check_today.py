@@ -41,13 +41,9 @@ def main() -> int:
     except src.SourceConfigError as exc:
         print(f"[失败] 源注册表有问题：{exc}", file=sys.stderr)
         return 1
-    # 注册表里没有微信读书源：给出脚本自己的提示，别让调用方看到裸 KeyError traceback
-    weread_per = cfg.get("sources", {}).get("weread", {}).get("per")
-    if weread_per is None:
-        print("[失败] 源注册表有问题：缺少微信读书源（sources.weread）",
-              file=sys.stderr)
-        return 1
-    weread_per = int(weread_per)
+    # 「必须注册微信读书源」由 sources.validate_config 统一把关 ——
+    # load_config 读不到这一项时已经抛错退出了（两个入口的口径不再各写一份）。
+    weread_per = int(cfg["sources"]["weread"]["per"])
     per_award = int(cfg["perAward"])
 
     try:

@@ -14,6 +14,11 @@
 所以判定不只看今天，而是扫账本里所有「额度够了但还没发奖」的日期，
 一次结清（升序，最多 maxBackfill 天）。
 
+**取数失败 ≠ 今天没读够**：monthly 与 weekly 两个周期都取数失败时，脚本会 exit 1 并打印
+「[失败] 取数失败…」，而不是「未达标，今天没有宝可梦。」+ rc=0 ——
+两者在 cron 里同形的话，Key 失效 / skill 版本过期 / 网关抖动会被安静地当成「用户今天没读书」，
+全站就停在「不更新」状态而没人知道。
+
 **`--migrate-only` 只在迁移当天跑一次**：它直接覆盖 `data/dex.json`、**不带自动备份**。
 备份在 git 里 —— 需要回退时用 `git show <commit>:data/dex.json` 取回旧版。
 隔天再跑会把上一天的 `today.seconds` 清零
@@ -73,14 +78,22 @@ def fetch_buckets() -> dict[int, int]:
 
     monthly 覆盖本月至今，weekly 覆盖本周至今。两者合并能覆盖跨周/跨月的边界，
     补发时不会漏掉周期最后一天。
+
+    **两个模式都失败时抛错** —— 否则「取数失败」和「今天没读够」在 cron 里长得一模一样，
+    全站会安静地停在「不更新」状态而没人知道（Key 失效、skill 版本过期、网关抖动
+    都会被当成「用户今天没读书」）。单模式失败仍可降级（另一个模式的数据照样用）。
     """
     merged: dict[int, int] = {}
+    failures: list[str] = []
     for mode in ("monthly", "weekly"):
         try:
             for k, v in wc.read_times(mode).items():
                 merged[k] = max(merged.get(k, 0), v)
         except wc.WeReadError as exc:
+            failures.append(f"{mode}: {exc}")
             print(f"[警告] {mode} 分桶取数失败：{exc}", file=sys.stderr)
+    if not merged and failures:
+        raise RuntimeError("微信读书取数全部失败：" + "；".join(failures))
     return merged
 
 
@@ -153,7 +166,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         buckets = fetch_buckets()
     except Exception as exc:  # noqa: BLE001
-        print(f"[失败] 取数失败，本轮不发奖：{exc}", file=sys.stderr)
+        # 这条分支必须存在：取数失败（Key 失效 / skill 版本过期 / 网关抖动）与
+        # 「今天没读够」是两回事，不能在 cron 里长得一模一样。
+        print(f"[失败] 取数失败，本轮不发奖（这不是「今天没读够」）：{exc}",
+              file=sys.stderr)
         return 1
 
     ledger_data = lg.merge_amounts(old.get("ledger") or {}, "weread",

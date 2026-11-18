@@ -39,6 +39,11 @@ def validate_config(cfg: dict) -> None:
     sources = cfg.get("sources")
     if not isinstance(sources, dict) or not sources:
         raise SourceConfigError("sources.json 的 sources 必须是非空对象")
+    # 微信读书源是结算的必需项：发放器的额度折算与 today.threshold 都按它算。
+    # 少了它会算出 threshold=0 并写进对外的 dex.json（图鉴页渲染成「30/0 分」），
+    # 而且**没有任何报错**。这条要求放在这里，award.py 与 check_today.py 两个入口自动一致。
+    if "weread" not in sources:
+        raise SourceConfigError("sources.json 缺少微信读书源（sources.weread）")
     for sid, s in sources.items():
         if not isinstance(s, dict):
             raise SourceConfigError(f"源 {sid} 必须是对象")
@@ -75,6 +80,7 @@ def load_config(path) -> dict:
         raise SourceConfigError(f"{p} 不是合法 JSON：{exc}") from exc
     validate_config(cfg)
     # 旧的环境变量旋钮继续有效：覆盖微信读书的 per
+    # （validate_config 已经保证 sources.weread 存在，所以这里不会 KeyError）
     env = os.environ.get("DEX_THRESHOLD")
     if env:
         try:
@@ -84,7 +90,7 @@ def load_config(path) -> dict:
             if value < 1:
                 raise SourceConfigError(f"DEX_THRESHOLD 必须 >= 1，实际 {value!r}")
             cfg["sources"]["weread"]["per"] = value
-        except (KeyError, ValueError) as exc:
+        except ValueError as exc:
             raise SourceConfigError(f"DEX_THRESHOLD 不是整数：{env!r}") from exc
     return cfg
 
