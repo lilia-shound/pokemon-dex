@@ -757,8 +757,8 @@ class BuildStateTest(unittest.TestCase):
                             {"weread": 600}, {}, {}, [])
         self.assertEqual(st["today"]["threshold"], 1200)
 
-    def test_streak_anchored_at_last_award_day(self):
-        """补发几天前的奖励时，连读天数不能变成 0。"""
+    def test_streak_decays_after_a_gap(self):
+        """断签后连读天数归零 —— 相对 v1 的有意变更（v1 一直挂着一个不衰减的旧值）。"""
         old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
                               "date": "2026-11-12", "sources": ["weread"], "form": "0001"},
                              {"id": "0002", "nameZh": "b", "shiny": False, "at": "x",
@@ -766,7 +766,15 @@ class BuildStateTest(unittest.TestCase):
         st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {},
                             [{"id": "0003", "nameZh": "c", "shiny": False, "at": "x",
                               "date": "2026-11-14", "sources": ["weread"], "form": "0003"}])
-        self.assertEqual(st["streak"], 3)
+        # 11-15 没过 → 连读断了
+        self.assertEqual(st["streak"], 0)
+
+    def test_streak_counts_from_yesterday_when_today_not_awarded(self):
+        """今天还没达标，但昨天发过奖 → 连读从昨天数起（不断）。"""
+        old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
+                              "date": "2026-11-15", "sources": ["weread"], "form": "0001"}]}
+        st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {}, [])
+        self.assertEqual(st["streak"], 1)
 
     def test_streak_breaks_when_new_day_awarded(self):
         """今天也发了奖 → 断签重算，锚在今天。"""
@@ -897,9 +905,6 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     for a in new_awards or []:
         collected.append(dict(a))
     awarded_dates = sorted({c["date"] for c in collected if c.get("date")})
-    # 连读天数锚在「最后一次发奖日」：补发几天前的奖励时，
-    # 显示「连读 N 天」而不是 0（锚在今天会把补发日算成断签）。
-    anchor = awarded_dates[-1] if awarded_dates else today
     # 只保留启用源的原始量，和 credit 的口径保持一致
     enabled = src.enabled_sources(cfg)
     today_map = {
@@ -911,7 +916,9 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     return {
         "version": 2,
         "collected": collected,
-        "streak": compute_streak(awarded_dates, anchor),
+        # 连读天数锚在「今天」，会衰减：断签后归零、闪光概率回到 1/96。
+        # 这是相对 v1 的有意变更 —— v1 锚在发奖日，会一直挂着一个不衰减的旧值。
+        "streak": compute_streak(awarded_dates, today),
         "lastAwardDate": awarded_dates[-1] if awarded_dates else None,
         "today": {
             "date": today,
@@ -1321,13 +1328,13 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 >                                {}, {}, {}, [self._award()])
 >            self.assertEqual(st["collected"][0]["date"], "2026-11-14")
 >
->        def test_streak_anchored_at_last_award_day(self):
->            """补发几天前的奖励时，连读天数不能变成 0。"""
+>        def test_streak_decays_after_a_gap(self):
+>            """断签后连读天数归零 —— 相对 v1 的有意变更。"""
 >            old = {"collected": [self._award("0001", "2026-11-12"),
 >                                 self._award("0002", "2026-11-13")]}
 >            st = dc.build_state(old, self._cfg(), "2026-11-16", {}, {}, {},
 >                                [self._award("0003", "2026-11-14")])
->            self.assertEqual(st["streak"], 3)
+>            self.assertEqual(st["streak"], 0)
 >    ```
 >
 >    **注意排列陷阱**：`tests/test_dex_core.py` 里 `if __name__ == "__main__":` 那一段夹在
