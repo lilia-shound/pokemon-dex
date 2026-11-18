@@ -1311,13 +1311,6 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 >            self.assertEqual(st["today"]["seconds"], 0)
 >            self.assertEqual(st["today"]["date"], "2026-11-15")
 >
->        def test_streak_counts_up_to_award_date(self):
->            old = {"collected": [self._award("0001", "2026-11-12"),
->                                 self._award("0002", "2026-11-13")]}
->            st = dc.build_state(old, self._cfg(), "2026-11-15", {}, {}, {},
->                                [self._award("0003", "2026-11-14")])
->            self.assertEqual(st["streak"], 3)
->
 >        def test_shiny_flag_preserved(self):
 >            st = dc.build_state({"collected": []}, self._cfg(), "2026-11-14",
 >                                {}, {}, {}, [self._award(shiny=True)])
