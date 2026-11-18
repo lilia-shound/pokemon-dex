@@ -28,6 +28,11 @@ def cfg(**over):
     return base
 
 
+def is_positive_int(v) -> bool:
+    """>=1 的整数（bool 不算，尽管 True == 1）。"""
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
 class ValidateConfigTest(unittest.TestCase):
     def test_accepts_good_config(self):
         src.validate_config(cfg())  # 不抛异常即通过
@@ -65,6 +70,27 @@ class ValidateConfigTest(unittest.TestCase):
     def test_rejects_source_per_below_one(self):
         c = cfg()
         c["sources"]["weread"]["per"] = 0
+        with self.assertRaises(src.SourceConfigError):
+            src.validate_config(c)
+
+    def test_rejects_source_without_enabled(self):
+        # enabled 是必填：拼错键名 / 漏写不能让源静默退出结算
+        c = cfg()
+        del c["sources"]["pom"]["enabled"]
+        with self.assertRaises(src.SourceConfigError):
+            src.validate_config(c)
+
+    def test_rejects_non_bool_enabled(self):
+        # "false" 字符串是真值，放过去会让源照常参与结算
+        c = cfg()
+        c["sources"]["pom"]["enabled"] = "false"
+        with self.assertRaises(src.SourceConfigError):
+            src.validate_config(c)
+
+    def test_rejects_int_enabled(self):
+        # 1 不是 True：类型错了就该报错
+        c = cfg()
+        c["sources"]["weread"]["enabled"] = 1
         with self.assertRaises(src.SourceConfigError):
             src.validate_config(c)
 
@@ -115,36 +141,76 @@ class CreditForDayTest(unittest.TestCase):
 REGISTRY_PATH = pathlib.Path(__file__).resolve().parent.parent / "data" / "sources.json"
 
 
+def registry_raw() -> dict:
+    """注册表原始 JSON（用来和 load_config 的结果对比，避免把可调数值钉死在测试里）。"""
+    return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+
+
 class LoadConfigTest(unittest.TestCase):
     """load_config 是本模块唯一的 IO 入口，顺带盯住 DEX_THRESHOLD 这个旧旋钮。"""
 
     def test_loads_shipped_registry(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             got = src.load_config(REGISTRY_PATH)
-        self.assertEqual(got["perAward"], 2)
-        self.assertEqual(got["sources"]["weread"]["per"], 900)
-        self.assertEqual(got["sources"]["words"]["enabled"], False)
+        # 只断言不变量：注册表里的数值是手调的旋钮（perAward 想调回 1 也不该让测试变红），
+        # 所以这里不能钉死 perAward == 2 / weread.per == 900 这种具体值。
+        self.assertTrue(is_positive_int(got["perAward"]), f"perAward 必须是 >=1 的整数，实际 {got['perAward']!r}")
+        self.assertIn("weread", got["sources"])
+        weread = got["sources"]["weread"]
+        self.assertTrue(is_positive_int(weread["per"]), f"weread.per 必须是 >=1 的整数，实际 {weread['per']!r}")
+        self.assertIn(weread["mode"], ("pull", "push"))
+        # 每个源的 enabled 都得是布尔值（validate_config 已经把关，这里再钉一道）
+        for sid, s in got["sources"].items():
+            self.assertIsInstance(s["enabled"], bool, f"源 {sid} 的 enabled 必须是布尔值")
+        self.assertTrue(any(s["enabled"] for s in got["sources"].values()), "至少要有一个启用的源")
 
     def test_dex_threshold_overrides_weread_per(self):
+        raw = registry_raw()
         with mock.patch.dict(os.environ, {"DEX_THRESHOLD": "600"}, clear=True):
             got = src.load_config(REGISTRY_PATH)
         self.assertEqual(got["sources"]["weread"]["per"], 600)
-        # 别的源不受影响
-        self.assertEqual(got["sources"]["pom"]["per"], 25)
+        # 别的源不受影响（跟文件里的值比，不钉死具体数字）
+        self.assertEqual(got["sources"]["pom"]["per"], raw["sources"]["pom"]["per"])
 
     def test_dex_threshold_absent_keeps_file_value(self):
+        raw = registry_raw()
         with mock.patch.dict(os.environ, {}, clear=True):
             got = src.load_config(REGISTRY_PATH)
-        self.assertEqual(got["sources"]["weread"]["per"], 900)
+        self.assertEqual(got["sources"]["weread"]["per"], raw["sources"]["weread"]["per"])
 
     def test_dex_threshold_not_integer_raises(self):
         with mock.patch.dict(os.environ, {"DEX_THRESHOLD": "abc"}, clear=True):
             with self.assertRaises(src.SourceConfigError):
                 src.load_config(REGISTRY_PATH)
 
+    def test_dex_threshold_zero_raises(self):
+        # 覆盖值也是配置：per=0 会在折算时 ZeroDivisionError，必须在读配置时就拒掉
+        with mock.patch.dict(os.environ, {"DEX_THRESHOLD": "0"}, clear=True):
+            with self.assertRaises(src.SourceConfigError):
+                src.load_config(REGISTRY_PATH)
+
+    def test_dex_threshold_negative_raises(self):
+        # per=-5 会把 900 秒记成 -180 额度，同样要在读配置时就拒掉
+        with mock.patch.dict(os.environ, {"DEX_THRESHOLD": "-5"}, clear=True):
+            with self.assertRaises(src.SourceConfigError):
+                src.load_config(REGISTRY_PATH)
+
     def test_missing_file_raises(self):
         with self.assertRaises(src.SourceConfigError):
             src.load_config(REGISTRY_PATH.parent / "no-such-registry.json")
+
+    def test_directory_path_raises(self):
+        # 传目录路径：不能漏出裸的 IsADirectoryError
+        with self.assertRaises(src.SourceConfigError):
+            src.load_config(REGISTRY_PATH.parent)
+
+    def test_invalid_utf8_raises(self):
+        # 非法 UTF-8 字节：不能漏出裸的 UnicodeDecodeError
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp) / "sources.json"
+            p.write_bytes(b"\xff\xfe\x00bad")
+            with self.assertRaises(src.SourceConfigError):
+                src.load_config(p)
 
     def test_invalid_json_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

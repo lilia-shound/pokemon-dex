@@ -13,7 +13,9 @@ import os
 import pathlib
 
 ROOT_KEYS = ("perAward", "maxPerDay", "maxBackfill", "ledgerDays")
-SOURCE_KEYS = ("name", "unit", "per")
+# 每个源必填的字段：enabled 也是必填，手改注册表时拼错键名要当场报错，
+# 而不是让这个源静默退出结算。
+SOURCE_KEYS = ("name", "unit", "per", "enabled")
 
 
 class SourceConfigError(RuntimeError):
@@ -43,6 +45,10 @@ def validate_config(cfg: dict) -> None:
         for key in SOURCE_KEYS:
             if key not in s:
                 raise SourceConfigError(f"源 {sid} 缺少 {key}")
+        # enabled 必须是布尔值：写成 "false" 字符串会被当成真，源照常参与结算；
+        # 写成 1 也不该被当成 True。宁可启动就报错，也不要静默改结算口径。
+        if not isinstance(s["enabled"], bool):
+            raise SourceConfigError(f"源 {sid} 的 enabled 必须是布尔值，实际 {s['enabled']!r}")
         if not _is_int(s["per"]) or s["per"] < 1:
             raise SourceConfigError(f"源 {sid} 的 per 必须是 >=1 的整数，实际 {s['per']!r}")
         if s.get("mode") not in ("pull", "push"):
@@ -52,12 +58,17 @@ def validate_config(cfg: dict) -> None:
 
 
 def load_config(path) -> dict:
-    """读 sources.json 并校验。失败抛 SourceConfigError。"""
+    """读 sources.json 并校验。失败一律抛 SourceConfigError（读不到、读不懂、结构不对都算失败）。"""
     p = pathlib.Path(path)
     try:
         raw = p.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise SourceConfigError(f"找不到源注册表：{p}") from exc
+    except UnicodeDecodeError as exc:
+        raise SourceConfigError(f"{p} 不是合法的 UTF-8 文本：{exc}") from exc
+    except OSError as exc:
+        # 目录路径、权限不足等等：IsADirectoryError 是 OSError 的子类
+        raise SourceConfigError(f"读不了源注册表 {p}：{exc}") from exc
     try:
         cfg = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -67,7 +78,12 @@ def load_config(path) -> dict:
     env = os.environ.get("DEX_THRESHOLD")
     if env:
         try:
-            cfg["sources"]["weread"]["per"] = int(env)
+            value = int(env)
+            # 覆盖值也是配置，一样要过校验：per=0 会在折算时 ZeroDivisionError，
+            # per<0 会把 900 秒记成负额度。两种都不该拖到运行期才炸。
+            if value < 1:
+                raise SourceConfigError(f"DEX_THRESHOLD 必须 >= 1，实际 {value!r}")
+            cfg["sources"]["weread"]["per"] = value
         except (KeyError, ValueError) as exc:
             raise SourceConfigError(f"DEX_THRESHOLD 不是整数：{env!r}") from exc
     return cfg
@@ -75,6 +91,8 @@ def load_config(path) -> dict:
 
 def enabled_sources(cfg: dict) -> dict:
     """只返回参与结算的源。"""
+    # enabled 已被 validate_config 校验过：必填、且必须是布尔值。
+    # 这里保持宽松，免得调用方手搓的 dict 少个键就直接 KeyError 崩掉。
     return {sid: s for sid, s in cfg["sources"].items() if s.get("enabled", False)}
 
 
