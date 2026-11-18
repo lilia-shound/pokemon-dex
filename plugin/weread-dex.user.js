@@ -143,7 +143,8 @@
     const n = ownedMap().size;
     el.innerHTML = `<span class="num">${n}</span><span class="lbl">图鉴</span>`
       + `<span class="bar"><i style="width:${i.pct}%"></i></span>`
-      + `<span class="num">${Math.round(i.sec / 60)}/${Math.round(i.thr / 60)}</span>`;
+      // 向下取整：不虚报进度（1776 秒四舍五入会显示成「30/30」，看着像已达标）
+      + `<span class="num">${Math.floor(i.sec / 60)}/${Math.floor(i.thr / 60)}</span>`;
   }
 
   function openModal() {
@@ -173,7 +174,7 @@
 
     const head = `<div class="tx-head">
       <b>训练家图鉴 ${n}/${total}</b>
-      <span class="dim">连读 ${DEX.streak || 0} 天 · 今日 ${Math.round(t.sec / 60)}/${Math.round(t.thr / 60)} 分 · 点空白处关闭</span>
+      <span class="dim">连读 ${DEX.streak || 0} 天 · 今日 ${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分 · 点空白处关闭</span>
     </div>`;
 
     const open = last && lp && DEX.lastAwardDate === t.date ? `

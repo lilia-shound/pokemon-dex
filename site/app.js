@@ -72,7 +72,9 @@ function render() {
 
   const t = todayInfo();
   $("todayMini").hidden = false;
-  setText("todayMiniVal", `${Math.round(t.sec / 60)}/${Math.round(t.thr / 60)} 分`);
+  // 向下取整：不虚报进度。1776 秒四舍五入会显示成「30/30 分」，
+  // 读起来像「今天已达标」，但其实额度 1 < 2，今天不会掉。
+  setText("todayMiniVal", `${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分`);
 
   // 今日开箱卡
   const collected = DEX.collected || [];
