@@ -179,76 +179,36 @@ def _chain_names(pokemon: dict) -> list[str]:
 
 
 def chain_key(pokemon: dict) -> str:
-    """链的唯一标识。"""
-    return "→".join(_chain_names(pokemon))
+    """进化链的唯一标识 —— **基础形态名**（evolution 的第一个名字）。
 
+    为什么不用整条数组拼起来当 key：真实数据（42arch）把分叉的进化关系拍平成了直线，
+    而且同一条链的成员拿到的 evolution 数组并不一致（走路草 6 个名字，霸王花只有 3 个）。
+    用整条数组当 key 会把同一条链拆成多份（实测 543 条生物链被拆成 588 个 key，
+    19 条链被拆开，care 被摊薄到不同 key 上）。
 
-def chain_stage(pokemon: dict) -> int:
-    """这只在链上的第几级（0 = 初始形态）。"""
+    基础形态名是同链所有成员共有的，本地就能算，不需要全局上下文。
+    实测：用基础形态名分组 → 543 组，正好等于生物链数。
+    """
     names = _chain_names(pokemon)
-    if not names:
-        return 0
-    name = pokemon.get("nameZh")
-    return names.index(name) if name in names else 0
-
-
-def chain_final_stage(pokemon: dict) -> int:
-    """链的最终形态是第几级。"""
-    return max(0, len(_chain_names(pokemon)) - 1)
-
-
-def chain_pokemon_by_stage(pokemon: dict, pokedex: list) -> dict:
-    """{级别: 该级对应的宝可梦}。找不到的级别不出现。"""
-    key = chain_key(pokemon)
-    out: dict[int, dict] = {}
-    for i, name in enumerate(_chain_names(pokemon)):
-        for p in pokedex:
-            if p.get("nameZh") == name and chain_key(p) == key:
-                out[i] = p
-                break
-    return out
+    return names[0] if names else ""
 
 
 def advance_chain(chains: dict, pokemon: dict) -> dict:
     """给这条链加一天培养。原地修改并返回 chains。
 
-    care 每满 3 天推进一级形态；care 每多 30 天给一次保底闪光。
+    care 每多 30 天给一次保底闪光（pendingShiny += 1）——
+    下次抽到这个链的宝可梦时可以强制闪光。把「一次性运气」换成「持续投入」。
+
+    注：形态改写（进化阶数 → collected[].form）不在本层做 ——
+    分叉的进化关系在拍平的数据里没有唯一的「这一阶对应哪只」，那是 S6 的活。
     """
     key = chain_key(pokemon)
     if not key:
         return chains
-    st = chains.setdefault(key, {"care": 0, "stage": 0,
-                                  "pendingShiny": 0, "nextShinyAt": 30})
+    st = chains.setdefault(key, {"care": 0, "pendingShiny": 0, "nextShinyAt": 30})
     st["care"] = int(st.get("care", 0)) + 1
-    final = chain_final_stage(pokemon)
-    if int(st.get("stage", 0)) < final and st["care"] >= (int(st["stage"]) + 1) * 3:
-        st["stage"] = int(st["stage"]) + 1
     if st["care"] >= int(st.get("nextShinyAt", 30)):
         st["pendingShiny"] = int(st.get("pendingShiny", 0)) + 1
-        st["nextShinyAt"] = st["care"] + 30
+        # 节奏固定：每次 +30，而不是 care + 30 —— care 跳变时不该整体后移
+        st["nextShinyAt"] = int(st.get("nextShinyAt", 30)) + 30
     return chains
-
-
-def apply_forms(collected: list, chains: dict, pokedex: list) -> None:
-    """按链的当前阶段，把已收服条目的 form 更新成对应形态。
-
-    form 只影响展示 —— collected[].id 不变，所以「已收服 N/1028」不会倒退。
-    """
-    by_id = {p.get("id"): p for p in pokedex}
-    stage_members: dict[str, dict] = {}
-    for c in collected:
-        p = by_id.get(c.get("id"))
-        if p is None:
-            continue
-        key = chain_key(p)
-        st = chains.get(key)
-        if not st:
-            continue
-        stage = int(st.get("stage", 0))
-        if stage <= 0:
-            continue
-        if key not in stage_members:
-            stage_members[key] = chain_pokemon_by_stage(p, pokedex)
-        target = stage_members[key].get(stage)
-        if target is not None:
-            c["form"] = target.get("id")

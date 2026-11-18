@@ -1,3 +1,5 @@
+import json
+import pathlib
 import unittest
 
 from scripts import dex_core as dc
@@ -12,165 +14,118 @@ PIKACHU = {"id": "0025", "nameZh": "皮卡丘",
            "evolution": ["皮丘", "皮卡丘", "雷丘", "皮丘", "皮卡丘", "雷丘"]}
 PIKACHU_DUPE = {"id": "0025b", "nameZh": "皮卡丘",
                 "evolution": ["皮丘", "皮卡丘", "雷丘"]}
+# 真实数据里同链成员的 evolution 数组并不一致 —— 这正是旧 key 算法的坑
+WALKING_GRASS = {"id": "0004", "nameZh": "走路草",
+                 "evolution": ["走路草", "臭臭花", "霸王花", "走路草", "臭臭花", "美丽花"]}
+BEAUTIFUL_FLOWER = {"id": "0005", "nameZh": "霸王花",
+                     "evolution": ["走路草", "臭臭花", "霸王花"]}
 
 
 class ChainKeyTest(unittest.TestCase):
-    def test_joins_names_with_arrow(self):
-        self.assertEqual(dc.chain_key(BULBASAUR), "妙蛙种子→妙蛙草→妙蛙花")
+    def test_uses_base_form_name(self):
+        self.assertEqual(dc.chain_key(BULBASAUR), "妙蛙种子")
 
     def test_dedups_repeated_names(self):
-        self.assertEqual(dc.chain_key(PIKACHU), "皮丘→皮卡丘→雷丘")
-
-    def test_different_chains_differ(self):
-        self.assertNotEqual(dc.chain_key(BULBASAUR), dc.chain_key(PIKACHU))
+        self.assertEqual(dc.chain_key(PIKACHU), "皮丘")
 
     def test_missing_evolution_is_empty(self):
         self.assertEqual(dc.chain_key({"id": "x", "nameZh": "独角兽"}), "")
 
+    def test_members_with_different_arrays_share_one_key(self):
+        """真实数据的坑：同链成员的 evolution 数组不一致，key 必须仍然一致。"""
+        self.assertEqual(dc.chain_key(WALKING_GRASS), dc.chain_key(BEAUTIFUL_FLOWER))
 
-class ChainStageTest(unittest.TestCase):
-    def test_stage_is_index_in_chain(self):
-        self.assertEqual(dc.chain_stage(BULBASAUR), 0)
-        self.assertEqual(dc.chain_stage(IVYSAUR), 1)
-        self.assertEqual(dc.chain_stage(VENUSAUR), 2)
-
-    def test_final_stage(self):
-        self.assertEqual(dc.chain_final_stage(BULBASAUR), 2)
-        self.assertEqual(dc.chain_final_stage(PIKACHU), 2)
-
-    def test_name_not_in_chain_is_stage_zero(self):
-        self.assertEqual(dc.chain_stage({"id": "9", "nameZh": "外星种"}), 0)
-
-
-class ChainPokemonByStageTest(unittest.TestCase):
-    POKEDEX = [BULBASAUR, IVYSAUR, VENUSAUR, PIKACHU, PIKACHU_DUPE]
-
-    def test_maps_stage_to_pokemon(self):
-        got = dc.chain_pokemon_by_stage(BULBASAUR, self.POKEDEX)
-        self.assertEqual(got[0]["id"], "0001")
-        self.assertEqual(got[1]["id"], "0002")
-        self.assertEqual(got[2]["id"], "0003")
-
-    def test_missing_stage_absent(self):
-        # 皮丘不在这个测试用的 pokedex 里，所以那一级不出现
-        got = dc.chain_pokemon_by_stage(PIKACHU, self.POKEDEX)
-        self.assertNotIn(0, got)
-        self.assertEqual(got[1]["id"], "0025")
+    def test_different_chains_differ(self):
+        self.assertNotEqual(dc.chain_key(BULBASAUR), dc.chain_key(PIKACHU))
 
 
 class AdvanceChainTest(unittest.TestCase):
     def test_first_care_creates_entry(self):
         chains = {}
         dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["care"], 1)
-        self.assertEqual(st["stage"], 0)
         self.assertEqual(st["pendingShiny"], 0)
         self.assertEqual(st["nextShinyAt"], 30)
+
+    def test_mutates_in_place_and_returns_same_object(self):
+        chains = {}
+        got = dc.advance_chain(chains, BULBASAUR)
+        self.assertIs(got, chains)
 
     def test_care_accumulates(self):
         chains = {}
         for _ in range(5):
             dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["care"], 5)
+        self.assertEqual(chains["妙蛙种子"]["care"], 5)
 
-    def test_stage_advances_every_three_care(self):
-        chains = {}
-        for _ in range(3):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 1)
-
-    def test_stage_advances_again_at_six(self):
-        chains = {}
-        for _ in range(6):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 2)
-
-    def test_stage_stops_at_final(self):
-        chains = {}
-        for _ in range(12):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 2)
-
-    def test_care_thirty_grants_one_guarantee(self):
+    def test_thirty_care_grants_one_guarantee(self):
         chains = {}
         for _ in range(30):
             dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["pendingShiny"], 1)
         self.assertEqual(st["nextShinyAt"], 60)
 
-    def test_next_guarantee_at_sixty(self):
+    def test_sixty_care_grants_second_guarantee(self):
         chains = {}
         for _ in range(60):
             dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["pendingShiny"], 2)
         self.assertEqual(st["nextShinyAt"], 90)
+
+    def test_guarantee_rhythm_is_fixed_not_sliding(self):
+        """care 跳变时保底节奏不该整体后移：nextShinyAt 每次 +30，不是 care+30。"""
+        chains = {"妙蛙种子": {"care": 35, "pendingShiny": 0, "nextShinyAt": 30}}
+        dc.advance_chain(chains, BULBASAUR)
+        st = chains["妙蛙种子"]
+        self.assertEqual(st["pendingShiny"], 1)
+        self.assertEqual(st["nextShinyAt"], 60)
 
     def test_other_chain_is_independent(self):
         chains = {}
         dc.advance_chain(chains, BULBASAUR)
         dc.advance_chain(chains, PIKACHU)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["care"], 1)
-        self.assertEqual(chains["皮丘→皮卡丘→雷丘"]["care"], 1)
+        self.assertEqual(chains["妙蛙种子"]["care"], 1)
+        self.assertEqual(chains["皮丘"]["care"], 1)
 
-    def test_returns_same_dict_in_place(self):
+    def test_no_evolution_creates_no_entry(self):
         chains = {}
-        got = dc.advance_chain(chains, BULBASAUR)
-        self.assertIs(got, chains)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["care"], 1)
-
-    def test_no_evolution_adds_no_entry(self):
-        chains = {}
-        dc.advance_chain(chains, {"id": "9", "nameZh": "外星种"})
+        dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"})
         self.assertEqual(chains, {})
 
 
-class ApplyFormsTest(unittest.TestCase):
-    POKEDEX = [BULBASAUR, IVYSAUR, VENUSAUR, PIKACHU, PIKACHU_DUPE]
+class RealPokedexTest(unittest.TestCase):
+    """真实数据护栏 —— 合成数据会掩盖「同链成员 evolution 数组不一致」这个坑。"""
 
-    def _collected(self, pid, form):
-        return [{"id": pid, "nameZh": "x", "shiny": False, "date": "2026-11-16",
-                 "sources": ["weread"], "form": form}]
+    @classmethod
+    def setUpClass(cls):
+        p = pathlib.Path(__file__).resolve().parent.parent / "data" / "pokedex.json"
+        cls.pokedex = json.loads(p.read_text(encoding="utf-8"))["pokemon"]
+        cls.by_name = {x["nameZh"]: x for x in cls.pokedex}
 
-    def test_stage_zero_keeps_own_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 1, "stage": 0}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0001")
+    def test_walking_grass_line_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n])
+                for n in ("走路草", "臭臭花", "霸王花", "美丽花")}
+        self.assertEqual(len(keys), 1)
 
-    def test_stage_one_sets_next_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 3, "stage": 1}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0002")
+    def test_eevee_family_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n])
+                for n in ("伊布", "水伊布", "雷伊布", "火伊布", "太阳伊布",
+                          "月亮伊布", "叶伊布", "冰伊布", "仙子伊布")}
+        self.assertEqual(len(keys), 1)
 
-    def test_stage_two_sets_final_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 6, "stage": 2}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0003")
+    def test_pikachu_line_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n]) for n in ("皮丘", "皮卡丘", "雷丘")}
+        self.assertEqual(len(keys), 1)
 
-    def test_chain_without_state_untouched(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0001")
+    def test_chain_key_is_base_form_name(self):
+        self.assertEqual(dc.chain_key(self.by_name["皮卡丘"]), "皮丘")
 
-    def test_unknown_id_untouched(self):
-        col = self._collected("9999", "9999")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 3, "stage": 1}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "9999")
-
-    def test_stage_beyond_chain_leaves_form(self):
-        # 链只有 3 级，stage 4 没有对应形态 —— 原样不动
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 99, "stage": 4}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0001")
-
-    def test_collected_id_unchanged(self):
-        # form 只影响展示，id 不变 —— 「已收服 N/1028」不会倒退
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 6, "stage": 2}}, self.POKEDEX)
-        self.assertEqual(col[0]["id"], "0001")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_grouping_matches_biological_chain_count(self):
+        """用基础形态名分组 → 543 组，正好等于生物链数。"""
+        groups = {}
+        for x in self.pokedex:
+            groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
+        self.assertEqual(len(groups), 543)
