@@ -117,7 +117,11 @@ function render() {
     $("todayMini").hidden = false;
     // 向下取整：不虚报进度。1776 秒四舍五入会显示成「30/30 分」，
     // 读起来像「今天已达标」，但其实额度 1 < 2，今天不会掉。
-    setText("todayMiniVal", `${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分`);
+    // 分子还要夹到阈值：perAward=1 时阈值是 900 秒（15 分），而她今天已读 1776 秒（29 分）
+    // ⇒ 不夹会显示成「29/15 分」（超过 100%）。满额时显示「15/15 分」。
+    const thrMin = Math.floor(t.thr / 60);
+    const readMin = Math.min(Math.floor(t.sec / 60), thrMin);
+    setText("todayMiniVal", `${readMin}/${thrMin} 分`);
   } else {
     // 阈值拿不到 —— 不显示猜的进度（宁可空着）
     $("todayMini").hidden = true;

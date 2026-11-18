@@ -119,9 +119,13 @@
   }
 
   // 今日读数文案 —— 阈值拿不到时只显示已读分钟数，不显示猜的进度
+  // 分子夹到阈值：perAward=1 时阈值是 900 秒（15 分），而她今天已读 1776 秒（29 分）
+  // ⇒ 不夹会显示成「29/15 分」（超过 100%）。满额时显示「15/15 分」。
   function todayText(t) {
     const read = Math.floor(t.sec / 60);
-    return t.thr > 0 ? `${read}/${Math.floor(t.thr / 60)} 分` : `${read} 分`;
+    if (t.thr <= 0) return `${read} 分`;
+    const thr = Math.floor(t.thr / 60);
+    return `${Math.min(read, thr)}/${thr} 分`;
   }
 
   function ownedMap() {
@@ -188,7 +192,11 @@
     // 阈值拿不到就不显示进度条与数字 —— 不显示猜的数
     const bar = i.thr > 0 ? `<span class="bar"><i style="width:${i.pct}%"></i></span>` : "";
     // 向下取整：不虚报进度（1776 秒四舍五入会显示成「30/30」，看着像已达标）
-    const num = i.thr > 0 ? `<span class="num">${Math.floor(i.sec / 60)}/${Math.floor(i.thr / 60)}</span>` : "";
+    // 分子还要夹到阈值：阈值 15 分而今天读了 29 分 ⇒ 不夹会显示成「29/15」
+    const thrMin = i.thr > 0 ? Math.floor(i.thr / 60) : 0;
+    const num = i.thr > 0
+      ? `<span class="num">${Math.min(Math.floor(i.sec / 60), thrMin)}/${thrMin}</span>`
+      : "";
     el.innerHTML = `<span class="num">${n}</span><span class="lbl">图鉴</span>` + bar + num;
   }
 
