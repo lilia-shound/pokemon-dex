@@ -1,5 +1,6 @@
 let POKEDEX = null;
 let DEX = { collected: [], streak: 0, today: {} };
+let SOURCES = null;   // 源注册表（sources.json）—— 阈值的权威来源
 let FILTER = "all";
 const IMG = "img/";
 
@@ -24,12 +25,15 @@ function esc(s) {
 }
 
 async function load() {
-  const [pd, dx] = await Promise.all([
+  const [pd, dx, reg] = await Promise.all([
     fetch("pokedex.json").then((r) => r.json()),
     fetch("dex.json").then((r) => r.json()).catch(() => ({ collected: [], streak: 0, today: {} })),
+    // 源注册表：阈值的权威来源。读不到只影响兜底，不该让整页挂掉。
+    fetch("sources.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   POKEDEX = pd.pokemon;
   DEX = dx;
+  SOURCES = reg;
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
   try {
     const g = new URL(location.href).searchParams.get("gen");
@@ -49,11 +53,49 @@ function ownedMap() {
   return m;
 }
 
+// 「掉一只宝可梦」要读多久（秒）。
+// 权威口径在注册表：perAward × sources.weread.per；dex.json 的 today.threshold
+// 是发放器按同一口径写进状态文件的快照。两者都读不到就不显示进度 ——
+// 不再硬编码一个猜的数（那个数会是第三个真相源：perAward 改了它也不跟着变）。
+function registryThreshold() {
+  const reg = SOURCES && SOURCES.sources && SOURCES.sources.weread;
+  if (!reg) return 0;
+  const perAward = Number(SOURCES.perAward);
+  const per = Number(reg.per);
+  if (!perAward || !per) return 0;
+  return perAward * per;
+}
+
+function thresholdSeconds() {
+  const t = DEX.today || {};
+  const fromState = Number(t.threshold);
+  if (fromState > 0) return fromState;
+  return registryThreshold();
+}
+
 function todayInfo() {
   const t = DEX.today || {};
-  const thr = t.threshold || 1800;
+  const thr = thresholdSeconds();
   const sec = t.seconds || 0;
-  return { sec, thr, pct: Math.min(100, Math.round((sec / thr) * 100)), date: t.date };
+  return {
+    sec, thr,
+    pct: thr > 0 ? Math.min(100, Math.round((sec / thr) * 100)) : 0,
+    date: t.date,
+  };
+}
+
+// 「读满多少分钟」的文案 —— 阈值拿不到时不说具体数字（宁可少说一句，也不说错的）
+function thresholdSentence(preview) {
+  const thr = thresholdSeconds();
+  if (thr > 0) {
+    const m = Math.round(thr / 60);
+    return preview
+      ? `读满 ${m} 分钟，照样能在图鉴里遇上它。`
+      : `读满 ${m} 分钟就能遇上新的宝可梦。`;
+  }
+  return preview
+    ? "读满今天的阅读额度，照样能在图鉴里遇上它。"
+    : "今天读满就能遇上新的宝可梦。";
 }
 
 function render() {
@@ -71,10 +113,15 @@ function render() {
     DEX.streak >= 3 ? "1/48" : "1/96"}`);
 
   const t = todayInfo();
-  $("todayMini").hidden = false;
-  // 向下取整：不虚报进度。1776 秒四舍五入会显示成「30/30 分」，
-  // 读起来像「今天已达标」，但其实额度 1 < 2，今天不会掉。
-  setText("todayMiniVal", `${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分`);
+  if (t.thr > 0) {
+    $("todayMini").hidden = false;
+    // 向下取整：不虚报进度。1776 秒四舍五入会显示成「30/30 分」，
+    // 读起来像「今天已达标」，但其实额度 1 < 2，今天不会掉。
+    setText("todayMiniVal", `${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分`);
+  } else {
+    // 阈值拿不到 —— 不显示猜的进度（宁可空着）
+    $("todayMini").hidden = true;
+  }
 
   // 今日开箱卡
   const collected = DEX.collected || [];
@@ -160,13 +207,13 @@ function openSheet(id) {
           <div class="row"><b>日文名</b><span>${esc(p.nameJa || "-")}</span></div>
         </div>
         <div class="flavor">${esc(p.flavor)}</div>
-        <div class="lockedMsg">第 10 世代《风/波》，2026-02-27 公布，游戏 2027 年发售。<br>编号与资料均为暂定 —— 但读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟，照样能在图鉴里遇上它。</div>`;
+        <div class="lockedMsg">第 10 世代《风/波》，2026-02-27 公布，游戏 2027 年发售。<br>编号与资料均为暂定 —— 但${thresholdSentence(true)}</div>`;
     } else {
       inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
         <img src="${IMG}${p.art}" alt="" onerror="this.classList.add('broken')">
         <div class="nm">???</div>
         <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))}</div>
-        <div class="lockedMsg">还没收服这一只。<br>读满 ${Math.round((DEX.today?.threshold || 1800) / 60)} 分钟就能遇上新的宝可梦。</div>`;
+        <div class="lockedMsg">还没收服这一只。<br>${thresholdSentence(false)}</div>`;
     }
   } else {
     const art = c.shiny && p.artShiny ? p.artShiny : p.art;

@@ -18,6 +18,7 @@
 
   let DEX = { collected: [], streak: 0, today: {} };
   let POKEDEX = { pokemon: [] };
+  let SOURCES = null;   // 源注册表（sources.json）—— 阈值的权威来源
   let MODAL = null;
   let lastError = "";
 
@@ -86,11 +87,41 @@
     return fname ? `${BASE}/img/${fname}` : "";
   }
 
+  // 「掉一只宝可梦」要读多久（秒）。
+  // 权威口径在注册表：perAward × sources.weread.per；dex.json 的 today.threshold
+  // 是发放器按同一口径写进状态文件的快照。两者都读不到就不显示进度 ——
+  // 不再硬编码一个猜的数（那个数会是第三个真相源：perAward 改了它也不跟着变）。
+  function registryThreshold() {
+    const reg = SOURCES && SOURCES.sources && SOURCES.sources.weread;
+    if (!reg) return 0;
+    const perAward = Number(SOURCES.perAward);
+    const per = Number(reg.per);
+    if (!perAward || !per) return 0;
+    return perAward * per;
+  }
+
+  function thresholdSeconds() {
+    const t = DEX.today || {};
+    const fromState = Number(t.threshold);
+    if (fromState > 0) return fromState;
+    return registryThreshold();
+  }
+
   function todayInfo() {
     const t = DEX.today || {};
-    const thr = t.threshold || 1800;
+    const thr = thresholdSeconds();
     const sec = t.seconds || 0;
-    return { sec, thr, pct: Math.min(100, Math.round((sec / thr) * 100)), date: t.date };
+    return {
+      sec, thr,
+      pct: thr > 0 ? Math.min(100, Math.round((sec / thr) * 100)) : 0,
+      date: t.date,
+    };
+  }
+
+  // 今日读数文案 —— 阈值拿不到时只显示已读分钟数，不显示猜的进度
+  function todayText(t) {
+    const read = Math.floor(t.sec / 60);
+    return t.thr > 0 ? `${read}/${Math.floor(t.thr / 60)} 分` : `${read} 分`;
   }
 
   function ownedMap() {
@@ -122,8 +153,21 @@
       lastError = e.message || String(e);
       console.warn("[训练家图鉴] 数据拉取失败", e);
     }
+    // 源注册表单独拉：只用来兜底阈值，拉不到只影响进度显示，
+    // 不该让整个插件显示「连不上，稍后重试」
+    SOURCES = await loadSources();
     paintCaps();
     if (MODAL) paintModal();
+  }
+
+  async function loadSources() {
+    try {
+      const r = await fetch(`${BASE}/sources.json`, { cache: "no-store" });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) {
+      return null;
+    }
   }
 
   function paintCaps() {
@@ -141,10 +185,11 @@
       return;
     }
     const n = ownedMap().size;
-    el.innerHTML = `<span class="num">${n}</span><span class="lbl">图鉴</span>`
-      + `<span class="bar"><i style="width:${i.pct}%"></i></span>`
-      // 向下取整：不虚报进度（1776 秒四舍五入会显示成「30/30」，看着像已达标）
-      + `<span class="num">${Math.floor(i.sec / 60)}/${Math.floor(i.thr / 60)}</span>`;
+    // 阈值拿不到就不显示进度条与数字 —— 不显示猜的数
+    const bar = i.thr > 0 ? `<span class="bar"><i style="width:${i.pct}%"></i></span>` : "";
+    // 向下取整：不虚报进度（1776 秒四舍五入会显示成「30/30」，看着像已达标）
+    const num = i.thr > 0 ? `<span class="num">${Math.floor(i.sec / 60)}/${Math.floor(i.thr / 60)}</span>` : "";
+    el.innerHTML = `<span class="num">${n}</span><span class="lbl">图鉴</span>` + bar + num;
   }
 
   function openModal() {
@@ -174,7 +219,7 @@
 
     const head = `<div class="tx-head">
       <b>训练家图鉴 ${n}/${total}</b>
-      <span class="dim">连读 ${DEX.streak || 0} 天 · 今日 ${Math.floor(t.sec / 60)}/${Math.floor(t.thr / 60)} 分 · 点空白处关闭</span>
+      <span class="dim">连读 ${DEX.streak || 0} 天 · 今日 ${todayText(t)} · 点空白处关闭</span>
     </div>`;
 
     const open = last && lp && DEX.lastAwardDate === t.date ? `

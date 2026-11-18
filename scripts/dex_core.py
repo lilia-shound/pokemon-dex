@@ -1,9 +1,15 @@
-"""抽卡与状态机。纯逻辑，不碰网络、不碰文件。"""
+"""抽卡与状态机。纯逻辑，不碰网络、不碰文件。
+
+**达标线（阈值）在本模块里没有副本**：权威值在 `data/sources.json` 的
+`sources.weread.per`（「掉一只」的实际秒数 = `perAward × sources.weread.per`）。
+想临时调阈值就用 `DEX_THRESHOLD` 环境变量 —— 它由 `sources.load_config`
+覆盖 `weread.per`，不是在这里读的（以前那个 `THRESHOLD_SECONDS` 常量既没有
+引用点、注释又和事实相反，已删除）。
+"""
 
 from __future__ import annotations
 
 import datetime
-import os
 import random
 
 from scripts import sources as src
@@ -16,11 +22,6 @@ SHINY_ODDS: dict[int, float] = {
     30: 1 / 16,
     100: 1.0,
 }
-
-# 已废弃的兼容常量：权威值在 `data/sources.json` 的 `sources.weread.per`。
-# 全仓没有第二个引用点，改这个数字（或 DEX_THRESHOLD 环境变量）**没有任何效果** ——
-# 真实阈值由注册表决定，别再照着老注释调这个。
-THRESHOLD_SECONDS = int(os.environ.get("DEX_THRESHOLD", "900"))
 
 
 def shiny_probability(streak: int) -> float:
