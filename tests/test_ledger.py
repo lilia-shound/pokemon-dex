@@ -104,6 +104,24 @@ class MigrateStateTest(unittest.TestCase):
         self.assertEqual(src["ledger"]["2026-11-14"]["weread"], 900)
         self.assertEqual(src["chains"]["妙蛙种子"]["care"], 1)
 
+    def test_missing_date_falls_back_to_at(self):
+        """缺 date 的条目用 at 的日期兜底 —— 幂等护栏完全依赖 collected[].date。"""
+        st = lg.migrate_state({"version": 1, "collected": [
+            {"id": "0563", "at": "2026-11-14T14:43:44.097585+08:00"}]})
+        self.assertEqual(st["collected"][0]["date"], "2026-11-14")
+
+    def test_missing_date_and_at_stays_none(self):
+        """连 at 都没有 → date 留 None（不能瞎编一个日期）。"""
+        st = lg.migrate_state({"version": 1, "collected": [{"id": "0563"}]})
+        self.assertIsNone(st["collected"][0]["date"])
+
+    def test_existing_date_is_not_overwritten(self):
+        """已有 date 的条目原样保留。"""
+        st = lg.migrate_state({"version": 1, "collected": [
+            {"id": "0563", "at": "2026-11-10T00:00:00+08:00",
+             "date": "2026-11-14"}]})
+        self.assertEqual(st["collected"][0]["date"], "2026-11-14")
+
 
 class EmptyLedgerTest(unittest.TestCase):
     """空账本是新账本的起点：必须是空 dict，而且每次都返回新对象。"""

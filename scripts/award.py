@@ -93,12 +93,18 @@ def weread_days(buckets: dict[int, int]) -> dict[str, int]:
     return out
 
 
-def today_sources_from(state: dict) -> dict:
+def today_sources_from(state: dict, today: str) -> dict:
     """从旧状态里推出今天的各源量。
 
     v2 走 today.sources；v1 只有 today.seconds，按微信读书口径还原。
+
+    **只在旧 `today.date` 就是今天时才还原** —— 否则会把几天前的读数
+    写成「今天读了多少」（实测迁移后图鉴页会显示错误的今日进度，
+    而且这是写进数据文件的事实错误，不只是显示问题）。
     """
     t = (state or {}).get("today") or {}
+    if t.get("date") != today:
+        return {}
     if t.get("sources"):
         return dict(t["sources"])
     secs = int(t.get("seconds") or 0)
@@ -129,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     chains = {k: dict(v) for k, v in (old.get("chains") or {}).items()}
 
     if args.migrate_only:
-        state = dc.build_state(old, cfg, today, today_sources_from(old),
+        state = dc.build_state(old, cfg, today, today_sources_from(old, today),
                                old.get("ledger") or {}, chains, [])
         if not args.dry_run:
             save_state(state)
@@ -145,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ledger_data = lg.merge_amounts(old.get("ledger") or {}, "weread",
                                    weread_days(buckets))
+    # 两级上限：maxBackfill 管「一次最多发几天」，ledgerDays 管「积压多久后彻底放弃」。
+    # prune 会把 ledgerDays 天以外的账本条目直接丢掉 —— 那批永远不会被补发，
+    # 也没有任何提示（静默上限），所以这两级不是一回事。
     ledger_data = lg.prune(ledger_data, int(cfg["ledgerDays"]), today)
 
     today_sources = dict(ledger_data.get(today) or {})
@@ -190,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         if chain_state and int(chain_state.get("pendingShiny", 0)) > 0:
             award["shiny"] = True
             chain_state["pendingShiny"] = int(chain_state["pendingShiny"]) - 1
-            print(f"[保底] {key} 养到 {chain_state['care']} 天，这次必闪")
+            print(f"[保底] {key} 养到 {chain_state.get('care', 0)} 天，这次必闪")
 
         day_credits = src.credit_for_day(cfg, ledger_data.get(day) or {})
         contributors = [sid for sid, n in day_credits.items() if n > 0]

@@ -39,7 +39,7 @@ def prune(ledger: dict, keep_days: int, today: str) -> dict:
 
 
 def migrate_state(state: dict) -> dict:
-    """v1 → v2：补 sources / form，version 改成 2，初始化 ledger 与 chains。
+    """v1 → v2：补 sources / form / date，version 改成 2，初始化 ledger 与 chains。
 
     对已经是 v2 的文件是幂等的：已有字段一律保留，缺的才补。
     """
@@ -50,6 +50,12 @@ def migrate_state(state: dict) -> dict:
         c.setdefault("sources", ["weread"])
         c.setdefault("form", c.get("id"))
         collected.append(c)
+    for c in collected:
+        # 幂等护栏（pending_days 排除已发奖日）完全依赖 collected[].date。
+        # 缺 date 的条目会让那天重新进 pending → 同一天两张卡。
+        # 实测 v1 的真实数据每条都有 date，这里只是给手改过的状态兜底。
+        if not c.get("date"):
+            c["date"] = (c.get("at") or "")[:10] or None
     st["collected"] = collected
     st["version"] = 2
     # 两层拷贝：账本与链状态是共享状态，调用方就地改内层 dict 时不能污染入参

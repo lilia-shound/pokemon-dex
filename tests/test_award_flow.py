@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """发放器的「同一天只发一张」回归测试。
 
-背景：新_state 按日期去重，一天只该发一张。但 award.py 原先在「今天已经
+背景：一天只该发一张。v1 的 new_state 按日期去重，但 award.py 原先在「今天已经
 发过奖」时仍然会抽一张、打印「★ 获得」，最后被 new_state 悄悄丢掉 —— 假消息。
 定时任务每 3 小时跑一次，当天会连报好几次（甚至报出好几只不存在的宝可梦）。
+
+v2 把幂等护栏搬到了**调用方**：`pending_days` 会把已发奖日排除掉，
+`build_state` 不再按日期去重（v1 那个「静默丢卡」的行为已经删掉）。
+所以「今天已经发过奖」的判断由 award.py 自己负责 —— 今天在 awarded_dates 里，
+就不该再进 pending，也就不该再抽卡。
 
 v2 模型下 perAward=2、weread.per=900，所以达标线是 1800 秒。
 """
@@ -40,6 +45,11 @@ class SameDayAwardTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dex_path = pathlib.Path(tmp.name) / "dex.json"
+        # award.DEX_PATH 是模块全局量 —— 用完必须还原，
+        # 否则套件跑完之后全局仍指向这个已删除的临时目录，
+        # 将来别的测试忘了设 DEX_PATH 就会静默写到陈旧路径。
+        orig = award.DEX_PATH
+        self.addCleanup(setattr, award, "DEX_PATH", orig)
         award.DEX_PATH = self.dex_path
 
     def _run(self, buckets, argv=()):
@@ -81,6 +91,19 @@ class SameDayAwardTest(unittest.TestCase):
     def test_force_does_not_duplicate_same_day(self):
         """--force 只无视达标线，不该违反「一天一张」。"""
         self._run({KEY_20261114: 1800})
+        rc, out = self._run({KEY_20261114: 2400}, argv=["--force"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("★ 获得", out)
+        self.assertEqual(len(self._state()["collected"]), 1)
+
+    def test_force_does_not_break_one_card_per_day(self):
+        """--force 也只能发今天这一张：今天没达标时补一张，发过就不再发。"""
+        # 今天没达标 —— force 补一张，且只补一张
+        rc, out = self._run({KEY_20261114: 100}, argv=["--force"])
+        self.assertEqual(rc, 0)
+        self.assertIn("★ 获得", out)
+        self.assertEqual(len(self._state()["collected"]), 1)
+        # 今天已经发过了 —— 再 force 也不多发
         rc, out = self._run({KEY_20261114: 2400}, argv=["--force"])
         self.assertEqual(rc, 0)
         self.assertNotIn("★ 获得", out)

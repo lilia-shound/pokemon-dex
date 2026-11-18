@@ -121,6 +121,10 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
         # 两层拷贝：advance_chain 原地改内层链状态 dict，浅拷贝会污染传进来的旧 state
         "ledger": {d: dict(v) for d, v in (ledger_data or {}).items()},
         "chains": {k: dict(v) for k, v in (chains or {}).items()},
+        # v1 有这个字段（v2 别静默丢掉）；语义与 v1 一致：
+        # 有新发奖就更新成发奖时间，否则沿用旧的
+        "updatedAt": (new_awards[-1].get("at") if new_awards
+                      else old.get("updatedAt")),
     }
 
 

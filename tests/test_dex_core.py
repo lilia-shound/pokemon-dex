@@ -142,6 +142,19 @@ class BuildStateRegressionTest(unittest.TestCase):
         self.assertEqual(ledger_data["2026-11-14"]["weread"], 1800)
         self.assertEqual(chains["妙蛙种子"]["care"], 1)
 
+    def test_keeps_updated_at_when_no_new_award(self):
+        """没有新发奖时沿用旧的 updatedAt —— v1 有这个字段，v2 别静默丢掉。"""
+        old = {"collected": [], "updatedAt": "2026-11-13T22:00:00+08:00"}
+        st = dc.build_state(old, self._cfg(), "2026-11-14", {}, {}, {}, [])
+        self.assertEqual(st["updatedAt"], "2026-11-13T22:00:00+08:00")
+
+    def test_updates_updated_at_on_new_award(self):
+        """有新发奖时 updatedAt 更新成这次发奖的时间。"""
+        old = {"collected": [], "updatedAt": "2026-11-13T22:00:00+08:00"}
+        st = dc.build_state(old, self._cfg(), "2026-11-14", {}, {}, {},
+                            [self._award()])
+        self.assertEqual(st["updatedAt"], "2026-11-14T22:00:00+08:00")
+
 
 if __name__ == "__main__":
     unittest.main()
