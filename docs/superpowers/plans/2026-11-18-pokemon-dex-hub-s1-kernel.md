@@ -535,9 +535,9 @@ class MigrateStateTest(unittest.TestCase):
     def test_already_v2_keeps_ledger(self):
         st = lg.migrate_state({"version": 2, "collected": [],
                                "ledger": {"2026-11-16": {"weread": 900}},
-                               "chains": {"a→b": {"care": 1, "stage": 0}}})
+                               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}})
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
     def test_v2_entry_keeps_explicit_sources(self):
         st = lg.migrate_state({"version": 2, "collected": [
@@ -805,13 +805,13 @@ class BuildStateTest(unittest.TestCase):
         old = {"collected": [{"id": "0001", "date": "2026-11-14"}]}
         today_sources = {"weread": 900}
         ledger_data = {"2026-11-16": {"weread": 900}}
-        chains = {"a→b": {"care": 1, "stage": 0}}
+        chains = {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}
         dc.build_state(old, cfg(), "2026-11-16", today_sources, ledger_data, chains,
                        [{"id": "0002", "date": "2026-11-16"}])
         self.assertEqual(old, {"collected": [{"id": "0001", "date": "2026-11-14"}]})
         self.assertEqual(today_sources, {"weread": 900})
         self.assertEqual(ledger_data, {"2026-11-16": {"weread": 900}})
-        self.assertEqual(chains, {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(chains, {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
     def test_same_day_two_awards_are_kept(self):
         """build_state 不按日期去重 —— 幂等由调用方保证（见 docstring）。"""
@@ -847,9 +847,9 @@ class BuildStateTest(unittest.TestCase):
     def test_ledger_and_chains_passed_through(self):
         st = dc.build_state({"collected": []}, cfg(), "2026-11-16", {},
                             {"2026-11-16": {"weread": 900}},
-                            {"a→b": {"care": 1, "stage": 0}}, [])
+                            {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}}, [])
         self.assertEqual(st["ledger"], {"2026-11-16": {"weread": 900}})
-        self.assertEqual(st["chains"], {"a→b": {"care": 1, "stage": 0}})
+        self.assertEqual(st["chains"], {"妙蛙种子": {"care": 1, "pendingShiny": 0, "nextShinyAt": 30}})
 
 
 if __name__ == "__main__":
@@ -1566,7 +1566,9 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertEqual(len(chains), 1)
         entry = list(chains.values())[0]
         self.assertEqual(entry["care"], 1)
-        self.assertEqual(entry["stage"], 0)
+        self.assertEqual(entry["pendingShiny"], 0)
+        self.assertEqual(entry["nextShinyAt"], 30)
+        self.assertNotIn("stage", entry)   # 形态改写在 S6，S1 的链状态没有 stage
 
 
 if __name__ == "__main__":
@@ -2086,6 +2088,6 @@ cd /workspace/pokemon-reading-dex && export GIT_SSL_NO_VERIFY=1 && git -c http.e
 - `dex_core.build_state(old, cfg, today, today_sources, ledger_data, chains, new_awards)`
   —— 参数顺序在 Task 3 的测试与 Task 5 的调用里一致。
 - `dex_core.advance_chain(chains, pokemon)` **原地修改** `chains` 并返回它 —— Task 4 的测试锁定。
-- 链状态键：`care` / `stage` / `pendingShiny` / `nextShinyAt` —— Task 4 定义，Task 5 读 `pendingShiny`，
-  Task 3 的 `build_state` 原样透传 `chains`。三处一致。
+- 链状态键：**`care` / `pendingShiny` / `nextShinyAt`**（**没有 `stage`** —— 形态改写是 S6 的活）——
+  Task 4 定义，Task 5 读 `pendingShiny`，Task 3 的 `build_state` 原样透传 `chains`。三处一致。
 - `collected[]` 条目字段：`id` / `nameZh` / `shiny` / `at` / `date` / `sources` / `form` —— Task 3、4、5 一致。
