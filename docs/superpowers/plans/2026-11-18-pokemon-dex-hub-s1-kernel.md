@@ -1308,7 +1308,8 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
 
 **Files:**
 - Modify: `scripts/award.py`
-- Modify: `scripts/dex_core.py`（**删掉 `new_state`** —— award.py 迁到 v2 之后就能杀它了）
+- Modify: `scripts/ledger.py`（**Step 0**：两层拷贝 + docstring + 注解）
+- Modify: `scripts/dex_core.py`（**Step 0**：`build_state` 两层拷贝；**Step 4**：删掉 `new_state` —— award.py 迁到 v2 之后就能杀它了）
 - Modify: `tests/test_dex_core.py`（删掉 `NewStateTest` / `CatchUpTest`，换成 `BuildStateRegressionTest`）
 - Modify: `tests/test_award_flow.py`
 - Create: `tests/test_award_multi.py`
@@ -1327,6 +1328,64 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
   - `scripts/award.py` 新增模块级常量 `SOURCES_PATH`
   - `scripts/award.py` 新增 CLI 参数 `--migrate-only`（只迁移不抽卡，用于一次性把真实 dex.json 升到 v2）
   - 保持既有输出字符串不变：`★ 获得`、`今天已经发过奖了`、`补发 YYYY-MM-DD`
+
+- [ ] **Step 0: 先把 Task 2 / Task 3 的遗留修掉**
+
+**`scripts/ledger.py`**
+
+1. `migrate_state` 的 `ledger` / `chains` 改成两层拷贝
+   （现在只浅拷贝顶层，返回值与入参**是同一个对象** —— 实测 `out["ledger"] is in["ledger"]` → True）：
+
+   ```python
+       st["ledger"] = {d: dict(v) for d, v in (st.get("ledger") or {}).items()}
+       st["chains"] = {k: dict(v) for k, v in (st.get("chains") or {}).items()}
+   ```
+
+2. `empty_ledger` 补中文 docstring（它是四个公开函数里唯一没有的）：
+
+   ```python
+   def empty_ledger() -> dict:
+       """空账本 —— 键是日期，值是 {源 id: 原始量}。"""
+       return {}
+   ```
+
+3. `merge_amounts` 的注解改成 `days: dict[str, int]`（简报 Produces 声明的就是这个）。
+
+4. `tests/test_ledger.py` 补一条别名断言：
+
+   ```python
+       def test_migrate_state_does_not_alias_ledger_or_chains(self):
+           """返回值与入参不能共享 ledger / chains 的内层 dict。"""
+           src = {"ledger": {"2026-11-14": {"weread": 900}},
+                  "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0,
+                                          "nextShinyAt": 30}}}
+           out = lg.migrate_state(src)
+           out["ledger"]["2026-11-14"]["weread"] = 1800
+           out["chains"]["妙蛙种子"]["care"] = 99
+           self.assertEqual(src["ledger"]["2026-11-14"]["weread"], 900)
+           self.assertEqual(src["chains"]["妙蛙种子"]["care"], 1)
+   ```
+
+**`scripts/dex_core.py`**
+
+5. `build_state` 的 `ledger` / `chains` 改成两层拷贝（现在只浅拷贝外层）：
+
+   ```python
+           "ledger": {d: dict(v) for d, v in (ledger_data or {}).items()},
+           "chains": {k: dict(v) for k, v in (chains or {}).items()},
+   ```
+
+   **为什么必须改**：Task 4 的 `advance_chain` 是**原地修改**内层链状态 dict 的。
+   `build_state` 只浅拷贝外层的话，`state["chains"]["妙蛙种子"]` 与入参是同一个 dict ——
+   传进去的旧 state 会被就地污染（实测 `state["chains"]["妙蛙种子"] is old["chains"]["妙蛙种子"]` → True）。
+   `collected` 已经是 `[dict(c) for c in ...]` ✓ 不用改。
+
+**Step 0 单独提交**（一次提交只做一件事）：
+
+```bash
+cd /workspace/pokemon-reading-dex && git add scripts/ledger.py scripts/dex_core.py tests/test_ledger.py \
+  && git commit -m "fix: 账本与状态改成两层拷贝，补中文 docstring 与类型注解"
+```
 
 - [ ] **Step 1: 改写 `tests/test_award_flow.py`**
 
@@ -1570,6 +1629,55 @@ class MultiSourceAwardTest(unittest.TestCase):
         self.assertEqual(entry["nextShinyAt"], 30)
         self.assertNotIn("stage", entry)   # 形态改写在 S6，S1 的链状态没有 stage
 
+    # ---- 保底闪光：消费与强制闪光 ----
+
+    def _seed_chain(self, key, care=30, pending=1):
+        """往状态里塞一条已经养到保底线的链。"""
+        state = {
+            "version": 2, "collected": [], "streak": 0, "lastAwardDate": None,
+            "ledger": {},
+            "chains": {key: {"care": care, "pendingShiny": pending,
+                             "nextShinyAt": care + 30}},
+        }
+        self.dex_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_guarantee_is_consumed_and_forces_shiny(self):
+        """养到保底线 → 这条链下一次发奖必闪，且保底次数减 1。"""
+        self._seed_chain("妙蛙种子", care=30, pending=1)
+        fake = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+        with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
+            rc, out = self._run({KEY_20261114: 1800})
+        self.assertIn("[保底]", out)
+        state = self._state()
+        self.assertTrue(state["collected"][0]["shiny"])
+        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 0)
+
+    def test_guarantee_not_consumed_by_other_chain(self):
+        """保底是按链算的 —— 抽到别的链不吃这条链的保底。"""
+        self._seed_chain("妙蛙种子", care=30, pending=1)
+        fake = {"id": "0025", "nameZh": "皮卡丘", "shiny": False,
+                "evolution": ["皮丘", "皮卡丘", "雷丘"]}
+        with mock.patch.object(award.dc, "pick", return_value=dict(fake)):
+            rc, out = self._run({KEY_20261114: 1800})
+        self.assertNotIn("[保底]", out)
+        state = self._state()
+        self.assertEqual(state["chains"]["妙蛙种子"]["pendingShiny"], 1)
+        self.assertEqual(state["chains"]["皮丘"]["care"], 1)
+
+    def test_chain_care_counts_days_not_cards(self):
+        """两天补发各抽到同一链 → care +2（一天一次），不是 +4。"""
+        fake_a = {"id": "0001", "nameZh": "妙蛙种子", "shiny": False,
+                  "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+        fake_b = {"id": "0002", "nameZh": "妙蛙草", "shiny": False,
+                  "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
+        with mock.patch.object(award.dc, "pick",
+                               side_effect=[dict(fake_a), dict(fake_b)]):
+            rc, out = self._run({KEY_20261113: 1800, KEY_20261114: 1800})
+        state = self._state()
+        self.assertEqual(len(state["collected"]), 2)
+        self.assertEqual(state["chains"]["妙蛙种子"]["care"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1647,10 +1755,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     old = lg.migrate_state(load_state())
+    # 深拷贝：advance_chain 会原地改内层链状态，直接用 old 里的会污染旧 state
+    chains = {k: dict(v) for k, v in (old.get("chains") or {}).items()}
 
     if args.migrate_only:
         state = dc.build_state(old, cfg, today, today_sources_from(old),
-                               old.get("ledger") or {}, old.get("chains") or {}, [])
+                               old.get("ledger") or {}, chains, [])
         if not args.dry_run:
             save_state(state)
         print(f"已迁移到 v2：{len(state['collected'])} 只已收服   "
@@ -1693,11 +1803,10 @@ def main(argv: list[str] | None = None) -> int:
             print("未达标，今天没有宝可梦。")
         if not args.dry_run:
             save_state(dc.build_state(old, cfg, today, today_sources,
-                                      ledger_data, old.get("chains") or {}, []))
+                                      ledger_data, chains, []))
         return 0
 
     pool = load_pokedex()
-    chains = old.get("chains") or {}
     new_awards = []
     for day in pending:
         streak = dc.compute_streak(sorted(awarded_dates | {day}), day)
@@ -1784,8 +1893,13 @@ Expected: 打印今天的各源原始量、额度、已收集数；**不写文�
 - [ ] **Step 7: 提交**
 
 ```bash
-cd /workspace/pokemon-reading-dex && git add scripts/award.py tests/test_award_flow.py tests/test_award_multi.py && git commit -m "feat: 发放器改成多源额度结算（一次结清补发 + 链养成 + 保底闪光）"
+cd /workspace/pokemon-reading-dex && git add scripts/award.py scripts/dex_core.py \
+  tests/test_award_flow.py tests/test_award_multi.py tests/test_dex_core.py \
+  && git commit -m "feat: 发放器改成多源额度结算（一次结清补发 + 链养成 + 保底闪光）"
 ```
+
+（Step 0 已经单独提交过一次「两层拷贝」；这一步只提交发放器改造本身。
+删 `new_state` 属于这一步 —— 它在 `award.py` 迁到 v2 之后就没有调用方了。）
 
 ---
 
