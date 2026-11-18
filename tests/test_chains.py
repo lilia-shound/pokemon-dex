@@ -6,14 +6,8 @@ from scripts import dex_core as dc
 
 BULBASAUR = {"id": "0001", "nameZh": "妙蛙种子",
              "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
-IVYSAUR = {"id": "0002", "nameZh": "妙蛙草",
-           "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
-VENUSAUR = {"id": "0003", "nameZh": "妙蛙花",
-            "evolution": ["妙蛙种子", "妙蛙草", "妙蛙花"]}
 PIKACHU = {"id": "0025", "nameZh": "皮卡丘",
            "evolution": ["皮丘", "皮卡丘", "雷丘", "皮丘", "皮卡丘", "雷丘"]}
-PIKACHU_DUPE = {"id": "0025b", "nameZh": "皮卡丘",
-                "evolution": ["皮丘", "皮卡丘", "雷丘"]}
 # 真实数据里同链成员的 evolution 数组并不一致 —— 这正是旧 key 算法的坑
 WALKING_GRASS = {"id": "0004", "nameZh": "走路草",
                  "evolution": ["走路草", "臭臭花", "霸王花", "走路草", "臭臭花", "美丽花"]}
@@ -83,6 +77,15 @@ class AdvanceChainTest(unittest.TestCase):
         self.assertEqual(st["pendingShiny"], 1)
         self.assertEqual(st["nextShinyAt"], 60)
 
+    def test_guarantee_catches_up_after_a_jump(self):
+        """care 跳变时保底要追补：care=95、nextShinyAt=30 → 按 30/60/90 给 3 次。"""
+        chains = {"妙蛙种子": {"care": 95, "pendingShiny": 0, "nextShinyAt": 30}}
+        dc.advance_chain(chains, BULBASAUR)
+        st = chains["妙蛙种子"]
+        self.assertEqual(st["care"], 96)
+        self.assertEqual(st["pendingShiny"], 3)
+        self.assertEqual(st["nextShinyAt"], 120)
+
     def test_other_chain_is_independent(self):
         chains = {}
         dc.advance_chain(chains, BULBASAUR)
@@ -124,7 +127,14 @@ class RealPokedexTest(unittest.TestCase):
         self.assertEqual(dc.chain_key(self.by_name["皮卡丘"]), "皮丘")
 
     def test_grouping_matches_biological_chain_count(self):
-        """用基础形态名分组 → 543 组，正好等于生物链数。"""
+        """用基础形态名分组 → 543 组，正好等于生物链数。
+
+        543 的来历：换一种独立的链定义 —— 把「evolution 数组里共现的名字」连成图，
+        取连通分量，数出来同样是 543 个分量，而且与基础形态名分组逐组一致。
+        两套互不依赖的算法给出同一个数，说明这个数不是碰巧撞出来的。
+
+        pokedex.json 重生成后这个数会变；那时该重新核对，而不是直接把数字改掉。
+        """
         groups = {}
         for x in self.pokedex:
             groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])

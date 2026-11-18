@@ -199,6 +199,10 @@ def advance_chain(chains: dict, pokemon: dict) -> dict:
     care 每多 30 天给一次保底闪光（pendingShiny += 1）——
     下次抽到这个链的宝可梦时可以强制闪光。把「一次性运气」换成「持续投入」。
 
+    保底判定用 while 而不是 if：state 是导入/手改出来的时 care 可能跳变，
+    跳过的保底要一次补齐（care=95、nextShinyAt=30 → 给 3 次，而不是 1 次）。
+    nextShinyAt 严格递增，不会死循环。
+
     注：形态改写（进化阶数 → collected[].form）不在本层做 ——
     分叉的进化关系在拍平的数据里没有唯一的「这一阶对应哪只」，那是 S6 的活。
     """
@@ -207,7 +211,7 @@ def advance_chain(chains: dict, pokemon: dict) -> dict:
         return chains
     st = chains.setdefault(key, {"care": 0, "pendingShiny": 0, "nextShinyAt": 30})
     st["care"] = int(st.get("care", 0)) + 1
-    if st["care"] >= int(st.get("nextShinyAt", 30)):
+    while st["care"] >= int(st.get("nextShinyAt", 30)):
         st["pendingShiny"] = int(st.get("pendingShiny", 0)) + 1
         # 节奏固定：每次 +30，而不是 care + 30 —— care 跳变时不该整体后移
         st["nextShinyAt"] = int(st.get("nextShinyAt", 30)) + 30
