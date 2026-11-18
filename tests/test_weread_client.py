@@ -36,9 +36,10 @@ class ReadTimesTest(unittest.TestCase):
 
 class TodaySecondsTest(unittest.TestCase):
     def test_picks_latest_bucket_of_today(self):
+        now = datetime.datetime(2026, 11, 14, 10, 0, tzinfo=SH)
         today = _ts(2026, 11, 14)
         yesterday = _ts(2026, 11, 13)
-        key, secs = wc.today_seconds({yesterday: 600, today: 900})
+        key, secs = wc.today_seconds({yesterday: 600, today: 900}, now=now)
         self.assertEqual(key, today)
         self.assertEqual(secs, 900)
 
@@ -49,9 +50,10 @@ class TodaySecondsTest(unittest.TestCase):
         self.assertEqual(secs, 0)
 
     def test_ignores_future_buckets(self):
+        now = datetime.datetime(2026, 11, 14, 10, 0, tzinfo=SH)
         today = _ts(2026, 11, 14)
         tomorrow = _ts(2026, 11, 15)
-        key, secs = wc.today_seconds({today: 300, tomorrow: 999})
+        key, secs = wc.today_seconds({today: 300, tomorrow: 999}, now=now)
         self.assertEqual(key, today)
         self.assertEqual(secs, 300)
 
@@ -60,8 +62,9 @@ class TodaySecondsTest(unittest.TestCase):
 
     def test_bucket_key_is_beijing_midnight(self):
         """桶 key 落在北京时间的自然日 00:00。"""
+        now = datetime.datetime(2026, 11, 14, 10, 0, tzinfo=SH)
         today = _ts(2026, 11, 14)
-        key, _ = wc.today_seconds({today: 100})
+        key, _ = wc.today_seconds({today: 100}, now=now)
         self.assertEqual(
             datetime.datetime.fromtimestamp(key, SH),
             datetime.datetime(2026, 11, 14, 0, 0, tzinfo=SH),
