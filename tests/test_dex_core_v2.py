@@ -83,8 +83,8 @@ class BuildStateTest(unittest.TestCase):
                             {"weread": 600}, {}, {}, [])
         self.assertEqual(st["today"]["threshold"], 1200)
 
-    def test_streak_anchored_at_last_award_day(self):
-        """补发几天前的奖励时，连读天数不能变成 0。"""
+    def test_streak_decays_after_a_gap(self):
+        """断签后连读天数归零 —— 相对 v1 的有意变更（v1 一直挂着一个不衰减的旧值）。"""
         old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
                               "date": "2026-11-12", "sources": ["weread"], "form": "0001"},
                              {"id": "0002", "nameZh": "b", "shiny": False, "at": "x",
@@ -92,7 +92,15 @@ class BuildStateTest(unittest.TestCase):
         st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {},
                             [{"id": "0003", "nameZh": "c", "shiny": False, "at": "x",
                               "date": "2026-11-14", "sources": ["weread"], "form": "0003"}])
-        self.assertEqual(st["streak"], 3)
+        # 11-15 没过 → 连读断了
+        self.assertEqual(st["streak"], 0)
+
+    def test_streak_counts_from_yesterday_when_today_not_awarded(self):
+        """今天还没达标，但昨天发过奖 → 连读从昨天数起（不断）。"""
+        old = {"collected": [{"id": "0001", "nameZh": "a", "shiny": False, "at": "x",
+                              "date": "2026-11-15", "sources": ["weread"], "form": "0001"}]}
+        st = dc.build_state(old, cfg(), "2026-11-16", {}, {}, {}, [])
+        self.assertEqual(st["streak"], 1)
 
     def test_streak_breaks_when_new_day_awarded(self):
         """今天也发了奖 → 断签重算，锚在今天。"""

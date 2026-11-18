@@ -93,9 +93,6 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     for a in new_awards or []:
         collected.append(dict(a))
     awarded_dates = sorted({c["date"] for c in collected if c.get("date")})
-    # 连读天数锚在「最后一次发奖日」：补发几天前的奖励时，
-    # 显示「连读 N 天」而不是 0（锚在今天会把补发日算成断签）。
-    anchor = awarded_dates[-1] if awarded_dates else today
     # 只保留启用源的原始量，和 credit 的口径保持一致
     enabled = src.enabled_sources(cfg)
     today_map = {
@@ -107,7 +104,9 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     return {
         "version": 2,
         "collected": collected,
-        "streak": compute_streak(awarded_dates, anchor),
+        # 连读天数锚在「今天」，会衰减：断签后归零、闪光概率回到 1/96。
+        # 这是相对 v1 的有意变更 —— v1 锚在发奖日，会一直挂着一个不衰减的旧值。
+        "streak": compute_streak(awarded_dates, today),
         "lastAwardDate": awarded_dates[-1] if awarded_dates else None,
         "today": {
             "date": today,
