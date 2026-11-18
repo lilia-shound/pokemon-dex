@@ -33,7 +33,11 @@ jobs:
         run: |
           if [ -z "$WEREAD_API_KEY" ]; then
             echo "未配置 WEREAD_API_KEY secret，跳过本轮。"
-            echo "到 repo 的 Settings -> Secrets and variables -> Actions 添加即可启用。"
+            echo "本仓库的结算由 Mavis 的 cron 任务执行；这个 workflow 只是备用执行器。"
+            echo "启用前必须先停掉 Mavis cron —— 两个写者会打架。"
+            echo "而且本 workflow 用 git subtree push 发布 gh-pages，与 scripts/deploy.sh 的"
+            echo "orphan + force 重建方式冲突，大概率在第一次发布就挂。"
+            echo "要启用：到 repo 的 Settings -> Secrets and variables -> Actions 添加 WEREAD_API_KEY。"
             exit 0
           fi
           python3 scripts/check_today.py || true
@@ -42,6 +46,7 @@ jobs:
       - name: 同步状态并发布图鉴页
         run: |
           cp data/dex.json site/dex.json
+          # 源注册表也要跟着走 —— 读方拿它兜底「掉一只要读多久」，S5 的多源进度也走它
           cp data/sources.json site/sources.json
           cp data/pokedex.json site/pokedex.json
           git config user.name "Mavis"

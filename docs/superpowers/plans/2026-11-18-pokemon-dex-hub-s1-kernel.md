@@ -6,7 +6,7 @@
 
 **Architecture:** `data/sources.json` 是源注册表（每个源声明「多少原始单位 = 1 额度」）。`scripts/sources.py` 负责读配置与折算额度，`scripts/ledger.py` 负责逐日账本的合并/裁剪/迁移，`scripts/dex_core.py` 保持纯逻辑并新增「待发奖日判定 / v2 状态组装 / 进化链养成」，`scripts/award.py` 继续当编排器（取数 → 合并账本 → 判定 → 抽卡 → 写盘 → 推送）。**抽卡权仍然只在服务端**，客户端只是数据源。
 
-**Tech Stack:** Python 3.11（标准库 only，零第三方依赖）、unittest、GitHub Actions（cron 结算）、GitHub Pages（图鉴页）。
+**Tech Stack:** Python 3.11（标准库 only，零第三方依赖）、unittest、Mavis cron 任务（**真正的结算执行者**）、GitHub Actions（备用执行器，默认不启用）、GitHub Pages（图鉴页）。
 
 **上游设计：** [2026-11-18-pokemon-dex-hub-design.md](../specs/2026-11-18-pokemon-dex-hub-design.md)
 
@@ -25,7 +25,7 @@
 - **一天最多 1 只。** 由注册表根级 `maxPerDay` 表达，当前值 1。
 - **`perAward = 2` 意味着微信读书单独要 1800 秒官方口径（约 39 分钟体感）才掉 1 只** —— 比旧版 15 分钟翻倍。这是姜来拍板「番茄钟和阅读平权」的必然结果。想恢复旧体验，把 `data/sources.json` 的 `perAward` 改成 1 即可，代码不用动。
 - **现有读方读的字段一个都不能删。** `site/app.js` 与 `plugin/weread-dex.user.js` 依赖 `collected[].id / .nameZh / .shiny / .at`、`streak`、`today.seconds`、`today.threshold`。多源信息一律走**新增**字段。
-- **`dex_core.THRESHOLD_SECONDS` 保留**（值 900），作为向后兼容的默认值常量；**权威值在 `data/sources.json` 的 `sources.weread.per`**。`DEX_THRESHOLD` 环境变量继续能覆盖它。
+- **达标线只有一个真相源**：权威值在 `data/sources.json` 的 `sources.weread.per`；`DEX_THRESHOLD` 环境变量继续能覆盖它（由 `sources.load_config` 覆盖 `weread.per`）。**`dex_core.THRESHOLD_SECONDS` 已删除** —— 它全仓无引用、注释与事实相反（写着「改它没有任何效果」但环境变量其实还生效），而且在 import 期读环境变量会让 `DEX_THRESHOLD=abc` 直接把 import 崩掉。
 - **提交前 `python3 run_tests.py` 必须全绿。**
 - **一次提交只做一件事**，commit message 用中文，动词开头（`feat:` / `fix:` / `test:` / `docs:` / `refactor:`）。
 - **不要跑 `scripts/deploy.sh`** —— 它会动 `gh-pages` 分支。S1 只推 `main`。
@@ -40,7 +40,7 @@
 | `data/sources.json` | 新建 | 源注册表：每个源的名字、单位、`per`（多少单位 = 1 额度）、`mode`、`enabled`、`maxPerDay`；根级 `perAward` / `maxPerDay` / `maxBackfill` / `ledgerDays` |
 | `scripts/sources.py` | 新建 | 读 + 校验 `sources.json`；额度折算（`floor`）；只含纯逻辑 |
 | `scripts/ledger.py` | 新建 | 账本合并（同源同日取 max）、滚动裁剪、v1→v2 状态迁移；只含纯逻辑 |
-| `scripts/dex_core.py` | 修改 | 保留 `shiny_probability` / `compute_streak` / `pick` / `THRESHOLD_SECONDS`；新增 `pending_days` / `build_state` / `chain_key` / `advance_chain`；**移除 `new_state`**（被 `build_state` 取代，避免两套状态机） |
+| `scripts/dex_core.py` | 修改 | 保留 `shiny_probability` / `compute_streak` / `pick`；新增 `pending_days` / `build_state` / `chain_key` / `advance_chain`；**移除 `new_state`**（被 `build_state` 取代，避免两套状态机）、**移除 `THRESHOLD_SECONDS`**（阈值权威值在注册表） |
 | `scripts/award.py` | 修改 | 编排：读配置 → 迁移 → 拉数 → 合并账本 → 判定待发奖日 → 逐日抽卡 → 组装 v2 状态 → 写盘 → 推送。新增 `--migrate-only` |
 | `scripts/check_today.py` | 修改 | 自检改读配置（阈值以 `sources.json` 为准），并打印今日额度折算 |
 | `tests/test_sources.py` | 新建 | 配置校验 + 额度折算 |
@@ -2161,10 +2161,14 @@ cd /workspace/pokemon-reading-dex && git add README.md .github/workflows/daily-a
 cd /workspace/pokemon-reading-dex && export GIT_SSL_NO_VERIFY=1 && git -c http.expectContinue=false push origin HEAD:main
 ```
 
-推完等下一次 cron（每 3 小时，UTC `17 */3 * * *`）跑完，去 GitHub Actions 看
-「每日宝可梦判定」这一步是不是绿的，再看 `data/dex.json` 有没有多出一条 `collected`。
+推完等下一次 **Mavis cron**（每 3 小时，UTC `17 */3 * * *`）跑完，去 **Mavis 的 cron 任务日志**里
+看这一轮是不是绿的，再看 `data/dex.json` 有没有多出一条 `collected`。
 
-如果 cron 红了，**不要自己猜着改** —— 把 Actions 日志贴出来，按日志改。
+（`WEREAD_API_KEY` 配在 Mavis cron 的环境里，**不在** Actions secrets ——
+本仓库的 Actions secrets 实测是 0 个；`.github/workflows/daily-award.yml` 只是备用执行器，
+启用前必须先停掉 Mavis cron。）
+
+如果 cron 红了，**不要自己猜着改** —— 把 **cron 日志**贴出来，按日志改。
 
 ---
 

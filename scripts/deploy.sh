@@ -19,7 +19,8 @@ PUSH_URL="https://github.com/${REPO}.git"
 echo "[1/4] 同步数据到 site/"
 cp data/pokedex.json site/pokedex.json
 cp data/dex.json site/dex.json
-# 源注册表也要跟着走 —— 图鉴页的额度进度要读它（workflow 里也 cp 同一份）
+# 源注册表也要跟着走 —— 读方（图鉴页 / 插件）拿它兜底「掉一只要读多久」，
+# S5 的多源进度也走它（workflow 里也 cp 同一份）
 cp data/sources.json site/sources.json
 touch site/.nojekyll
 

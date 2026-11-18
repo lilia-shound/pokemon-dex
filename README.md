@@ -10,15 +10,31 @@
 
 ```
 微信读书官方 Agent API
-  └─ /readdata/detail  mode=monthly  →  readTimes[今天] = 当日阅读秒数
-       └─ 服务端判定（阈值 30 分钟）
-            └─ 从「还没收服」的池子里抽 1 只（闪光按连读天数加权）
-                 └─ 写 data/dex.json
-                      └─ 图鉴页 / 插件 读它 → 图鉴墙 + 进度胶囊 + 今日开箱卡
+  └─ /readdata/detail  mode=monthly + mode=weekly（两个周期取并集）
+       →  readTimes[今天] = 当日阅读秒数（跨周/跨月补发时不漏掉周期最后一天）
+            └─ 服务端判定（阈值 30 分钟）
+                 └─ 从「还没收服」的池子里抽 1 只（闪光按连读天数加权）
+                      └─ 写 data/dex.json
+                           └─ 图鉴页 / 插件 读它 → 图鉴墙 + 进度胶囊 + 今日开箱卡
 ```
 
 **服务端是唯一权威**：只有服务端抽出的宝可梦才进图鉴。
 插件只读、只展示，不抽卡、不写状态、也不持有微信读书 API Key。
+
+## 谁在跑结算
+
+**真正的执行者是 Mavis 的 cron 任务**，不是 GitHub Actions。
+
+- `WEREAD_API_KEY` 配在 **Mavis cron 的环境里**，**不在** Actions secrets
+  （本仓库的 Actions secrets 实测是 0 个）。
+- `.github/workflows/daily-award.yml` 只是**备用**执行器：只有你把 `WEREAD_API_KEY`
+  加进 Actions secrets 后它才会跑。**启用前必须先停掉 Mavis cron** —— 两个写者会打架；
+  而且这个 workflow 用 `git subtree push` 发布 gh-pages，与 `scripts/deploy.sh` 的
+  orphan + force 重建方式冲突，大概率在第一次发布就挂。
+- **取数失败 ≠ 今天没读够**：monthly 与 weekly 两个周期都取数失败时，
+  `scripts/award.py` 会 **exit 1** 并打印「[失败] 取数失败…」，不会安静地当成「未达标」。
+  cron 日志里看到 `[失败]` 就是取数出了问题（Key 失效 / 微信读书 skill 版本过期 / 网关抖动），
+  该修的是取数，不是「今天没读够」。
 
 ## 玩法规则
 
@@ -105,7 +121,7 @@ bash scripts/deploy.sh            # 发布
 
 | 变量 | 必需 | 用途 |
 |---|---|---|
-| `WEREAD_API_KEY` | ✅ | 微信读书 Agent API Key（`wrk-` 开头）。App → 设置 → 微信读书 Skill 里复制 |
+| `WEREAD_API_KEY` | ✅ | 微信读书 Agent API Key（`wrk-` 开头）。App → 设置 → 微信读书 Skill 里复制。**配在 Mavis cron 的环境里，不在 Actions secrets**（见「谁在跑结算」） |
 | `GITHUB_TOKEN` | 部署时 | 推 repo |
 | `PUSHPLUS_TOKEN` | 可选 | 微信推送。未配置则静默跳过 |
 
