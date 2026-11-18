@@ -19,6 +19,8 @@ PUSH_URL="https://github.com/${REPO}.git"
 echo "[1/4] 同步数据到 site/"
 cp data/pokedex.json site/pokedex.json
 cp data/dex.json site/dex.json
+# 源注册表也要跟着走 —— 图鉴页的额度进度要读它（workflow 里也 cp 同一份）
+cp data/sources.json site/sources.json
 touch site/.nojekyll
 
 echo "[2/4] 提交并推送 main"
