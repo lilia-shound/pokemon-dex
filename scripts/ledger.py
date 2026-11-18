@@ -13,10 +13,11 @@ import datetime
 
 
 def empty_ledger() -> dict:
+    """空账本 —— 键是日期，值是 {源 id: 原始量}。"""
     return {}
 
 
-def merge_amounts(ledger: dict, source_id: str, days: dict) -> dict:
+def merge_amounts(ledger: dict, source_id: str, days: dict[str, int]) -> dict:
     """把某个源某几天的量并进账本。同源同一天取 max。"""
     out = {day: dict(amounts) for day, amounts in (ledger or {}).items()}
     for day, amount in (days or {}).items():
@@ -51,8 +52,9 @@ def migrate_state(state: dict) -> dict:
         collected.append(c)
     st["collected"] = collected
     st["version"] = 2
-    st.setdefault("ledger", {})
-    st.setdefault("chains", {})
+    # 两层拷贝：账本与链状态是共享状态，调用方就地改内层 dict 时不能污染入参
+    st["ledger"] = {d: dict(v) for d, v in (st.get("ledger") or {}).items()}
+    st["chains"] = {k: dict(v) for k, v in (st.get("chains") or {}).items()}
     st.setdefault("streak", 0)
     st.setdefault("lastAwardDate", None)
     return st

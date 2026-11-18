@@ -118,8 +118,9 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
             "credit": src.day_credit(cfg, today_map),
             "perAward": per_award,
         },
-        "ledger": dict(ledger_data or {}),
-        "chains": dict(chains or {}),
+        # 两层拷贝：advance_chain 原地改内层链状态 dict，浅拷贝会污染传进来的旧 state
+        "ledger": {d: dict(v) for d, v in (ledger_data or {}).items()},
+        "chains": {k: dict(v) for k, v in (chains or {}).items()},
     }
 
 

@@ -93,6 +93,17 @@ class MigrateStateTest(unittest.TestCase):
         lg.migrate_state(original)
         self.assertEqual(original["collected"][0], {"id": "1"})
 
+    def test_migrate_state_does_not_alias_ledger_or_chains(self):
+        """返回值与入参不能共享 ledger / chains 的内层 dict。"""
+        src = {"ledger": {"2026-11-14": {"weread": 900}},
+               "chains": {"妙蛙种子": {"care": 1, "pendingShiny": 0,
+                                       "nextShinyAt": 30}}}
+        out = lg.migrate_state(src)
+        out["ledger"]["2026-11-14"]["weread"] = 1800
+        out["chains"]["妙蛙种子"]["care"] = 99
+        self.assertEqual(src["ledger"]["2026-11-14"]["weread"], 900)
+        self.assertEqual(src["chains"]["妙蛙种子"]["care"], 1)
+
 
 class EmptyLedgerTest(unittest.TestCase):
     """空账本是新账本的起点：必须是空 dict，而且每次都返回新对象。"""
