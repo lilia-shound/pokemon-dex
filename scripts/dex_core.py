@@ -85,25 +85,39 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
     """组装 v2 状态。
 
     new_awards 是本次要并入的发奖列表（调用方已经排好序、判过幂等）。
+    **这里绝不按日期去重** —— v1 的 new_state 曾静默丢掉重复的卡，
+    导致调用方打印了「★ 获得」而状态里没有（旧版的「假消息」坑）。
+    幂等由调用方保证。
     """
     collected = [dict(c) for c in (old.get("collected") or [])]
     for a in new_awards or []:
         collected.append(dict(a))
     awarded_dates = sorted({c["date"] for c in collected if c.get("date")})
-    today_map = {k: int(v) for k, v in (today_sources or {}).items() if int(v) > 0}
-    weread_per = int(cfg["sources"].get("weread", {}).get("per", 0))
+    # 连读天数锚在「最后一次发奖日」：补发几天前的奖励时，
+    # 显示「连读 N 天」而不是 0（锚在今天会把补发日算成断签）。
+    anchor = awarded_dates[-1] if awarded_dates else today
+    # 只保留启用源的原始量，和 credit 的口径保持一致
+    enabled = src.enabled_sources(cfg)
+    today_map = {
+        k: int(v) for k, v in (today_sources or {}).items()
+        if k in enabled and int(v) > 0
+    }
+    weread_per = int(cfg.get("sources", {}).get("weread", {}).get("per", 0))
+    per_award = int(cfg["perAward"])
     return {
         "version": 2,
         "collected": collected,
-        "streak": compute_streak(awarded_dates, today),
+        "streak": compute_streak(awarded_dates, anchor),
         "lastAwardDate": awarded_dates[-1] if awarded_dates else None,
         "today": {
             "date": today,
             "seconds": int(today_map.get("weread", 0)),
-            "threshold": weread_per,
+            # 读方（site/app.js、plugin）拿 threshold 当「掉一只要读多久」用，
+            # 所以这里发的是「掉一只实际需要的微信读书秒数」，不是 1 个额度的量。
+            "threshold": per_award * weread_per,
             "sources": today_map,
             "credit": src.day_credit(cfg, today_map),
-            "perAward": int(cfg["perAward"]),
+            "perAward": per_award,
         },
         "ledger": dict(ledger_data or {}),
         "chains": dict(chains or {}),
