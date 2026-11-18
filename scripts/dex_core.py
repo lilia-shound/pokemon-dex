@@ -6,6 +6,8 @@ import datetime
 import os
 import random
 
+from scripts import sources as src
+
 # streak 阈值 -> 闪光概率。达到该阈值即生效（取最高档）
 SHINY_ODDS: dict[int, float] = {
     0: 1 / 96,
@@ -61,6 +63,51 @@ def pick(owned_ids: set[str], pool: list[dict], streak: int, rng: random.Random)
     prob = shiny_probability(streak)
     chosen["shiny"] = rng.random() < prob
     return chosen
+
+
+def pending_days(cfg: dict, ledger: dict, awarded_dates) -> list[str]:
+    """所有「额度够了但还没发奖」的日期，按时间正序。
+
+    一天最多掉 maxPerDay 只 —— 现在恒为 1 —— 所以每个日期最多出现一次。
+    """
+    awarded = set(awarded_dates or ())
+    out = []
+    for day in sorted(ledger or {}):
+        if day in awarded:
+            continue
+        if src.day_credit(cfg, ledger[day]) >= int(cfg["perAward"]):
+            out.append(day)
+    return out
+
+
+def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
+                ledger_data: dict, chains: dict, new_awards: list) -> dict:
+    """组装 v2 状态。
+
+    new_awards 是本次要并入的发奖列表（调用方已经排好序、判过幂等）。
+    """
+    collected = [dict(c) for c in (old.get("collected") or [])]
+    for a in new_awards or []:
+        collected.append(dict(a))
+    awarded_dates = sorted({c["date"] for c in collected if c.get("date")})
+    today_map = {k: int(v) for k, v in (today_sources or {}).items() if int(v) > 0}
+    weread_per = int(cfg["sources"].get("weread", {}).get("per", 0))
+    return {
+        "version": 2,
+        "collected": collected,
+        "streak": compute_streak(awarded_dates, today),
+        "lastAwardDate": awarded_dates[-1] if awarded_dates else None,
+        "today": {
+            "date": today,
+            "seconds": int(today_map.get("weread", 0)),
+            "threshold": weread_per,
+            "sources": today_map,
+            "credit": src.day_credit(cfg, today_map),
+            "perAward": int(cfg["perAward"]),
+        },
+        "ledger": dict(ledger_data or {}),
+        "chains": dict(chains or {}),
+    }
 
 
 def new_state(old: dict, award: dict | None, today: str, today_secs: int,
