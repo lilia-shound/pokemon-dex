@@ -40,7 +40,7 @@
 | `data/sources.json` | 新建 | 源注册表：每个源的名字、单位、`per`（多少单位 = 1 额度）、`mode`、`enabled`、`maxPerDay`；根级 `perAward` / `maxPerDay` / `maxBackfill` / `ledgerDays` |
 | `scripts/sources.py` | 新建 | 读 + 校验 `sources.json`；额度折算（`floor`）；只含纯逻辑 |
 | `scripts/ledger.py` | 新建 | 账本合并（同源同日取 max）、滚动裁剪、v1→v2 状态迁移；只含纯逻辑 |
-| `scripts/dex_core.py` | 修改 | 保留 `shiny_probability` / `compute_streak` / `pick` / `THRESHOLD_SECONDS`；新增 `pending_days` / `build_state` / `chain_*` / `advance_chain` / `apply_forms`；**移除 `new_state`**（被 `build_state` 取代，避免两套状态机） |
+| `scripts/dex_core.py` | 修改 | 保留 `shiny_probability` / `compute_streak` / `pick` / `THRESHOLD_SECONDS`；新增 `pending_days` / `build_state` / `chain_key` / `advance_chain`；**移除 `new_state`**（被 `build_state` 取代，避免两套状态机） |
 | `scripts/award.py` | 修改 | 编排：读配置 → 迁移 → 拉数 → 合并账本 → 判定待发奖日 → 逐日抽卡 → 组装 v2 状态 → 写盘 → 推送。新增 `--migrate-only` |
 | `scripts/check_today.py` | 修改 | 自检改读配置（阈值以 `sources.json` 为准），并打印今日额度折算 |
 | `tests/test_sources.py` | 新建 | 配置校验 + 额度折算 |
@@ -962,29 +962,48 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_dex_
 
 ---
 
-## Task 4: 进化链养成
+## Task 4: 进化链分组与养成
 
 **Files:**
-- Modify: `scripts/dex_core.py`
+- Modify: `scripts/dex_core.py`（追加 `chain_key` / `advance_chain`）
 - Create: `tests/test_chains.py`
 
 **Interfaces:**
-- Consumes: `pokedex.json` 里每只宝可梦的 `evolution` 字段（链上名字的数组，可能重复）
+- Consumes: 无
 - Produces:
-  - `scripts.dex_core.chain_key(pokemon: dict) -> str`
-  - `scripts.dex_core.chain_stage(pokemon: dict) -> int`
-  - `scripts.dex_core.chain_final_stage(pokemon: dict) -> int`
-  - `scripts.dex_core.chain_pokemon_by_stage(pokemon: dict, pokedex: list) -> dict[int, dict]`
-  - `scripts.dex_core.advance_chain(chains: dict, pokemon: dict) -> dict`
-  - `scripts.dex_core.apply_forms(collected: list, chains: dict, pokedex: list) -> None`
+  - `scripts.dex_core.chain_key(pokemon: dict) -> str` —— 进化链的唯一标识（基础形态名）
+  - `scripts.dex_core.advance_chain(chains: dict, pokemon: dict) -> dict` —— **原地修改** `chains` 并返回它
 
-链状态结构：`{"care": int, "stage": int, "pendingShiny": int, "nextShinyAt": int}`
+链状态结构：`{"care": int, "pendingShiny": int, "nextShinyAt": int}`
+
+> **★ 这一层为什么只做「分组 + 养成 + 保底闪光」，不做形态改写**
+>
+> 真实数据（`data/pokedex.json`，1028 只，42arch 抓的）把**分叉的进化关系拍平成了直线**：
+> 伊布的 8 个分支被拍成一条 9 级的直线、走路草链的 3 条支线混在一起，
+> 而且**同一条链的成员拿到的 `evolution` 数组并不一致**
+> （走路草是 6 个名字 `['走路草','臭臭花','霸王花','走路草','臭臭花','美丽花']`，
+> 霸王花只有 3 个 `['走路草','臭臭花','霸王花']`）。
+>
+> 后果（已实测）：
+> - 用「整条数组拼起来」当链 key → **543 条生物链被拆成 588 个 key**，19 条链被拆开，
+>   care 被摊薄到不同 key 上；
+> - 「这一阶对应哪只宝可梦」在分叉链上**没有唯一答案**（美丽花和霸王花是兄弟形态，
+>   但在拍平的数据里被排成同一级）。
+>
+> 所以：**链分组用「基础形态名」**（同链所有成员共有的第一个名字，本地可算、不需要全局上下文；
+> 实测分组结果 = 543 组，正好等于生物链数），
+> **形态改写（`form` 字段随阶数变化）整层挪到 S6** —— S6 届时要么修数据管线重生成
+> `pokedex.json`，要么改成「按基础形态分组、显示组内代表形态」的简化规则。
+>
+> 本层保留的是真正值钱的那半：**养 → 保底出闪**。
 
 - [ ] **Step 1: 写失败的测试**
 
 创建 `tests/test_chains.py`：
 
 ```python
+import json
+import pathlib
 import unittest
 
 from scripts import dex_core as dc
@@ -999,135 +1018,127 @@ PIKACHU = {"id": "0025", "nameZh": "皮卡丘",
            "evolution": ["皮丘", "皮卡丘", "雷丘", "皮丘", "皮卡丘", "雷丘"]}
 PIKACHU_DUPE = {"id": "0025b", "nameZh": "皮卡丘",
                 "evolution": ["皮丘", "皮卡丘", "雷丘"]}
+# 真实数据里同链成员的 evolution 数组并不一致 —— 这正是旧 key 算法的坑
+WALKING_GRASS = {"id": "0004", "nameZh": "走路草",
+                 "evolution": ["走路草", "臭臭花", "霸王花", "走路草", "臭臭花", "美丽花"]}
+BEAUTIFUL_FLOWER = {"id": "0005", "nameZh": "霸王花",
+                     "evolution": ["走路草", "臭臭花", "霸王花"]}
 
 
 class ChainKeyTest(unittest.TestCase):
-    def test_joins_names_with_arrow(self):
-        self.assertEqual(dc.chain_key(BULBASAUR), "妙蛙种子→妙蛙草→妙蛙花")
+    def test_uses_base_form_name(self):
+        self.assertEqual(dc.chain_key(BULBASAUR), "妙蛙种子")
 
     def test_dedups_repeated_names(self):
-        self.assertEqual(dc.chain_key(PIKACHU), "皮丘→皮卡丘→雷丘")
-
-    def test_different_chains_differ(self):
-        self.assertNotEqual(dc.chain_key(BULBASAUR), dc.chain_key(PIKACHU))
+        self.assertEqual(dc.chain_key(PIKACHU), "皮丘")
 
     def test_missing_evolution_is_empty(self):
         self.assertEqual(dc.chain_key({"id": "x", "nameZh": "独角兽"}), "")
 
+    def test_members_with_different_arrays_share_one_key(self):
+        """真实数据的坑：同链成员的 evolution 数组不一致，key 必须仍然一致。"""
+        self.assertEqual(dc.chain_key(WALKING_GRASS), dc.chain_key(BEAUTIFUL_FLOWER))
 
-class ChainStageTest(unittest.TestCase):
-    def test_stage_is_index_in_chain(self):
-        self.assertEqual(dc.chain_stage(BULBASAUR), 0)
-        self.assertEqual(dc.chain_stage(IVYSAUR), 1)
-        self.assertEqual(dc.chain_stage(VENUSAUR), 2)
-
-    def test_final_stage(self):
-        self.assertEqual(dc.chain_final_stage(BULBASAUR), 2)
-        self.assertEqual(dc.chain_final_stage(PIKACHU), 2)
-
-    def test_name_not_in_chain_is_stage_zero(self):
-        self.assertEqual(dc.chain_stage({"id": "9", "nameZh": "外星种"}), 0)
+    def test_different_chains_differ(self):
+        self.assertNotEqual(dc.chain_key(BULBASAUR), dc.chain_key(PIKACHU))
 
 
 class AdvanceChainTest(unittest.TestCase):
     def test_first_care_creates_entry(self):
         chains = {}
         dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["care"], 1)
-        self.assertEqual(st["stage"], 0)
         self.assertEqual(st["pendingShiny"], 0)
         self.assertEqual(st["nextShinyAt"], 30)
+
+    def test_mutates_in_place_and_returns_same_object(self):
+        chains = {}
+        got = dc.advance_chain(chains, BULBASAUR)
+        self.assertIs(got, chains)
 
     def test_care_accumulates(self):
         chains = {}
         for _ in range(5):
             dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["care"], 5)
+        self.assertEqual(chains["妙蛙种子"]["care"], 5)
 
-    def test_stage_advances_every_three_care(self):
-        chains = {}
-        for _ in range(3):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 1)
-
-    def test_stage_advances_again_at_six(self):
-        chains = {}
-        for _ in range(6):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 2)
-
-    def test_stage_stops_at_final(self):
-        chains = {}
-        for _ in range(12):
-            dc.advance_chain(chains, BULBASAUR)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["stage"], 2)
-
-    def test_care_thirty_grants_one_guarantee(self):
+    def test_thirty_care_grants_one_guarantee(self):
         chains = {}
         for _ in range(30):
             dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["pendingShiny"], 1)
         self.assertEqual(st["nextShinyAt"], 60)
 
-    def test_next_guarantee_at_sixty(self):
+    def test_sixty_care_grants_second_guarantee(self):
         chains = {}
         for _ in range(60):
             dc.advance_chain(chains, BULBASAUR)
-        st = chains["妙蛙种子→妙蛙草→妙蛙花"]
+        st = chains["妙蛙种子"]
         self.assertEqual(st["pendingShiny"], 2)
         self.assertEqual(st["nextShinyAt"], 90)
+
+    def test_guarantee_rhythm_is_fixed_not_sliding(self):
+        """care 跳变时保底节奏不该整体后移：nextShinyAt 每次 +30，不是 care+30。"""
+        chains = {"妙蛙种子": {"care": 35, "pendingShiny": 0, "nextShinyAt": 30}}
+        dc.advance_chain(chains, BULBASAUR)
+        st = chains["妙蛙种子"]
+        self.assertEqual(st["pendingShiny"], 1)
+        self.assertEqual(st["nextShinyAt"], 60)
 
     def test_other_chain_is_independent(self):
         chains = {}
         dc.advance_chain(chains, BULBASAUR)
         dc.advance_chain(chains, PIKACHU)
-        self.assertEqual(chains["妙蛙种子→妙蛙草→妙蛙花"]["care"], 1)
-        self.assertEqual(chains["皮丘→皮卡丘→雷丘"]["care"], 1)
+        self.assertEqual(chains["妙蛙种子"]["care"], 1)
+        self.assertEqual(chains["皮丘"]["care"], 1)
+
+    def test_no_evolution_creates_no_entry(self):
+        chains = {}
+        dc.advance_chain(chains, {"id": "x", "nameZh": "独角兽"})
+        self.assertEqual(chains, {})
 
 
-class ApplyFormsTest(unittest.TestCase):
-    POKEDEX = [BULBASAUR, IVYSAUR, VENUSAUR, PIKACHU, PIKACHU_DUPE]
+class RealPokedexTest(unittest.TestCase):
+    """真实数据护栏 —— 合成数据会掩盖「同链成员 evolution 数组不一致」这个坑。"""
 
-    def _collected(self, pid, form):
-        return [{"id": pid, "nameZh": "x", "shiny": False, "date": "2026-11-16",
-                 "sources": ["weread"], "form": form}]
+    @classmethod
+    def setUpClass(cls):
+        p = pathlib.Path(__file__).resolve().parent.parent / "data" / "pokedex.json"
+        cls.pokedex = json.loads(p.read_text(encoding="utf-8"))["pokemon"]
+        cls.by_name = {x["nameZh"]: x for x in cls.pokedex}
 
-    def test_stage_zero_keeps_own_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 1, "stage": 0}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0001")
+    def test_walking_grass_line_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n])
+                for n in ("走路草", "臭臭花", "霸王花", "美丽花")}
+        self.assertEqual(len(keys), 1)
 
-    def test_stage_one_sets_next_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 3, "stage": 1}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0002")
+    def test_eevee_family_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n])
+                for n in ("伊布", "水伊布", "雷伊布", "火伊布", "太阳伊布",
+                          "月亮伊布", "叶伊布", "冰伊布", "仙子伊布")}
+        self.assertEqual(len(keys), 1)
 
-    def test_stage_two_sets_final_form(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 6, "stage": 2}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0003")
+    def test_pikachu_line_shares_one_key(self):
+        keys = {dc.chain_key(self.by_name[n]) for n in ("皮丘", "皮卡丘", "雷丘")}
+        self.assertEqual(len(keys), 1)
 
-    def test_chain_without_state_untouched(self):
-        col = self._collected("0001", "0001")
-        dc.apply_forms(col, {}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "0001")
+    def test_chain_key_is_base_form_name(self):
+        self.assertEqual(dc.chain_key(self.by_name["皮卡丘"]), "皮丘")
 
-    def test_unknown_id_untouched(self):
-        col = self._collected("9999", "9999")
-        dc.apply_forms(col, {"妙蛙种子→妙蛙草→妙蛙花": {"care": 3, "stage": 1}}, self.POKEDEX)
-        self.assertEqual(col[0]["form"], "9999")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_grouping_matches_biological_chain_count(self):
+        """用基础形态名分组 → 543 组，正好等于生物链数。"""
+        groups = {}
+        for x in self.pokedex:
+            groups.setdefault(dc.chain_key(x), []).append(x["nameZh"])
+        self.assertEqual(len(groups), 543)
 ```
 
 - [ ] **Step 2: 跑测试，确认失败**
 
 ```bash
-cd /workspace/pokemon-reading-dex && python3 run_tests.py
+cd /workspace/pokemon-reading-dex && python3 -B run_tests.py
 ```
 
 Expected: FAIL，报 `AttributeError: module 'scripts.dex_core' has no attribute 'chain_key'`
@@ -1151,85 +1162,45 @@ def _chain_names(pokemon: dict) -> list[str]:
 
 
 def chain_key(pokemon: dict) -> str:
-    """链的唯一标识。"""
-    return "→".join(_chain_names(pokemon))
+    """进化链的唯一标识 —— **基础形态名**（evolution 的第一个名字）。
 
+    为什么不用整条数组拼起来当 key：真实数据（42arch）把分叉的进化关系拍平成了直线，
+    而且同一条链的成员拿到的 evolution 数组并不一致（走路草 6 个名字，霸王花只有 3 个）。
+    用整条数组当 key 会把同一条链拆成多份（实测 543 条生物链被拆成 588 个 key，
+    19 条链被拆开，care 被摊薄到不同 key 上）。
 
-def chain_stage(pokemon: dict) -> int:
-    """这只在链上的第几级（0 = 初始形态）。"""
+    基础形态名是同链所有成员共有的，本地就能算，不需要全局上下文。
+    实测：用基础形态名分组 → 543 组，正好等于生物链数。
+    """
     names = _chain_names(pokemon)
-    if not names:
-        return 0
-    name = pokemon.get("nameZh")
-    return names.index(name) if name in names else 0
-
-
-def chain_final_stage(pokemon: dict) -> int:
-    """链的最终形态是第几级。"""
-    return max(0, len(_chain_names(pokemon)) - 1)
-
-
-def chain_pokemon_by_stage(pokemon: dict, pokedex: list) -> dict:
-    """{级别: 该级对应的宝可梦}。找不到的级别不出现。"""
-    key = chain_key(pokemon)
-    out: dict[int, dict] = {}
-    for i, name in enumerate(_chain_names(pokemon)):
-        for p in pokedex:
-            if p.get("nameZh") == name and chain_key(p) == key:
-                out[i] = p
-                break
-    return out
+    return names[0] if names else ""
 
 
 def advance_chain(chains: dict, pokemon: dict) -> dict:
     """给这条链加一天培养。原地修改并返回 chains。
 
-    care 每满 3 天推进一级形态；care 每多 30 天给一次保底闪光。
+    care 每多 30 天给一次保底闪光（pendingShiny += 1）——
+    下次抽到这个链的宝可梦时可以强制闪光。把「一次性运气」换成「持续投入」。
+
+    注：形态改写（进化阶数 → collected[].form）不在本层做 ——
+    分叉的进化关系在拍平的数据里没有唯一的「这一阶对应哪只」，那是 S6 的活。
     """
     key = chain_key(pokemon)
     if not key:
         return chains
-    st = chains.setdefault(key, {"care": 0, "stage": 0,
-                                  "pendingShiny": 0, "nextShinyAt": 30})
+    st = chains.setdefault(key, {"care": 0, "pendingShiny": 0, "nextShinyAt": 30})
     st["care"] = int(st.get("care", 0)) + 1
-    final = chain_final_stage(pokemon)
-    if int(st.get("stage", 0)) < final and st["care"] >= (int(st["stage"]) + 1) * 3:
-        st["stage"] = int(st["stage"]) + 1
     if st["care"] >= int(st.get("nextShinyAt", 30)):
         st["pendingShiny"] = int(st.get("pendingShiny", 0)) + 1
-        st["nextShinyAt"] = st["care"] + 30
+        # 节奏固定：每次 +30，而不是 care + 30 —— care 跳变时不该整体后移
+        st["nextShinyAt"] = int(st.get("nextShinyAt", 30)) + 30
     return chains
-
-
-def apply_forms(collected: list, chains: dict, pokedex: list) -> None:
-    """按链的当前阶段，把已收服条目的 form 更新成对应形态。
-
-    form 只影响展示 —— collected[].id 不变，所以「已收服 N/1028」不会倒退。
-    """
-    by_id = {p.get("id"): p for p in pokedex}
-    stage_members: dict[str, dict] = {}
-    for c in collected:
-        p = by_id.get(c.get("id"))
-        if p is None:
-            continue
-        key = chain_key(p)
-        st = chains.get(key)
-        if not st:
-            continue
-        stage = int(st.get("stage", 0))
-        if stage <= 0:
-            continue
-        if key not in stage_members:
-            stage_members[key] = chain_pokemon_by_stage(p, pokedex)
-        target = stage_members[key].get(stage)
-        if target is not None:
-            c["form"] = target.get("id")
 ```
 
 - [ ] **Step 4: 跑测试，确认通过**
 
 ```bash
-cd /workspace/pokemon-reading-dex && python3 run_tests.py
+cd /workspace/pokemon-reading-dex && python3 -B run_tests.py
 ```
 
 Expected: 全部 PASS
@@ -1237,7 +1208,7 @@ Expected: 全部 PASS
 - [ ] **Step 5: 提交**
 
 ```bash
-cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chains.py && git commit -m "feat: 进化链养成（链级 care / stage / 保底闪光）"
+cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chains.py && git commit -m "feat: 进化链分组与养成（基础形态名分组 + 保底闪光）"
 ```
 
 ---
@@ -1351,7 +1322,6 @@ cd /workspace/pokemon-reading-dex && git add scripts/dex_core.py tests/test_chai
   - `scripts.dex_core.pending_days(cfg, ledger, awarded_dates) -> list[str]`
   - `scripts.dex_core.build_state(old, cfg, today, today_sources, ledger_data, chains, new_awards) -> dict`
   - `scripts.dex_core.advance_chain(chains, pokemon) -> dict`
-  - `scripts.dex_core.apply_forms(collected, chains, pokedex) -> None`
   - `scripts.dex_core.pick(owned_ids, pool, streak, rng) -> dict | None`
 - Produces:
   - `scripts/award.py` 新增模块级常量 `SOURCES_PATH`
@@ -1764,7 +1734,6 @@ def main(argv: list[str] | None = None) -> int:
 
     state = dc.build_state(old, cfg, today, today_sources, ledger_data,
                            chains, new_awards)
-    dc.apply_forms(state["collected"], chains, pool)
 
     if args.dry_run:
         print("[dry-run] 未写入文件")
@@ -2091,11 +2060,11 @@ cd /workspace/pokemon-reading-dex && export GIT_SSL_NO_VERIFY=1 && git -c http.e
 | §5.1 源注册表 | Task 1 |
 | §5.2 dex.json v2 数据模型 | Task 3（`build_state`）、Task 5（写盘） |
 | §5.3 v1→v2 迁移 | Task 2（`migrate_state`）、Task 6（真实文件迁移） |
-| §5.4 `collected[].form` | Task 4（`apply_forms`） |
+| §5.4 `collected[].form` | **S6**（S1 期间恒等于 `id`，只占位） |
 | §6.1 额度折算 | Task 1 |
 | §6.2 一次结清所有待发奖日 + maxBackfill | Task 3（`pending_days`）、Task 5 |
 | §6.3 streak 与闪光概率 | Task 5（逐日重算 streak） |
-| §6.4 进化链（care / stage / 保底） | Task 4（养成）、Task 5（保底触发） |
+| §6.4 进化链（分组 / care / 保底） | Task 4（分组 + 养成）、Task 5（保底触发）；**形态改写 → S6** |
 | §6.5 账本裁剪 | Task 2（`prune`） |
 | §7 上报协议 | **不在 S1** —— 传输层属 S2。S1 只留 `merge_amounts` 这个接口 |
 | §8.1 S1 文件划分 | 全部 Task |
