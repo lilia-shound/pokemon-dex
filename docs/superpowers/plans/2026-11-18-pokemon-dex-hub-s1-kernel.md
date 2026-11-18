@@ -617,6 +617,12 @@ def migrate_state(state: dict) -> dict:
         c.setdefault("sources", ["weread"])
         c.setdefault("form", c.get("id"))
         collected.append(c)
+    for c in collected:
+        # 幂等护栏（pending_days 排除已发奖日）完全依赖 collected[].date。
+        # 缺 date 的条目会让那天重新进 pending → 同一天两张卡。
+        # 实测 v1 的真实数据每条都有 date，这里只是给手改过的状态兜底。
+        if not c.get("date"):
+            c["date"] = (c.get("at") or "")[:10] or None
     st["collected"] = collected
     st["version"] = 2
     st.setdefault("ledger", {})
@@ -932,8 +938,15 @@ def build_state(old: dict, cfg: dict, today: str, today_sources: dict,
         },
         "ledger": dict(ledger_data or {}),
         "chains": dict(chains or {}),
+        # v1 有这个字段（v2 别静默丢掉）；语义与 v1 一致：
+        # 有新发奖就更新成发奖时间，否则沿用旧的
+        "updatedAt": (new_awards[-1].get("at") if new_awards
+                      else old.get("updatedAt")),
     }
 ```
+
+> ★ Task 5 的 Step 0 会把上面两行改成两层拷贝
+> （`{d: dict(v) for d, v in ...}`）—— `advance_chain` 原地改内层 dict。
 
 - [ ] **Step 4: 保留旧的 `new_state`（本 Task 不删）**
 
@@ -1723,12 +1736,18 @@ def weread_days(buckets: dict[int, int]) -> dict[str, int]:
     return out
 
 
-def today_sources_from(state: dict) -> dict:
+def today_sources_from(state: dict, today: str) -> dict:
     """从旧状态里推出今天的各源量。
 
     v2 走 today.sources；v1 只有 today.seconds，按微信读书口径还原。
+
+    **只在旧 `today.date` 就是今天时才还原** —— 否则会把几天前的读数
+    写成「今天读了多少」（实测迁移后图鉴页会显示错误的今日进度，
+    而且这是写进数据文件的事实错误，不只是显示问题）。
     """
     t = (state or {}).get("today") or {}
+    if t.get("date") != today:
+        return {}
     if t.get("sources"):
         return dict(t["sources"])
     secs = int(t.get("seconds") or 0)
@@ -1759,7 +1778,7 @@ def main(argv: list[str] | None = None) -> int:
     chains = {k: dict(v) for k, v in (old.get("chains") or {}).items()}
 
     if args.migrate_only:
-        state = dc.build_state(old, cfg, today, today_sources_from(old),
+        state = dc.build_state(old, cfg, today, today_sources_from(old, today),
                                old.get("ledger") or {}, chains, [])
         if not args.dry_run:
             save_state(state)
@@ -1820,7 +1839,7 @@ def main(argv: list[str] | None = None) -> int:
         if chain_state and int(chain_state.get("pendingShiny", 0)) > 0:
             award["shiny"] = True
             chain_state["pendingShiny"] = int(chain_state["pendingShiny"]) - 1
-            print(f"[保底] {key} 养到 {chain_state['care']} 天，这次必闪")
+            print(f"[保底] {key} 养到 {chain_state.get('care', 0)} 天，这次必闪")
 
         day_credits = src.credit_for_day(cfg, ledger_data.get(day) or {})
         contributors = [sid for sid, n in day_credits.items() if n > 0]
