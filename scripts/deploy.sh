@@ -22,6 +22,8 @@ cp data/dex.json site/dex.json
 # 源注册表也要跟着走 —— 读方（图鉴页 / 插件）拿它兜底「掉一只要读多久」，
 # S5 的多源进度也走它（workflow 里也 cp 同一份）
 cp data/sources.json site/sources.json
+# 番茄钟用的精简宝可梦清单（从 pokedex.json 生成，1.8MB → 104KB）
+python3 scripts/build_pokedex_lite.py
 touch site/.nojekyll
 
 echo "[2/4] 提交并推送 main"

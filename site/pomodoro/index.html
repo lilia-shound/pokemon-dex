@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1a0b2e">
+<meta name="description" content="番茄钟 · 路上捡宝可梦 · 专注分钟数汇进训练家图鉴">
+<title>宝可梦番茄钟</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="wrap">
+  <header class="top">
+    <div class="stat"><b id="sToday">0</b><span>今日专注(分)</span></div>
+    <div class="stat m"><b id="sPoms">0</b><span>今日番茄</span></div>
+    <div class="stat b"><b id="sStreak">0</b><span>连续天数</span></div>
+    <div class="stat g"><b id="sDex">0/0</b><span>路上捡到</span></div>
+  </header>
+
+  <main>
+    <!-- ================= 番茄钟 ================= -->
+    <section id="sec-timer" class="on">
+      <div class="ring idle" id="ring">
+        <svg viewBox="0 0 240 240">
+          <defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#8b7bff"/><stop offset="100%" stop-color="#ff8fb1"/>
+          </linearGradient></defs>
+          <circle class="bgc" cx="120" cy="120" r="108"/>
+          <circle class="fgc" id="ringFg" cx="120" cy="120" r="108"/>
+        </svg>
+        <div class="mid">
+          <div class="t" id="clock">25:00</div>
+          <div class="ph" id="phaseTxt">准备开始</div>
+          <div class="sub" id="taskTxt"></div>
+        </div>
+      </div>
+
+      <input class="taskline" id="taskInput" maxlength="40" placeholder="这次要专注做什么？（可留空）">
+      <div class="chips" id="lenChips"></div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn" id="btnMain">开始</button>
+        <button class="btn ghost" id="btnBreak">跳过 →</button>
+        <button class="btn ghost" id="btnAbort">放弃</button>
+      </div>
+      <div class="hint" id="peekHint" style="text-align:center"></div>
+
+      <!-- 上报：这些分钟要变成额度，得交上去 -->
+      <div class="card" id="syncCard">
+        <h3>交上去 <em id="syncSub"></em></h3>
+        <div class="syncbox" id="syncBox"></div>
+        <div class="row" style="gap:8px;margin-top:12px">
+          <button class="btn mini" id="btnSync">同步到图鉴</button>
+        </div>
+        <div class="hint" id="syncHint"></div>
+      </div>
+    </section>
+
+    <!-- ================= 图鉴 ================= -->
+    <section id="sec-dex">
+      <div class="card">
+        <h3>路上捡到的 <em id="dexSub"></em></h3>
+        <div class="dex" id="dexGrid"></div>
+        <div class="empty" id="dexEmpty">还没捡到 —— 专注的时候它会探头，点一下就收下。</div>
+      </div>
+      <div class="card">
+        <h3>怎么捡</h3>
+        <div class="hint" style="font-size:12px;opacity:.55;line-height:1.9">
+          · 专注开始后，宝可梦会在你设定的那段时间里<b style="opacity:.9">随机时刻</b>随机出现<br>
+          · 它探头时<b style="opacity:.9">不打断计时</b>，点一下就收下<br>
+          · 每只有 <b style="opacity:.9">1/128</b> 的概率是<b style="opacity:.9">闪光</b>（金色边框）<br>
+          · 出现的那只有 <b style="opacity:.9">1/96</b> 的概率是<b style="opacity:.9">监督宝可梦</b>：它会盯着你，你中途切走页面它就记一次摸鱼，一轮摸鱼 3 次这一轮作废<br>
+          · 优先派<b style="opacity:.9">你还没收集过的</b>（对照图鉴页的清单）
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 统计 ================= -->
+    <section id="sec-stats">
+      <div class="card">
+        <h3>近 7 天专注</h3>
+        <div class="bars" id="bars"></div>
+      </div>
+      <div class="card">
+        <h3>累计</h3>
+        <div id="statBox"></div>
+      </div>
+    </section>
+
+    <!-- ================= 设置 ================= -->
+    <section id="sec-set">
+      <div class="card">
+        <h3>专注设置</h3>
+        <label class="opt">专注时长
+          <select id="setFocus"></select>
+        </label>
+        <label class="opt">休息时长
+          <select id="setBreak"></select>
+        </label>
+        <label class="opt">每轮探头数
+          <select id="setPeek">
+            <option value="auto">自动（随时长变）</option>
+            <option value="1">1 只</option><option value="2">2 只</option>
+            <option value="3">3 只</option><option value="4">4 只</option>
+            <option value="5">5 只</option><option value="6">6 只</option>
+          </select>
+        </label>
+        <label class="opt">监督宝可梦（1/96）
+          <div class="sw" id="swSuper"></div>
+        </label>
+        <label class="opt">音效
+          <div class="sw" id="swSound"></div>
+        </label>
+        <label class="opt">自动进入休息
+          <div class="sw" id="swAuto"></div>
+        </label>
+      </div>
+      <div class="card">
+        <h3>数据</h3>
+        <div class="row" style="gap:8px">
+          <button class="btn mini ghost" id="btnExport">导出 JSON</button>
+          <button class="btn mini ghost" id="btnImport">导入 JSON</button>
+          <button class="btn mini ghost" id="btnReset">清空数据</button>
+        </div>
+        <input type="file" id="fileImport" accept="application/json,.json" style="display:none">
+        <div class="hint" id="netStat"></div>
+      </div>
+      <div class="hint" style="text-align:center;opacity:.28;font-size:11px;padding:6px 0 4px">
+        数据只存在本机浏览器 · 同步需要联网
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="timer" class="on"><i>⏱</i>番茄钟</button>
+    <button data-tab="dex"><i>📖</i>捡到的</button>
+    <button data-tab="stats"><i>📊</i>统计</button>
+    <button data-tab="set"><i>⚙</i>设置</button>
+  </nav>
+</div>
+
+<div id="stage"></div>
+<div id="toast"></div>
+
+<!-- 结算 -->
+<div class="modal" id="mSum">
+  <div class="mbox">
+    <h2 id="sumTitle">这一轮完成了！</h2>
+    <div class="big" id="sumMin"></div>
+    <div class="caught-row" id="sumRow"></div>
+    <p id="sumText"></p>
+    <div class="btns"><button class="btn" id="sumOk">好</button></div>
+  </div>
+</div>
+
+<!-- 放弃确认 -->
+<div class="modal" id="mAbort">
+  <div class="mbox">
+    <h2>确定要放弃这一轮？</h2>
+    <p>想放弃的话，就把「我真的要放弃」完整打出来。<br>多打一个「真的」的那半秒，说不定就够你回神了。</p>
+    <input id="abortInput" placeholder="我真的要放弃" autocomplete="off">
+    <div class="btns">
+      <button class="btn ghost" id="abortCancel">再撑一下</button>
+      <button class="btn danger" id="abortGo">放弃</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
