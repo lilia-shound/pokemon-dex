@@ -140,3 +140,9 @@ p{margin:0}
 .lockedMsg{text-align:center;color:var(--dim);padding:26px 0;font-size:14px}
 
 img.broken{opacity:.1}
+
+/* 数据没加载上时的重试按钮 */
+.retryBtn{margin-left:8px;padding:3px 12px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--accent);background:var(--card);color:var(--accent);
+  font:inherit;font-size:12px;transition:all .18s ease}
+.retryBtn:hover{background:var(--accent-soft)}

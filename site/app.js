@@ -24,15 +24,50 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/** 拉一个 JSON，带超时与重试。
+ *
+ * **必须有超时**：GitHub Pages 的 CDN 偶尔会把大文件传成爬行速度
+ * （实测 130KB 的 gzip 版传了 110 秒还没完），fetch 一直挂着，
+ * 整页就永远停在「载入中…」—— 看起来像网站坏了，其实只是没超时。
+ */
+async function fetchJSON(name, timeout = 30000, retries = 2) {
+  let lastErr = null;
+  for (let i = 0; i <= retries; i++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeout);
+    try {
+      const r = await fetch(name, { signal: ctl.signal, cache: "no-cache" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return await r.json();
+    } catch (e) {
+      lastErr = e;
+      if (i < retries) await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr;
+}
+
 async function load() {
+  // 三个文件各自兜底：状态没到不影响图鉴墙，阈值没到只影响兜底文案
   const [pd, dx, reg] = await Promise.all([
-    fetch("pokedex.json").then((r) => r.json()),
-    fetch("dex.json").then((r) => r.json()).catch(() => ({ collected: [], streak: 0, today: {} })),
-    // 源注册表：阈值的权威来源。读不到只影响兜底，不该让整页挂掉。
-    fetch("sources.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetchJSON("pokedex.json").catch(() => null),
+    fetchJSON("dex.json").catch(() => null),
+    fetchJSON("sources.json").catch(() => null),
   ]);
+  if (!pd || !pd.pokemon) {
+    setText("summary", "图鉴数据没加载上（网络问题）");
+    const btn = document.createElement("button");
+    btn.className = "retryBtn";
+    btn.textContent = "重试";
+    btn.onclick = () => { btn.remove(); setText("summary", "载入中…"); load(); };
+    const box = $("summary").parentElement;
+    if (box && !box.querySelector(".retryBtn")) box.appendChild(btn);
+    return;
+  }
   POKEDEX = pd.pokemon;
-  DEX = dx;
+  DEX = dx || { collected: [], streak: 0, today: {} };
   SOURCES = reg;
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
   //      ?owned=1 直接打开「已获得」视图（已收服的那几只，不用在 1028 格里翻）
@@ -46,6 +81,10 @@ async function load() {
     }
   } catch (e) { /* 忽略 */ }
   render();
+  if (!dx) {
+    // 状态没加载上要说清楚 —— 不然「图鉴 0/1028」会让人以为全丢了
+    setText("summary", "图鉴数据加载了，但状态没加载上（网络问题），刷新再试");
+  }
 }
 
 function ownedMap() {
