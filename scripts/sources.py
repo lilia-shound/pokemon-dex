@@ -103,10 +103,20 @@ def enabled_sources(cfg: dict) -> dict:
 
 
 def credit_for_day(cfg: dict, ledger_day: dict) -> dict[str, int]:
-    """每个启用的源当天折算出多少额度（向下取整，零头不计）。"""
+    """每个启用的源当天折算出多少额度（向下取整，零头不计）。
+
+    **原始量先夹到该源的 `maxPerDay`** —— push 源的量是客户端自己报上来的，
+    客户端可以随手写「今天专注了 99999 分钟」。一天最多就那么长，
+    超出部分不是额度。负数同样夹到 0（Python 的 `//` 会向下取整，
+    -100 // 25 = -4，负额度比不发放更糟）。没有 `maxPerDay` 的源不夹（保持宽松）。
+    """
     out: dict[str, int] = {}
     for sid, s in enabled_sources(cfg).items():
         amount = int((ledger_day or {}).get(sid, 0) or 0)
+        cap = s.get("maxPerDay")
+        if cap is not None:
+            amount = min(amount, int(cap))
+        amount = max(0, amount)
         out[sid] = amount // int(s["per"])
     return out
 

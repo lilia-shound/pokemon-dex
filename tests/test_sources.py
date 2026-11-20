@@ -150,6 +150,47 @@ class CreditForDayTest(unittest.TestCase):
         self.assertEqual(got, {"2026-11-16": 1, "2026-11-17": 2})
 
 
+class MaxPerDayClipTest(unittest.TestCase):
+    """源级 maxPerDay 不是死旋钮：客户端报什么，额度都按「一天最多那么多」算。
+
+    push 源（番茄钟 / 背单词）的量是客户端自己报上来的 —— 浏览器里的
+    localStorage 谁都能改，客户端报「今天专注了 99999 分钟」也得能扛住。
+    """
+
+    def test_credit_clipped_to_source_max_per_day(self):
+        got = src.credit_for_day(cfg(), {"pom": 99999})
+        # 1440 分钟（一天的上限）// 25 = 57，不是 99999 // 25 = 3999
+        self.assertEqual(got["pom"], 57)
+
+    def test_credit_not_clipped_when_below_cap(self):
+        got = src.credit_for_day(cfg(), {"pom": 50})
+        self.assertEqual(got["pom"], 2)
+
+    def test_credit_at_cap_is_unchanged(self):
+        got = src.credit_for_day(cfg(), {"pom": 1440})
+        self.assertEqual(got["pom"], 57)
+
+    def test_source_without_max_per_day_is_not_clipped(self):
+        c = cfg()
+        del c["sources"]["pom"]["maxPerDay"]
+        got = src.credit_for_day(c, {"pom": 99999})
+        self.assertEqual(got["pom"], 99999 // 25)
+
+    def test_negative_amount_is_clipped_to_zero(self):
+        """负数不能变成负额度（-1 // 25 = -1）。"""
+        got = src.credit_for_day(cfg(), {"pom": -100})
+        self.assertEqual(got["pom"], 0)
+
+    def test_weread_also_clipped(self):
+        got = src.credit_for_day(cfg(), {"weread": 999999})
+        self.assertEqual(got["weread"], 86400 // 900)
+
+    def test_day_credit_respects_clip(self):
+        """总额度也要受夹取约束 —— 单源夹了，加起来才是对的。"""
+        got = src.day_credit(cfg(), {"weread": 900, "pom": 99999})
+        self.assertEqual(got, 1 + 57)
+
+
 REGISTRY_PATH = pathlib.Path(__file__).resolve().parent.parent / "data" / "sources.json"
 
 
