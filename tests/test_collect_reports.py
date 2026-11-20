@@ -176,5 +176,126 @@ class ParseReportTest(unittest.TestCase):
         self.assertEqual(got, {TODAY: 25})
 
 
+def issue(number=1, title="[report] pom 2026-11-20", body=None,
+          assoc="OWNER", **extra):
+    it = {"number": number, "title": title, "body": body if body is not None else report(),
+          "author_association": assoc}
+    it.update(extra)
+    return it
+
+
+class ProcessIssuesTest(unittest.TestCase):
+    """编排层：纯函数，不联网。"""
+
+    def test_accepted_report_merges_into_ledger(self):
+        ledger, results = cr.process_issues([issue()], cfg(), TODAY, {})
+        self.assertEqual(ledger, {"2026-11-19": {"pom": 50},
+                                  "2026-11-20": {"pom": 25}})
+        self.assertEqual(results[0]["action"], "accepted")
+        self.assertEqual(results[0]["source"], "pom")
+
+    def test_accepted_report_reports_credits(self):
+        _, results = cr.process_issues([issue()], cfg(), TODAY, {})
+        # 50 分钟 → 2 额度，25 分钟 → 1 额度
+        self.assertEqual(results[0]["credits"], {"2026-11-19": 2, "2026-11-20": 1})
+
+    def test_non_report_title_is_skipped(self):
+        ledger, results = cr.process_issues([issue(title="随便聊聊")], cfg(), TODAY, {})
+        self.assertEqual(ledger, {})
+        self.assertEqual(results[0]["action"], "skipped")
+
+    def test_untrusted_issue_is_not_merged(self):
+        ledger, results = cr.process_issues([issue(assoc="NONE")], cfg(), TODAY, {})
+        self.assertEqual(ledger, {})
+        self.assertEqual(results[0]["action"], "untrusted")
+
+    def test_missing_association_is_untrusted(self):
+        it = issue()
+        del it["author_association"]
+        ledger, results = cr.process_issues([it], cfg(), TODAY, {})
+        self.assertEqual(ledger, {})
+        self.assertEqual(results[0]["action"], "untrusted")
+
+    def test_outsider_association_is_untrusted(self):
+        ledger, results = cr.process_issues([issue(assoc="CONTRIBUTOR")], cfg(), TODAY, {})
+        self.assertEqual(ledger, {})
+        self.assertEqual(results[0]["action"], "untrusted")
+
+    def test_rejected_report_is_not_merged(self):
+        body = json.dumps({"v": 1, "source": "pom", "days": {"2026-11-19": 99999}})
+        ledger, results = cr.process_issues([issue(body=body)], cfg(), TODAY, {})
+        self.assertEqual(ledger, {})
+        self.assertEqual(results[0]["action"], "rejected")
+        self.assertIsNotNone(results[0]["reason"])
+
+    def test_duplicate_report_takes_max(self):
+        """重复投递取 max，不叠加 —— 这就是幂等。"""
+        a = issue(number=1)
+        b = issue(number=2, body=json.dumps(
+            {"v": 1, "source": "pom", "days": {"2026-11-19": 20}}))
+        ledger, results = cr.process_issues([a, b], cfg(), TODAY, {})
+        self.assertEqual(ledger["2026-11-19"]["pom"], 50)  # max(50, 20)，不是 70
+        self.assertEqual([r["action"] for r in results], ["accepted", "accepted"])
+
+    def test_report_does_not_overwrite_other_sources(self):
+        ledger = {"2026-11-19": {"weread": 900}}
+        new_ledger, _ = cr.process_issues([issue()], cfg(), TODAY, ledger)
+        self.assertEqual(new_ledger["2026-11-19"]["weread"], 900)
+        self.assertEqual(new_ledger["2026-11-19"]["pom"], 50)
+
+    def test_original_ledger_not_mutated(self):
+        ledger = {}
+        cr.process_issues([issue()], cfg(), TODAY, ledger)
+        self.assertEqual(ledger, {})
+
+    def test_no_issues_leaves_ledger_untouched(self):
+        ledger = {"2026-11-19": {"pom": 50}}
+        new_ledger, results = cr.process_issues([], cfg(), TODAY, ledger)
+        self.assertEqual(new_ledger, ledger)
+        self.assertEqual(results, [])
+
+    def test_bad_issue_does_not_stop_good_one(self):
+        """一条坏的不能连累其余 —— 其余 issue 照常处理。"""
+        bad = issue(number=1, body="{not json")
+        good = issue(number=2)
+        ledger, results = cr.process_issues([bad, good], cfg(), TODAY, {})
+        self.assertEqual(ledger, {"2026-11-19": {"pom": 50},
+                                  "2026-11-20": {"pom": 25}})
+        self.assertEqual([r["action"] for r in results], ["rejected", "accepted"])
+
+
+class FilterReportIssuesTest(unittest.TestCase):
+    """issues 接口会把 PR 一起返回，要挑出来。"""
+
+    def test_keeps_report_issue(self):
+        got = cr.filter_report_issues([issue()])
+        self.assertEqual(len(got), 1)
+
+    def test_drops_pull_request(self):
+        it = issue()
+        it["pull_request"] = {"url": "..."}
+        self.assertEqual(cr.filter_report_issues([it]), [])
+
+    def test_drops_other_titles(self):
+        self.assertEqual(cr.filter_report_issues([issue(title="bug")]), [])
+
+    def test_tolerates_garbage(self):
+        self.assertEqual(cr.filter_report_issues([None, "x", 3]), [])
+
+    def test_empty_list(self):
+        self.assertEqual(cr.filter_report_issues([]), [])
+
+
+class NoteTest(unittest.TestCase):
+    """写给 issue 的评论。"""
+
+    def test_note_mentions_days_and_credits(self):
+        _, results = cr.process_issues([issue()], cfg(), TODAY, {})
+        note = cr._note(results[0])
+        self.assertIn("2026-11-19", note)
+        self.assertIn("3", note)          # 2 + 1 = 3 个额度
+        self.assertIn("分钟", note)        # 番茄钟的单位
+
+
 if __name__ == "__main__":
     unittest.main()

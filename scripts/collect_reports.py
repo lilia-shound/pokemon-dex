@@ -25,8 +25,23 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import json
+import os
+import pathlib
+import sys
+import urllib.error
+import urllib.request
+
+from scripts import ledger as lg
+from scripts import sources as src
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
+SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
+DEFAULT_REPO = "lilia-shound/pokemon-dex"
+API = "https://api.github.com"
 
 # issue 标题前缀：只有带它的 issue 才会被当成报告
 REPORT_TITLE_PREFIX = "[report]"
@@ -121,3 +136,204 @@ def parse_report(body: str, cfg: dict, today: str) -> tuple[dict[str, int], str 
             return {}, f"{day} 的量 {amount} 超过 {source_id} 的上限 {cap}"
         out[day] = int(amount)
     return out, None
+
+
+# ── 编排层 ──────────────────────────────────────────────────────────────
+# 下面这层不碰网络（process_issues 是纯函数），网络只在最外面薄薄一层。
+
+
+def _source_of(body: str) -> str:
+    """取出报告的源 id。**只在 parse_report 已经通过之后调用**（那时 body 保证可解析）。"""
+    return str(json.loads(body)["source"])
+
+
+def is_trusted(issue: dict) -> bool:
+    """issue 作者是否可信。只有仓库管理员的 issue 会被采纳。"""
+    return (issue.get("author_association") or "") in TRUSTED_ASSOCIATIONS
+
+
+def process_issues(issues: list[dict], cfg: dict, today: str,
+                   ledger: dict) -> tuple[dict, list[dict]]:
+    """把一批 issue 处理掉，返回 `(新账本, 处理结果列表)`。
+
+    处理结果每条：
+      {"number": int|None, "action": str, "reason": str|None, "source": str|None,
+       "days": dict, "credits": dict}
+
+    action 的取值：
+      - `skipped`   标题不是报告（不是给我们看的）
+      - `untrusted` 作者身份不在白名单 —— **不关闭**，留给人工看
+      - `rejected`  报告没过校验 —— **不关闭**，留给人工看
+      - `accepted`  采纳，量已并进账本
+
+    合并用 `ledger.merge_amounts`（同源同一天取 max）⇒ 重复投递是幂等的。
+    """
+    new_ledger = ledger
+    results: list[dict] = []
+    for issue in issues:
+        number = issue.get("number")
+        title = issue.get("title") or ""
+        if not title.startswith(REPORT_TITLE_PREFIX):
+            results.append({"number": number, "action": "skipped",
+                            "reason": "标题不是报告", "source": None,
+                            "days": {}, "credits": {}})
+            continue
+        if not is_trusted(issue):
+            results.append({"number": number, "action": "untrusted",
+                            "reason": f"作者身份 {issue.get('author_association')!r} 不可信",
+                            "source": None, "days": {}, "credits": {}})
+            continue
+        body = issue.get("body") or ""
+        days, err = parse_report(body, cfg, today)
+        if err:
+            results.append({"number": number, "action": "rejected",
+                            "reason": err, "source": None, "days": {}, "credits": {}})
+            continue
+        source = _source_of(body)
+        new_ledger = lg.merge_amounts(new_ledger, source, days)
+        # 每个日期按该源的口径折算成额度（其他源没量，贡献 0）
+        credits = {d: src.day_credit(cfg, {source: v}) for d, v in days.items()}
+        unit = (cfg.get("sources") or {}).get(source, {}).get("unit", "")
+        results.append({"number": number, "action": "accepted", "reason": None,
+                        "source": source, "days": days, "credits": credits,
+                        "unit": unit})
+    return new_ledger, results
+
+
+# ── 网络层 ──────────────────────────────────────────────────────────────
+
+
+def _api(token: str, method: str, url: str, payload: dict | None = None):
+    """调 GitHub API。返回 (status, 解析后的 JSON 或原始文本)。"""
+    req = urllib.request.Request(url, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    req.add_header("User-Agent", "pokemon-dex-collect-reports")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            return resp.status, (json.loads(raw) if raw.strip() else None)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def filter_report_issues(items: list) -> list[dict]:
+    """从 issues 接口的返回里挑出报告。
+
+    issues 接口会把 PR 一起返回（PR 在 GitHub 眼里也是 issue）
+    ⇒ 带 `pull_request` 字段的跳过；标题不以 `[report]` 开头的也跳过。
+    """
+    out = []
+    for item in items or []:
+        if not isinstance(item, dict) or "pull_request" in item:
+            continue
+        if not (item.get("title") or "").startswith(REPORT_TITLE_PREFIX):
+            continue
+        out.append(item)
+    return out
+
+
+def list_report_issues(token: str, repo: str) -> list[dict]:
+    """拉 open issue，只留标题以 `[report]` 开头的。"""
+    url = f"{API}/repos/{repo}/issues?state=open&per_page=100"
+    status, data = _api(token, "GET", url)
+    if status != 200:
+        raise RuntimeError(f"拉 issue 失败：HTTP {status} {data}")
+    if not isinstance(data, list):
+        raise RuntimeError(f"拉 issue 返回的不是列表：{data}")
+    return filter_report_issues(data)
+
+
+def comment_and_close(token: str, repo: str, number: int, note: str) -> None:
+    """在 issue 下留一条评论并关闭它。"""
+    base = f"{API}/repos/{repo}/issues/{number}"
+    _api(token, "POST", f"{base}/comments", {"body": note})
+    _api(token, "PATCH", base, {"state": "closed"})
+
+
+def _note(result: dict) -> str:
+    """写给 issue 里的评论。"""
+    days = result.get("days") or {}
+    credits = result.get("credits") or {}
+    unit = result.get("unit") or ""
+    total = sum(credits.values())
+    return (f"已采纳：{len(days)} 天的量（{result['source']}），"
+            f"该源口径共折算 {total} 个额度。\n\n"
+            + "\n".join(f"- {d}：{v} {unit}" for d, v in sorted(days.items())))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="把 Issue 投递箱里的报告并进账本")
+    ap.add_argument("--dry-run", action="store_true", help="只打印，不写盘不评论不关闭")
+    ap.add_argument("--repo", default=DEFAULT_REPO, help="GitHub 仓库（owner/name）")
+    ap.add_argument("--date", default=None, help="今天（YYYY-MM-DD），默认取北京时间今天")
+    args = ap.parse_args(argv)
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("[失败] 环境里没有 GITHUB_TOKEN，没法读 issue", file=sys.stderr)
+        return 1
+
+    today = args.date or datetime.datetime.now(
+        datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d")
+
+    try:
+        cfg = src.load_config(SOURCES_PATH)
+    except src.SourceConfigError as exc:
+        print(f"[失败] 源注册表有问题：{exc}", file=sys.stderr)
+        return 1
+
+    if not DEX_PATH.exists():
+        print(f"[失败] 找不到状态文件 {DEX_PATH}", file=sys.stderr)
+        return 1
+    state = json.loads(DEX_PATH.read_text(encoding="utf-8"))
+    ledger = state.get("ledger") or {}
+
+    try:
+        issues = list_report_issues(token, args.repo)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[失败] 拉 issue 失败：{exc}", file=sys.stderr)
+        return 1
+    print(f"发现 {len(issues)} 条报告 issue（今天 {today}）")
+
+    new_ledger, results = process_issues(issues, cfg, today, ledger)
+
+    accepted = [r for r in results if r["action"] == "accepted"]
+    for r in results:
+        if r["action"] == "accepted":
+            print(f"[采纳] #{r['number']} {r['source']} {r['days']} → 额度 {r['credits']}")
+        elif r["action"] in ("untrusted", "rejected"):
+            print(f"[跳过] #{r['number']} {r['reason']}（不关闭，留给人工看）",
+                  file=sys.stderr)
+
+    if not accepted:
+        print("没有可采纳的报告，账本没变")
+        return 0
+
+    if args.dry_run:
+        print("[dry-run] 不写盘、不评论、不关闭")
+        return 0
+
+    if new_ledger != ledger:
+        state["ledger"] = new_ledger
+        DEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEX_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        print(f"账本已更新：{len(new_ledger)} 天")
+
+    for r in accepted:
+        try:
+            comment_and_close(token, args.repo, r["number"], _note(r))
+            print(f"[已关闭] #{r['number']}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[警告] 关不掉 #{r['number']}：{exc}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
