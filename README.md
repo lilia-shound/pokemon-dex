@@ -82,9 +82,12 @@
 ## 安装插件
 
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)
-2. 打开 `plugin/weread-dex.user.js`，点「安装」
+2. 打开 <https://lilia-shound.github.io/pokemon-dex/weread-dex.user.js>，点「安装」
 3. 打开微信读书网页版，右上角出现胶囊：`3 图鉴 ▓▓▓░░ 8/15`
 4. 点胶囊 → 图鉴墙；当天达标后会有开箱卡
+
+脚本带 `@updateURL` / `@downloadURL`，**以后 Tampermonkey 会自己检查并更新**，
+不用每次手动换文件（首次安装仍需要按上面第 2 步装一次）。
 
 手机上也能用（Tampermonkey 有 App），但插件只是**展示端**，
 真正的判定永远在服务端，手机上读的时长同样算数。
