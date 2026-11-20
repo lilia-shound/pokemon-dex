@@ -78,6 +78,10 @@ p{margin:0}
 }
 .filters button:hover{color:var(--ink);transform:translateY(-1px)}
 .filters button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+/* 「已获得」：跟世代筛选区分开，用强调色 + 实时计数，一眼能找到 */
+.filters button.fOwned{border-color:var(--accent);color:var(--accent);font-weight:600}
+.filters button.fOwned:hover{color:var(--accent);background:var(--accent-soft)}
+.filters button.fOwned.on{background:var(--accent);color:var(--card);border-color:var(--accent)}
 
 /* ── 图鉴墙 ─────────────────────────── */
 .grid{
@@ -98,6 +102,9 @@ p{margin:0}
 .cell.preview{border-style:dashed;border-color:var(--accent);background:linear-gradient(180deg,var(--accent-soft),var(--card) 60%)}
 .cell .nm{font-size:13px;margin-top:3px;min-height:2.5em;display:flex;align-items:center;justify-content:center;line-height:1.35}
 .cell .ty{font-size:11px;color:var(--dim);margin-top:1px}
+/* 「已获得」视图里多一行获得日期 */
+.cell .dt{font-size:10px;color:var(--accent);margin-top:3px;letter-spacing:.3px}
+.gridEmpty{grid-column:1/-1;text-align:center;color:var(--dim);font-size:14px;padding:56px 0}
 .cell.shiny{box-shadow:0 0 0 2px var(--shiny) inset,var(--shadow)}
 
 /* ── 详情浮层 ───────────────────────── */

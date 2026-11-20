@@ -35,9 +35,15 @@ async function load() {
   DEX = dx;
   SOURCES = reg;
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
+  //      ?owned=1 直接打开「已获得」视图（已收服的那几只，不用在 1028 格里翻）
   try {
-    const g = new URL(location.href).searchParams.get("gen");
-    if (g && (g === "all" || (Number(g) >= 1 && Number(g) <= GENS.length))) FILTER = g;
+    const q = new URL(location.href).searchParams;
+    if (q.get("owned") === "1") {
+      FILTER = "owned";
+    } else {
+      const g = q.get("gen");
+      if (g && (g === "all" || (Number(g) >= 1 && Number(g) <= GENS.length))) FILTER = g;
+    }
   } catch (e) { /* 忽略 */ }
   render();
 }
@@ -150,20 +156,24 @@ function render() {
   }
 
   // 筛选条
+  // 「已获得」放在最后并用强调色区分 —— 她目前只有 5 只，在 1028 格里翻很松散，
+  // 一键只显示收服过的那几只才对。按钮上带实时计数。
   $("filters").innerHTML =
-    [["all", "全部"], ...GENS.map((g, i) => [
+    [["all", "全部"], ["owned", `已获得 ${owned.size}`], ...GENS.map((g, i) => [
       i + 1, `第 ${i + 1} 世代${PREVIEW_GENS.has(i + 1) ? " · 预告" : ""}`])]
       .map(([v, label]) =>
-        `<button data-f="${v}" class="${String(v) === String(FILTER) ? "on" : ""}">${label}</button>`)
+        `<button data-f="${v}" class="${String(v) === String(FILTER) ? "on" : ""}${v === "owned" ? " fOwned" : ""}">${label}</button>`)
       .join("");
   $("filters").querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
       FILTER = b.dataset.f;
-      // 写回地址栏，这样「?gen=10」可以直接分享/收藏某个世代
+      // 写回地址栏，这样「?gen=10」「?owned=1」可以直接分享/收藏
       try {
         const u = new URL(location.href);
-        if (FILTER === "all") u.searchParams.delete("gen");
-        else u.searchParams.set("gen", FILTER);
+        u.searchParams.delete("gen");
+        u.searchParams.delete("owned");
+        if (FILTER === "owned") u.searchParams.set("owned", "1");
+        else if (FILTER !== "all") u.searchParams.set("gen", FILTER);
         history.replaceState(null, "", u);
       } catch (e) { /* file:// 下没有 history，忽略 */ }
       render();
@@ -171,7 +181,18 @@ function render() {
   });
 
   // 图鉴墙
-  const list = POKEDEX.filter((p) => FILTER === "all" || genOf(p.id) === Number(FILTER));
+  // 「已获得」视图：只显示收服过的那几只，按获得日期倒序（最新收服的排最前），
+  // 并在卡片上标出哪天收的 —— 这样一眼能看到「我最近收服了哪几只」。
+  const list = FILTER === "owned"
+    ? POKEDEX.filter((p) => owned.has(p.id)).sort((a, b) =>
+        String(owned.get(b.id).date || "").localeCompare(String(owned.get(a.id).date || "")))
+    : POKEDEX.filter((p) => FILTER === "all" || genOf(p.id) === Number(FILTER));
+  if (!list.length) {
+    $("grid").innerHTML = `<div class="gridEmpty">${
+      FILTER === "owned"
+        ? "图鉴还是空的 —— 读满今天的额度就会掉一只进来"
+        : "这一代没有宝可梦"}</div>`;
+  } else {
   $("grid").innerHTML = list.map((p) => {
     const c = owned.get(p.id);
     const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
@@ -184,8 +205,10 @@ function render() {
       <img src="${IMG}${art}" alt="${esc(p.nameZh)}" ${prev ? 'loading="eager"' : 'loading="lazy"'} onerror="this.classList.add('broken')">
       <div class="nm">${known ? esc(p.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
       <div class="ty">${esc((p.types || []).join("/"))}</div>
+      ${FILTER === "owned" && c && c.date ? `<div class="dt">${esc(String(c.date).slice(5))} 获得</div>` : ""}
     </div>`;
   }).join("");
+  }
   $("grid").querySelectorAll(".cell").forEach((el) => {
     el.onclick = () => openSheet(el.dataset.id);
   });

@@ -21,6 +21,7 @@
   let SOURCES = null;   // 源注册表（sources.json）—— 阈值的权威来源
   let MODAL = null;
   let lastError = "";
+  let OWNED_ONLY = false;   // 图鉴墙只看「已获得」—— 收服的数量少，翻全图鉴很松散
 
   const CSS = `
   .tx-caps{
@@ -64,6 +65,13 @@
 
   .tx-grid{overflow:auto;padding:14px 18px 20px;display:grid;
     grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px;align-content:start}
+  .tx-tabs{display:flex;gap:7px;padding:12px 18px 0;flex-wrap:wrap}
+  .tx-tabs button{border:1px solid #e9e0d0;background:#fffdf8;color:#9a8d80;border-radius:999px;
+    padding:4px 13px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .18s ease}
+  .tx-tabs button:hover{color:#2f2823}
+  .tx-tabs button.on{background:#2f2823;color:#f6f1e7;border-color:#2f2823}
+  .tx-tabs button.owned{color:#c8623a;border-color:#c8623a;font-weight:600}
+  .tx-tabs button.owned.on{background:#c8623a;color:#fffdf8;border-color:#c8623a}
   .tx-cell{background:#fffdf8;border:1px solid #e9e0d0;border-radius:14px;padding:8px 6px 10px;
     text-align:center;cursor:pointer;transition:transform .18s cubic-bezier(.34,1.56,.64,1)}
   .tx-cell:hover{transform:translateY(-3px)}
@@ -71,6 +79,7 @@
   .tx-cell.locked img{filter:grayscale(1) opacity(.18)}
   .tx-cell .no{font-size:10px;color:#9a8d80}
   .tx-cell .nm{font-size:12px;margin-top:2px;min-height:1.4em}
+  .tx-cell .dt{font-size:10px;color:#c8623a;margin-top:2px}
   .tx-cell.shiny{box-shadow:0 0 0 2px #c9a227 inset}
   img.broken{opacity:.1}
   .tx-empty{padding:30px;text-align:center;color:#9a8d80;font-size:13px}
@@ -241,19 +250,33 @@
         </div>
       </div>` : "";
 
-    const cells = POKEDEX.pokemon.length
-      ? POKEDEX.pokemon.map((p) => {
+    const tabs = `<div class="tx-tabs">
+      <button data-tab="all" class="${OWNED_ONLY ? "" : "on"}">全部</button>
+      <button data-tab="owned" class="owned ${OWNED_ONLY ? "on" : ""}">已获得 ${n}</button>
+    </div>`;
+
+    // 「已获得」视图：只列收服过的那几只，按获得日期倒序（最新收服的排最前）
+    const rows = OWNED_ONLY
+      ? POKEDEX.pokemon.filter((p) => owned.has(p.id)).sort((a, b) =>
+          String(owned.get(b.id).date || "").localeCompare(String(owned.get(a.id).date || "")))
+      : POKEDEX.pokemon;
+    const cells = rows.length
+      ? rows.map((p) => {
           const c = owned.get(p.id);
           const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
           return `<div class="tx-cell ${c ? "" : "locked"} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
             <div class="no">No.${esc(p.id)}</div>
             <img src="${artUrl(art)}" loading="lazy" onerror="this.classList.add('broken')">
             <div class="nm">${c ? esc(p.nameZh) : "???"}</div>
+            ${OWNED_ONLY && c && c.date ? `<div class="dt">${esc(String(c.date).slice(5))} 获得</div>` : ""}
           </div>`;
         }).join("")
-      : `<div class="tx-empty">${lastError ? "连不上图鉴服务，稍后再试试" : "正在载入…"}</div>`;
+      : `<div class="tx-empty">${OWNED_ONLY ? "图鉴还是空的 —— 读满今天的额度就会掉一只进来" : (lastError ? "连不上图鉴服务，稍后再试试" : "正在载入…")}</div>`;
 
-    MODAL.innerHTML = `<div class="tx-panel">${head}${open}<div class="tx-grid">${cells}</div></div>`;
+    MODAL.innerHTML = `<div class="tx-panel">${head}${open}${tabs}<div class="tx-grid">${cells}</div></div>`;
+    MODAL.querySelectorAll(".tx-tabs button").forEach((b) => {
+      b.onclick = () => { OWNED_ONLY = b.dataset.tab === "owned"; paintModal(); };
+    });
     MODAL.querySelectorAll(".tx-cell").forEach((el) => {
       el.onclick = () => {
         const p = POKEDEX.pokemon.find((x) => x.id === el.dataset.id);
