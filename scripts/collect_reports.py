@@ -34,10 +34,12 @@ import sys
 import urllib.error
 import urllib.request
 
-from scripts import ledger as lg
-from scripts import sources as src
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from scripts import ledger as lg  # noqa: E402
+from scripts import sources as src  # noqa: E402
+
 DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
 SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
 DEFAULT_REPO = "lilia-shound/pokemon-dex"
