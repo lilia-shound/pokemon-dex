@@ -55,21 +55,59 @@
         "weread"
       ],
       "form": "0239"
+    },
+    {
+      "id": "0373",
+      "nameZh": "暴飞龙",
+      "shiny": false,
+      "at": "2026-11-20T19:36:18.749461+08:00",
+      "date": "2026-11-20",
+      "sources": [
+        "weread"
+      ],
+      "form": "0373"
     }
   ],
-  "streak": 5,
-  "lastAwardDate": "2026-11-18",
+  "streak": 1,
+  "lastAwardDate": "2026-11-20",
   "today": {
-    "date": "2026-11-18",
-    "seconds": 1776,
+    "date": "2026-11-20",
+    "seconds": 1071,
     "threshold": 900,
     "sources": {
-      "weread": 1776
+      "weread": 1071
     },
     "credit": 1,
     "perAward": 1
   },
-  "ledger": {},
-  "chains": {},
-  "updatedAt": "2026-11-18T09:18:33.637818+08:00"
+  "ledger": {
+    "2026-11-14": {
+      "weread": 1782
+    },
+    "2026-11-15": {
+      "weread": 1795
+    },
+    "2026-11-16": {
+      "weread": 1936
+    },
+    "2026-11-17": {
+      "weread": 1808
+    },
+    "2026-11-18": {
+      "weread": 1776
+    },
+    "2026-11-19": {
+      "weread": 121
+    },
+    "2026-11-20": {
+      "weread": 1071
+    }
+  },
+  "chains": {
+    "宝贝龙": {
+      "firstDate": "2026-11-20",
+      "lastShinyDate": null
+    }
+  },
+  "updatedAt": "2026-11-20T19:36:18.749461+08:00"
 }
