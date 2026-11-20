@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         微信读书 · 训练家图鉴
 // @namespace    https://lilia-shound.github.io/pokemon-dex/
-// @version      1.0.0
+// @version      1.1.0
 // @description  在微信读书网页版显示今日阅读进度与宝可梦图鉴墙
 // @author       Mavis
 // @match        https://weread.qq.com/web/reader*
 // @match        https://weread.qq.com/web/*
+// @updateURL    https://lilia-shound.github.io/pokemon-dex/weread-dex.user.js
+// @downloadURL  https://lilia-shound.github.io/pokemon-dex/weread-dex.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==

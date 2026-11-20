@@ -76,6 +76,9 @@ git worktree add --detach "$WT" >/dev/null
   git rm -rf --cached . -q >/dev/null 2>&1 || true
   find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} + 2>/dev/null || true
   cp -r "$ROOT/site/." .
+  # 油猴脚本也发布到线上：这样插件有稳定安装地址，
+  # 加上 @updateURL/@downloadURL 后 Tampermonkey 能自动更新，不用每次手动换文件。
+  cp "$ROOT/plugin/weread-dex.user.js" ./weread-dex.user.js
   git add -A
   git -c user.name="Mavis" -c user.email="mavis@local" commit -q -m "chore: 图鉴站 $(date -u +%FT%TZ)"
 )
