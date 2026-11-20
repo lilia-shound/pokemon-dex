@@ -4,6 +4,7 @@
 集齐 **1028 只**（含闪光）就是通关（九世代 1025 只 + 第 10 世代预告 3 只）。
 
 - 图鉴页：<https://lilia-shound.github.io/pokemon-dex/>
+- 网页版番茄钟：<https://lilia-shound.github.io/pokemon-dex/pomodoro/>
 - 插件（油猴脚本）：`plugin/weread-dex.user.js`
 
 ## 它怎么运转
@@ -12,10 +13,16 @@
 微信读书官方 Agent API
   └─ /readdata/detail  mode=monthly + mode=weekly（两个周期取并集）
        →  readTimes[今天] = 当日阅读秒数（跨周/跨月补发时不漏掉周期最后一天）
-            └─ 服务端判定（阈值 15 分钟）
+            └─ 服务端判定（额度够不够）
                  └─ 从「还没收服」的池子里抽 1 只（闪光按连读天数加权）
                       └─ 写 data/dex.json
                            └─ 图鉴页 / 插件 读它 → 图鉴墙 + 进度胶囊 + 今日开箱卡
+
+网页版番茄钟
+  └─ 本机 localStorage 攒「当天专注分钟数」
+       └─ 点「同步」→ 打开 GitHub 预填好的 New Issue 页（人点 Submit）
+            └─ 服务端 collect_reports.py 读 issue → 校验 → 并进逐日账本
+                 └─ 和微信读书的秒数折算成同一份额度
 ```
 
 **服务端是唯一权威**：只有服务端抽出的宝可梦才进图鉴。
@@ -40,7 +47,7 @@
 
 | 项 | 值 |
 |---|---|
-| 达标线 | 每日 **15 分钟**（官方口径 900 秒 = 1 个额度 × 900 秒）。官方计数漏掉约三成，实际体感约 20~21 分钟 |
+| 达标线 | 每日 **2 个额度**。微信读书 900 秒 = 1 额度、番茄钟 25 分钟 = 1 额度，凑满 2 个额度掉 1 只。只靠阅读的话就是 1800 秒官方口径（约 40~43 分钟体感）；「读 15 分钟 + 一轮番茄钟」也够 |
 | 每次达标 | 1 只（**一天最多 1 只**，额度跨天清零） |
 | 抽池 | 1028 只里**还没收服**的 |
 | 闪光概率 | 见下表 |
@@ -61,14 +68,20 @@
 
 - 某源当天额度 = `floor(该源当天原始量 / 该源 per)`，零头不计
 - 当天总额度 = 各启用源额度之和（`enabled: false` 的源不参与结算，当前启用微信读书与番茄钟）——
-  番茄钟/背单词的**投递通道 S2 才接上**，启用开关已就位但当前无数据
-- 总额度 ≥ `perAward`（当前 1）且当天还没发过奖 → 掉 1 只
+  番茄钟的投递通道**已经接上**（网页版番茄钟 → GitHub Issue 投递箱 → `scripts/collect_reports.py`）；
+  背单词还是占位，`enabled: false`
+- 总额度 ≥ `perAward`（**当前 2**）且当天还没发过奖 → 掉 1 只
 - **一天最多 1 只**，额度跨天清零
+- 每个源的原始量先夹到该源的 `maxPerDay`（番茄钟 ≤ 1440 分钟）—— 客户端报什么都不能超
 
-> **S1 阶段 `perAward = 1`** —— 微信读书单独读满 900 秒官方口径（约 20~21 分钟体感）就掉 1 只。
-> **S2 的番茄钟源上线后改回 2**（1800 秒官方口径，约 40~43 分钟体感）——
-> 那时「读 15 分钟 + 一轮番茄钟」也够 2 个额度，多源玩法才有意义。
-> 换档时只动 `data/sources.json` 的 `perAward` 这一个字段，代码不用改。
+> **`perAward` 从 1 改到 2 是 S2 番茄钟上线后的裁决**（2026-11-18）：
+> 「读 15 分钟 + 一轮番茄钟」= 2 个额度，够掉 1 只，多源玩法才有意义。
+> 换档时只动 `data/sources.json` 的 `perAward` 这一个字段，代码不用改 ——
+> 想回到「读满就掉」的老体验，把它改成 1 即可。
+
+⚠️ **图鉴页顶部那个「今日 X/30 分」只算微信读书的秒数**，番茄钟贡献的额度不显示在里面
+（多源额度进度条是 S5 的活）。所以「读 20 分钟 + 一轮番茄钟」已经够 2 个额度了，
+但那一栏还是显示 20/30 分 —— 别以为它坏了。
 
 额度不是新增的负担，是把「读多少」和「掉多少」解耦：番茄钟满 25 分钟也是 1 个额度，
 和微信读书的 15 分钟等价 —— 谁先凑够谁说了算。
@@ -78,6 +91,26 @@
 | 连读 | 1–2 天 | ≥3 天 | ≥7 天 | ≥30 天 | ≥100 天 |
 |---|---|---|---|---|---|
 | 概率 | 1/96 | 1/48 | 1/32 | 1/16 | **保底必出** |
+
+## 网页版番茄钟
+
+<https://lilia-shound.github.io/pokemon-dex/pomodoro/>
+
+手机上打开就能用（可「添加到主屏幕」当 App 装）。**专注时宝可梦会探头，点一下就收下**，
+它不打断计时；出现的那只有 1/96 的概率是「监督宝可梦」，它盯着你，中途切走页面它就记一次摸鱼，
+一轮摸鱼 3 次这一轮作废（不计入统计）。
+
+专注分钟数只存在**本机浏览器**里。要让它变成图鉴里的宝可梦，得点「同步到图鉴」——
+它会打开 GitHub 预填好的新建 issue 页面，**在那个页面上点一下 Submit** 才算交上去。
+
+交上去之后服务端 `scripts/collect_reports.py` 会：
+
+1. 只认 `author_association ∈ {OWNER, MEMBER, COLLABORATOR}` 的 issue（别人伪造不了）
+2. 校验源、日期、数值（单源单日 ≤ 该源的 `maxPerDay`），**任何一条不过就丢弃整个 issue**
+3. 并进逐日账本（**同源同一天取 max** ⇒ 重复投递幂等，放心重交）
+4. 回一条评论算给你看，然后关掉这个 issue
+
+> 报告里的 `days[day]` 是**当天累计总量**（不是增量）—— 所以重复同步不会把数字吃掉。
 
 ## 安装插件
 
@@ -105,9 +138,12 @@ scripts/ledger.py        逐日账本：合并 / 裁剪 / 迁移
 scripts/fetch_pokemon.py 素材管线：拉 42arch 数据 → pokedex.json
 scripts/award.py         发放器：取数 → 判定 → 抽 → 写状态 → 推送
 scripts/check_today.py   自检：把今日状态摊开打印
+scripts/collect_reports.py Issue 投递箱接收端：读 issue → 校验 → 并账本
+scripts/build_pokedex_lite.py 生成番茄钟用的精简宝可梦清单（1.8MB → 104KB）
 scripts/push_notify.py   微信推送（pushplus）
 scripts/deploy.sh        推 main + gh-pages，发布图鉴页
 site/                    图鉴页静态站
+site/pomodoro/           网页版番茄钟（PWA）
 plugin/                  油猴脚本
 tests/                   单元测试
 ```
@@ -119,6 +155,8 @@ python3 run_tests.py            # 跑全部单元测试（零依赖，标准库 
 python3 scripts/check_today.py  # 看今天的阅读时长与额度
 python3 scripts/award.py --dry-run
 python3 scripts/fetch_pokemon.py  # 重建 pokedex.json
+python3 scripts/build_pokedex_lite.py  # 重建番茄钟的精简清单
+python3 scripts/collect_reports.py --dry-run  # 看 issue 投递箱里有什么
 bash scripts/deploy.sh            # 发布
 ```
 
