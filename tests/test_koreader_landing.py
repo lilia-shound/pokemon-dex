@@ -202,6 +202,21 @@ class KoreaderLandingWireTest(unittest.TestCase):
         self.assertIn("koreader", site_cfg.get("sources", {}))
         self.assertEqual(site_cfg["sources"]["koreader"]["per"], 15)
 
+    def test_the_credits_are_computed_from_the_clamped_days(self):
+        """额度要按**夹后**的分钟数算（与提交给服务端的那份是同一份）。
+
+        夹取只改分钟数、不改天数（键还是同一批）⇒ 两种写法算出来的额度**一样**，
+        但读代码的人不该看到一半用原始值（state.days）、一半用夹后值（state.reportDays）
+        —— 上次评审点了这一条 ⇒ 现在统一成 state.reportDays。
+        """
+        app = APP_JS.read_text(encoding="utf-8")
+        m = re.search(r"state\.credits\s*=\s*creditsForDays\(\s*([^,]+?)\s*,", app)
+        self.assertIsNotNone(m, "app.js 里找不到 state.credits 的赋值")
+        self.assertIn(
+            "reportDays", m.group(1),
+            "额度要按夹后的 state.reportDays 算，不要用原始的 state.days",
+        )
+
     def test_the_landing_page_has_no_external_resource(self):
         """不许引外部 CDN 的框架/字体/脚本 —— 外链在她那边（大陆直连）会挂。
 

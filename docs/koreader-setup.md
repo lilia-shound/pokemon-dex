@@ -40,14 +40,31 @@ Kindle / 平板上的 KOReader
 
 ## 第一步：装插件
 
-1. 把仓库里的整个 `koreader-dex.koplugin/` 目录复制到设备的 **`plugins/` 目录**里。
+1. **先拿到插件文件**（三选一，都行）：
+
+   | 方式 | 地址 |
+   |---|---|
+   | **线上目录（推荐）** | <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/> |
+   | 仓库目录 | <https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin> |
+   | 已有源码的机器 | 仓库里的 `plugin/koreader-dex.koplugin/` |
+
+   线上那个地址是**整个插件目录**（`main.lua`、`koreader_dex_report.lua`、`_meta.lua`、`README.md`），
+   一个个文件下下来，放进一个叫 `koreader-dex.koplugin` 的文件夹里即可
+   （**目录名不能改**，KOReader 靠它认出插件）。
+
+2. 把 `koreader-dex.koplugin/` 这个目录复制到设备的 **`plugins/` 目录**里。
    - Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/mnt/us/koreader/plugins/`）拷进去。
    - 固件路径不一样的话，以「设备上的 koreader/plugins/ 目录」为准。
    - **注意别多套一层**：设备上应该是 `plugins/koreader-dex.koplugin/main.lua`，
      而不是 `plugins/koreader-dex.koplugin/koreader-dex.koplugin/main.lua`。
-2. **退出 KOReader 再打开**（关掉书不算重启）。
-3. 打开主菜单（☰），找「**训练家图鉴**」，点开应该能看到三项：
+3. **退出 KOReader 再打开**（关掉书不算重启）。
+4. 打开主菜单（☰），按这个路径找：
+   「**工具**」→「**更多工具**」→「**训练家图鉴**」，点开应该能看到三项：
    `汇报阅读时长（最近 7 天）`、`只汇报今天`、`自检`。
+
+   > 位置说明：插件用 `sorting_hint = "more_tools"` ⇒ 它在**工具 → 更多工具**里；
+   > 内置那个「阅读统计（Reading statistics）」在**工具**一级（不是「更多工具」）—— 别认错。
+   > 不同 KOReader 版本 / 语言的分组文案会有差别，实在找不到就翻到主菜单底部。
 
 找不到这一项，先看 `plugin/koreader-dex.koplugin/README.md` 的「菜单里有什么」。
 
@@ -60,14 +77,17 @@ Kindle / 平板上的 KOReader
 万一插件提示「KOReader 的统计数据库还没建」或者「让它把数据库升级」，那就：
 
 - 读一会儿书（几页就够），**然后关掉那本书**；或者
-- 在 KOReader 里打开一次「**Reading statistics**」→「**Time range**」（它会顺手把库建好/升级好）。
+- 在 KOReader 里打开一次「**工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）**」
+  （它会顺手把库建好/升级好）。
 
-**建议顺手检查内置统计是开着的**：在「Reading statistics」那一项里，勾选状态叫 `Enabled`。
+**建议顺手检查内置统计是开着的**：在「**工具 → 阅读统计（Reading statistics）**」那一项里，
+开关是它的**第一个子项**「**已启用（Enabled）**」。
+⚠️ **它不在「设置」页里** —— 上游把它挂在「工具」组，设置页里翻不到是正常的。
 关着的话，插件会直接告诉你「内置的 Reading statistics 没打开」，读了也是旧数据。
 
 ## 第三步：报一次时长
 
-在 KOReader 主菜单 →「训练家图鉴」→ 挑一项：
+在 KOReader 主菜单 →「工具」→「更多工具」→「训练家图鉴」→ 挑一项：
 
 - `汇报阅读时长（最近 7 天）` —— 一次把最近 7 天有记录的日子都带上（推荐第一次用这个）。
 - `只汇报今天` —— 只报今天。
@@ -158,12 +178,20 @@ Kindle / 平板上的 KOReader
 
 **你做什么**
 
-1. KOReader 主菜单 →「**Reading statistics**」→「**Time range**」
-   （页面标题是「Time range statistics」）→ 点「**Last week**」（最近 7 天，逐天）
-   和「**Last month by day**」（最近 30 天，逐天）。
+1. KOReader 主菜单 →「**工具**」→「**阅读统计（Reading statistics）**」→「**时长范围（Time range）**」
+   （页面标题是「**时长范围统计（Time range statistics）**」）→ 点「**最近一周（Last week）**」
+   （最近 7 天，逐天）和「**最近一个月按天统计（Last month by day）**」（最近 30 天，逐天）。
+   > 同一页里还有「**最近一年按天统计（Last year by day）**」（365 天）—— **我们用不上**：
+   > 插件的自检表只到 30 天，对账只用上面那两张。
 2. 记住这两页每行的样子：`2026-11-19 (周四)   00:45:30 (3 pages)`
-   （括号里的星期几是本机语言，时长是 时:分:秒）。
-3. 回到主菜单 →「训练家图鉴」→「**自检**」→ 记下那张 30 天的表。
+   （括号里的星期几是本机语言：中文界面是「周四」，英文界面是「Thu」；时长是 时:分:秒）。
+3. 回到主菜单 →「工具」→「更多工具」→「训练家图鉴」→「**自检**」→ 记下那张 30 天的表。
+
+> ⚠️ **顺序不能反：先打开内置那一页（第 1 步），再跑插件自检（第 3 步）。**
+> 内置 statistics 在**查询之前**会先把当前统计写进库（上游 `getDatesFromAll` 里先 `insertDB()`）——
+> 所以**先开内置那一页**，它落库之后两边读到的是**同一批**数据。
+> 反过来（先跑自检、再开内置那一页），内置那边会**多出刚落库的那一段** ⇒
+> 两边对不上 ⇒ **那是假警报，不是插件坏了**。对不上时，先按这个顺序重来一遍。
 
 **看到什么算对**
 
@@ -174,6 +202,7 @@ Kindle / 平板上的 KOReader
     为了让你能一天一天对上号）
   - 所以**差在 1 分钟以内是正常的**（那是秒数被丢掉了），差很多就不正常。
 - 页数要**一模一样**，一个都不能差。
+- 内置那几行**多一个括号里的星期几**（`(周四)`）—— 插件那张表没有这一列 ⇒ **只对日期和数字**。
 - 「Last week」是最近 7 天、「Last month by day」是最近 30 天；插件的自检表也是 30 天 ——
   两边都只列**有记录的天**，所以不会出现「内置有、插件没有」的日子；
   如果出现了（插件这边少一天），多半是刚读的那几页还没落库，或者你是在跨过零点的那天对账的。
@@ -181,6 +210,11 @@ Kindle / 平板上的 KOReader
 **对不上怎么办**
 
 - 差几分钟 ⇒ 多半是秒数被取整了，正常。
+- **多出刚读的那一段 / 少一天** ⇒ 先检查顺序对不对（见上面那个 ⚠️），
+  再检查是不是刚读的那几页还没落库。
+- **时长的写法看不懂**（比如 `1h30'` 而不是 `00:45:30`）⇒ 内置的**时长显示格式**跟着设置走：
+  默认是 classic（时:分:秒），改过设置就可能是 `1h30'`（modern）或 `1h 30m 30s`（letters）——
+  **把它改回 classic 再对账**（KOReader 设置里的时长格式选项）。
 - 差很多天 / 页数差很多 ⇒ **停下来**，八成是两边读的不是同一个库（比如内置统计刚被重置过），
   这时候把自检表第一行「数据来源：」后面那个路径记下来，去看那个文件是不是你 KOReader 现在在用的。
 - 设备时区不是 UTC+8 的话，跨过午夜零点的那几页会被归到不同的一天 ——
@@ -271,10 +305,10 @@ Kindle / 平板上的 KOReader
 
 | 症状 | 多半是 | 怎么办 |
 |---|---|---|
-| 菜单里没有「训练家图鉴」 | 插件目录没放对 / 忘了重启 | 检查是不是 `plugins/koreader-dex.koplugin/main.lua`；重启 KOReader |
-| 「KOReader 的统计数据库还没建……」 | 内置统计的库还没建 | 读几页书并关掉书，或打开一次「Reading statistics」 |
-| 「先在 KOReader 里打开一次 Reading statistics，让它把数据库升级」 | 老库没有 `page_stat` 视图 | 打开一次「Reading statistics」让它升级 |
-| 「内置的 Reading statistics 没打开……」 | 内置统计被关了 | 把「Reading statistics」里的 `Enabled` 打开 |
+| 菜单里没有「训练家图鉴」 | 插件目录没放对 / 忘了重启 | 检查是不是 `plugins/koreader-dex.koplugin/main.lua`；重启 KOReader；它在「**工具 → 更多工具**」里 |
+| 「KOReader 的统计数据库还没建……」 | 内置统计的库还没建 | 读几页书并关掉书，或打开一次「工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）」 |
+| 「先在 KOReader 里打开一次 Reading statistics，让它把数据库升级」 | 老库没有 `page_stat` 视图 | 打开一次「阅读统计（Reading statistics）→ 时长范围（Time range）」让它升级 |
+| 「内置的 Reading statistics 没打开……」 | 内置统计被关了 | 在「**工具 → 阅读统计（Reading statistics）**」里把「**已启用（Enabled）**」打开（⚠️ 不在「设置」页里） |
 | 「还没有阅读记录」 | 窗口里没有分钟数 | 读满 1 分钟（不足 1 分钟会被取整成 0） |
 | 数字比真实读的少 | 还没落库 | 关掉书或息屏，再汇报一次 |
 | 落地页显示「😅 没读出有效的时长」 | 链接被截断 | 回设备重弹二维码再扫 |
@@ -289,7 +323,8 @@ Kindle / 平板上的 KOReader
 写这份文档的时候**手上没有真机**（没有 Kindle、没有 Android），下面是**只在真机上才能验**的，
 你上手时如果碰到不对，先怀疑这几处：
 
-1. **菜单项出现在哪一组**（不同 KOReader 版本 / 语言的分组文案不一样）。
+1. **菜单项出现在哪一组**（位置已经对过上游源码：是「工具 → 更多工具」；
+   剩下的不确定只是不同 KOReader 版本 / 语言的分组文案不一样）。
 2. **e-ink 屏上的二维码够不够大、相机扫不扫得出来**（沙箱里没有 e-ink 也没相机）。
 3. **剪贴板复制能不能成**：`Device.input.setClipboardText` 这个 API 我们没能从上游源码里逐条核实到，
    插件用 `pcall` 包住了，失败就当没这回事（那一行提示不会出现）。

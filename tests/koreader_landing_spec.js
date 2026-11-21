@@ -112,6 +112,22 @@ for (const c of cases) {
 const over = page.creditsForDays({ '2026-11-21': 5000 }, per, cap);
 check('超过单日上限要夹住', over === Math.floor(cap / per), String(over));
 
+/* clampDays 的夹取口径要跟 creditsForDay 一致：负数夹 0、不是数的当 0、超上限夹上限 */
+const clampedDays = page.clampDays({
+  '2026-11-21': -5,        // 负数
+  '2026-11-20': 5000,      // 超上限
+  '2026-11-19': NaN,       // 不是数
+}, cap);
+check('负数夹到 0', clampedDays.days['2026-11-21'] === 0, String(clampedDays.days['2026-11-21']));
+check('超上限夹到上限', clampedDays.days['2026-11-20'] === cap, String(clampedDays.days['2026-11-20']));
+check('不是数的当 0', clampedDays.days['2026-11-19'] === 0, String(clampedDays.days['2026-11-19']));
+check('只有超上限的那天才提示', clampedDays.clamped.length === 1 &&
+  clampedDays.clamped[0].day === '2026-11-20', JSON.stringify(clampedDays.clamped));
+/* 夹后的额度也要按夹后的分钟数算（页面显示的、提交的是同一份） */
+check('夹后的额度按夹后的值算',
+  page.creditsForDays(clampedDays.days, per, cap) === Math.floor(cap / per),
+  String(page.creditsForDays(clampedDays.days, per, cap)));
+
 /* ---------- 结果 ---------- */
 console.log(JSON.stringify({ per: per, cap: cap, cases: cases }));
 

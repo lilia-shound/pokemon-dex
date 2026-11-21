@@ -112,6 +112,11 @@
    * 而页面只字不提 ⇒ 用户会以为交上去了。所以在编 body 时先夹住，
    * 夹过的那些天要在页面上说清楚（见 renderClampNote）。
    *
+   * **夹取的口径要与 creditsForDay 一致**（两道夹）：
+   *   1. 不是数的（NaN / undefined）⇒ 当 0；
+   *   2. 超上限 ⇒ 夹到上限；负数 ⇒ 夹到 0。
+   * 两边口径不一致 ⇒ 页面显示的分钟数、额度、提交的值会对不上。
+   *
    * @param {Object<string, number>} days
    * @param {number} cap 单日上限（分钟）
    * @returns {{days: Object<string, number>, clamped: Array<{day: string, raw: number, capped: number}>}}
@@ -122,9 +127,13 @@
     const clamped = [];
     Object.keys(days || {}).forEach(d => {
       const raw = Number(days[d]);
-      const amount = (Number.isFinite(raw) && raw > limit) ? limit : raw;
+      let amount = Number.isFinite(raw) ? raw : 0;   // 不是数的当 0（与 creditsForDay 一样）
+      if (amount > limit) amount = limit;            // 超上限 ⇒ 夹到上限
+      if (amount < 0) amount = 0;                    // 负数 ⇒ 夹到 0
       out[d] = amount;
-      if (amount !== raw) clamped.push({ day: d, raw: raw, capped: amount });
+      // 只有「超上限被夹」才提示（那是用户该知道、也该改的事）；
+      // 负数 / 非数是脏数据 ⇒ 静默归零（不然服务端会把整份报告丢掉）。
+      if (raw > limit) clamped.push({ day: d, raw: raw, capped: amount });
     });
     return { days: out, clamped: clamped };
   }
@@ -281,7 +290,7 @@
     note.hidden = false;
     note.textContent = '⚠️ ' + state.clamped.map(c =>
       c.day + ' 那天读了 ' + c.raw + ' 分钟，超过单日上限 ' + state.cap +
-      ' —— 提交时按 ' + c.capped + ' 分钟报（服务端会整份拒收超上限的报告）。'
+      ' 分钟 —— 提交时按 ' + c.capped + ' 分钟报（服务端会把超上限的报告整份丢掉）。'
     ).join(' ');
   }
 
@@ -296,8 +305,11 @@
     const clamped = clampDays(state.days, state.cap);
     state.reportDays = clamped.days;      // 真正提交给服务端的是它
     state.clamped = clamped.clamped;       // 被夹过的天（页面上要提示）
-    state.credits = creditsForDays(state.days, state.per, state.cap);
-    state.issueTitle = buildIssueTitle(state.days);
+    // 额度按**夹后**的分钟数算（与提交给服务端的那份完全一致）——
+    // 不要用 state.days（原始值）：那样「显示的分钟数 / 额度 / 提交的值」会各说各话。
+    state.credits = creditsForDays(state.reportDays, state.per, state.cap);
+    // 标题只用**最新的一天**（days 与 reportDays 的键是同一批，取谁都一样）⇒ 跟着 reportDays 走。
+    state.issueTitle = buildIssueTitle(state.reportDays);
     state.issueUrl = buildIssueUrl(state.reportDays);
   }
 

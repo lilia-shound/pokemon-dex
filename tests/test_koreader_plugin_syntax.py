@@ -177,6 +177,27 @@ class PluginStaticTest(unittest.TestCase):
         for hint in MSG_DISABLED_HINTS:
             self.assertIn(hint, disabled, "「内置 statistics 没开」那条提示缺了 %s" % hint)
 
+    def test_the_disabled_hint_points_at_the_real_menu_path(self):
+        """「内置 statistics 没开」的提示要指向**上游真实的位置**。
+
+        上游 plugins/statistics.koplugin/main.lua 把「Reading statistics」挂在
+        **工具**组（frontend/ui/elements/filemanager_menu_order.lua 的 tools 里有
+        一项 "statistics"），开关是它的**第一个子项**「Enabled」
+        （中文界面显示「已启用」）—— **设置页里没有这一项**。
+
+        早先那句「设置 → Reading statistics」上游**压根不存在** ⇒
+        照着找会让她在设置页里白翻半天（这正是评审点名的必改项）。
+        """
+        m = re.search(r'MSG_DISABLED\s*=\s*"([^"]*)"', self.code)
+        self.assertIsNotNone(m, "main.lua 里没有 MSG_DISABLED")
+        disabled = m.group(1)
+        self.assertIn("工具", disabled, "那条提示没说去「工具」里找")
+        self.assertIn("Enabled", disabled, "那条提示没点名上游那个开关（Enabled）")
+        self.assertNotIn(
+            "设置 → Reading statistics", disabled,
+            "上游没有「设置 → Reading statistics」这条路径 ⇒ 会让她在设置里白翻",
+        )
+
     def test_messages_are_shown_with_info_message(self):
         """提示要用 InfoMessage 显示。"""
         self.assertIn('require("ui/widget/infomessage")', self.text)
@@ -287,6 +308,32 @@ class PluginStaticTest(unittest.TestCase):
         self.assertIn("Last week", self.text)
         self.assertIn("Last month by day", self.text)
         self.assertNotIn("Last week by day", self.text)
+
+    def test_self_test_example_matches_the_upstream_row_format(self):
+        """自检表里举的那一行必须**带星期几**。
+
+        上游「Last week / Last month by day」每一行是
+        「日期 (星期几)  时长 (N 页)」（上游 main.lua:1963-1966 的
+        string.format("%s (%s)", …)）—— 少了星期几，她照着示例看会以为
+        内置那边多了一列 ⇒ **误判插件坏了**（而这张表是唯一的验收手段）。
+        """
+        m = re.search(
+            r"\d{4}-\d{2}-\d{2} \([^)]+\) +\d{2}:\d{2}:\d{2} \(\d+ pages?\)",
+            self.text,
+        )
+        self.assertIsNotNone(
+            m,
+            "自检表的示例里没有「日期 (星期几)  时长 (N 页)」这种上游格式",
+        )
+
+    def test_self_test_says_the_order_cannot_be_reversed(self):
+        """自检表要写明**顺序不能反**（先开内置那一页，再跑自检）。
+
+        上游 getDatesFromAll 在查询**之前**会先 insertDB() ⇒
+        先跑自检再开内置那一页的话，内置那边会多出刚落库的那一段 ⇒ **假警报**。
+        """
+        self.assertIn("顺序不能反", self.text)
+        self.assertIn("写进库", self.text)
 
     # -- 错误提示的判别 ----------------------------------------------------
 

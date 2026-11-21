@@ -23,10 +23,25 @@ plugins/
     README.md              -- 这份
 ```
 
+**插件文件从哪儿拿**（不用去 GitHub 仓库里翻）：
+
+- 线上已经发布好了**整个目录**：
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/>
+  （`main.lua` / `koreader_dex_report.lua` / `_meta.lua` / `README.md` 都在里面）
+- 或者从仓库里拿：<https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin>
+
 Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/mnt/us/koreader/plugins/`）
 拷进去；**固件路径不一样的话，以「设备上的 koreader/plugins/ 目录」为准**，别照抄别人的路径。
 
-复制完要**退出 KOReader 再打开**（关掉书不算重启）。重启后主菜单里会多一项「训练家图鉴」。
+⚠️ **别多套一层**：设备上应该是 `plugins/koreader-dex.koplugin/main.lua`，
+而不是 `plugins/koreader-dex.koplugin/koreader-dex.koplugin/main.lua`。
+
+复制完要**退出 KOReader 再打开**（关掉书不算重启）。重启后主菜单（☰）的
+「**工具 → 更多工具**」里会多一项「**训练家图鉴**」。
+
+> 位置说明：插件的 `sorting_hint = "more_tools"` ⇒ 它落在**工具 → 更多工具**这一组
+> （内置那个「Reading statistics」在**工具**一级，不在「更多工具」里 —— 别认错）。
+> 不同 KOReader 版本 / 语言的分组文案会不一样，实在找不到就翻到主菜单底部。
 
 > 想知道这插件到底能干什么、不能干什么 → 看下面的「它不干什么」。
 
@@ -34,7 +49,7 @@ Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/m
 
 ## 菜单里有什么
 
-主菜单（☰）里找到「**训练家图鉴**」，点开是三个选项，**文案一字不差**：
+主菜单（☰）→「**工具**」→「**更多工具**」→「**训练家图鉴**」，点开是三个选项，**文案一字不差**：
 
 | 菜单项 | 干什么 |
 |---|---|
@@ -97,26 +112,39 @@ Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/m
 
 合计 70 分钟 → 折算 4 个额度
 
-怎么对照：KOReader 里打开「工具 → Reading statistics →
-Time range」，页面标题是「Time range statistics」，
-里面有一项「Last week」（最近 7 天，逐天），
-30 天那张叫「Last month by day」。
+怎么对照：KOReader 里打开「工具 → 阅读统计（Reading statistics）→
+时长范围（Time range）」，页面标题是「时长范围统计（Time range statistics）」，
+里面有一项「最近一周（Last week）」（最近 7 天，逐天），
+30 天那张叫「最近一个月按天统计（Last month by day）」。
+（上游还有一张「最近一年按天统计（Last year by day）」= 365 天，
+我们用不上 —— 这个自检只到 30 天。）
 它每行是「日期 (星期几)  时长 (N 页)」，例如
-「2026-11-19  00:00:45 (1 page)」。
+「2026-11-19 (周四)   00:00:45 (1 page)」（星期几按界面语言显示，
+英文界面写的是「Thu」）。
+⚠️ 顺序不能反：先打开上面那个内置页面，再跑这个自检 ——
+内置统计在查询之前会先把当前数据写进库；反过来（先跑自检）
+内置那边会多出刚落库的那一段 ⇒ 两边对不上，那是假警报。
 对照：「Last week」是最近 7 天、「Last month by day」是最近 30 天，
 它们也只列有记录的天 ⇒ 跟上面这张表里同一个日子的那行比：
 分钟数要一样、页数要一样。口径一样 ⇒ 必须一模一样。
+（内置那边的时长格式会随设置变：默认 classic 是 时:分:秒；
+改过设置的话可能是 1h30' 那种，对不上时先看设置。）
 
 刚读完的那几页可能还没落库（内置 statistics 是攒着写库的：每 50 次翻页 / 关掉书 / 息屏才落库）—— 关掉书或息屏后再汇报
 ```
 
 表是**等宽字体**排的（两列才对得齐），而且**可以滚动**（表长的时候往下翻）。
 
-看这张表的时候注意两点：
+看这张表的时候注意这几点：
 
 - **不足 1 分钟的天也在表里，分钟数显示 0** —— 内置 statistics 那边的
   「00:00:45 (1 page)」在我们这儿就是 `0 分钟 1 页`。这不是 bug，是为了让你能逐天对上号。
 - **分钟数是整分钟、向下取整**；内置那边显示的是 时:分:秒。对照时要把秒数去掉再看。
+  （内置的时长**格式**跟着设置走：默认 classic 是 时:分:秒；改过设置可能是 `1h30'` 那种。）
+- **内置那边每行还带星期几**（`2026-11-19 (周四)`，按界面语言显示）——
+  我们这张表只有日期 ⇒ 对的时候**只对日期和数字**，别去数括号。
+- **对账的顺序不能反**：先打开内置那一页，再回来跑这个自检
+  （内置统计在查询之前会先把当前数据写进库；反过来两边会差出刚落库的那一段 ⇒ 假警报）。
 
 ---
 
@@ -126,11 +154,11 @@ Time range」，页面标题是「Time range statistics」，
 
 | 你会看到的原文 | 什么意思 | 你该做什么 |
 |---|---|---|
-| `KOReader 的统计数据库还没建 —— 先读一会儿书，或打开一次 Reading statistics` | 设备上还没有 `statistics.sqlite3` 这个库 | 读一会儿书，或者打开一次 KOReader 的「Reading statistics」 |
-| `先在 KOReader 里打开一次 Reading statistics，让它把数据库升级` | 库在，但没有 `page_stat` 视图（老库没升级过） | 打开一次「Reading statistics」，让它自己升级 |
-| `内置的 Reading statistics 没打开 —— 先在 KOReader 的「设置 → Reading statistics」里打开它，不然读到的都是旧数据` | 内置统计被关掉了 | 把内置统计打开（在「Reading statistics」那一项里，勾选状态叫 `Enabled`；提示语里写的「设置 → Reading statistics」指的是同一件事） |
+| `KOReader 的统计数据库还没建 —— 先读一会儿书，或打开一次 Reading statistics` | 设备上还没有 `statistics.sqlite3` 这个库 | 读一会儿书，或者打开一次 KOReader 的「工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）」 |
+| `先在 KOReader 里打开一次 Reading statistics，让它把数据库升级` | 库在，但没有 `page_stat` 视图（老库没升级过） | 打开一次「工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）」，让它自己升级 |
+| `内置的 Reading statistics 没打开 —— 先在 KOReader 的「工具 → 阅读统计（Reading statistics）」里把「已启用（Enabled）」打开，不然读到的都是旧数据` | 内置统计被关掉了 | 进 KOReader 的「**工具**」→「**阅读统计（Reading statistics）**」，把第一个子项「**已启用（Enabled）**」打开。⚠️ **不在「设置」里**（上游那一项挂在工具组）—— 设置页里翻不到是正常的 |
 | `还没有阅读记录` | 库能读，但这个窗口里没有分钟数 | 读满 1 分钟再试（不足 1 分钟会被取整成 0，所以看起来像「没有」） |
-| `读不了 KOReader 的统计数据库 —— 先在 KOReader 里打开一次 Reading statistics，让它把数据库升级`（后面可能跟着括号里的原始错误） | 其它 SQL 错误 | 先按上面那句去开一次「Reading statistics」；还不行就把括号里的原文记下来 |
+| `读不了 KOReader 的统计数据库 —— 先在 KOReader 里打开一次 Reading statistics，让它把数据库升级`（后面可能跟着括号里的原始错误） | 其它 SQL 错误 | 先按上面那句去开一次「工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）」；还不行就把括号里的原文记下来 |
 
 还有一句**每次都会出现**在最后：
 
@@ -155,7 +183,9 @@ Time range」，页面标题是「Time range statistics」，
 
 写这份说明的时候**没有真机**（没有 Kindle、没有 Android），下面这些只能靠你上手时确认：
 
-1. 菜单里到底出不出现、出现在哪一组（不同 KOReader 版本 / 语言的分组文案会不一样，
+1. 菜单里到底出不出现（**位置已经对过上游源码**：插件用 `sorting_hint = "more_tools"`
+   ⇒ 落在「**工具 → 更多工具**」里，和内置那个「Reading statistics」（在**工具**一级）
+   不是同一处；剩下的不确定只是不同 KOReader 版本 / 语言的分组文案不一样，
    实在找不到就翻到主菜单底部）。
 2. e-ink 屏上那个二维码**够不够大、相机扫不扫得出来**。扫不出来就用剪贴板那条路
    （见 `docs/koreader-setup.md`）。

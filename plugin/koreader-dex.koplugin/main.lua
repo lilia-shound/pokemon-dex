@@ -47,7 +47,12 @@ local CREDITS_PER_MINUTES = 15
 -- 说人话的提示（**这些措辞是她照着操作的，别随便改**）
 local MSG_NO_DB = "KOReader 的统计数据库还没建 —— 先读一会儿书，或打开一次 Reading statistics"
 local MSG_OLD_DB = "先在 KOReader 里打开一次 Reading statistics，让它把数据库升级"
-local MSG_DISABLED = "内置的 Reading statistics 没打开 —— 先在 KOReader 的「设置 → Reading statistics」里打开它，不然读到的都是旧数据"
+-- 「内置 statistics 没开」这条指向的位置**必须与上游一致**：
+-- 上游 plugins/statistics.koplugin/main.lua 把「Reading statistics」挂在**工具**组，
+-- 开关是它的**第一个子项**「Enabled」（中文界面显示「已启用」）——
+-- **设置页里没有这一项** ⇒ 早先那句「设置 → Reading statistics」会让她在设置里白翻。
+-- （上游位置已逐条核实；tests/test_koreader_plugin_syntax.py 盯着这条。）
+local MSG_DISABLED = "内置的 Reading statistics 没打开 —— 先在 KOReader 的「工具 → 阅读统计（Reading statistics）」里把「已启用（Enabled）」打开，不然读到的都是旧数据"
 local MSG_NO_DATA = "还没有阅读记录"
 local MSG_QUERY_FAILED = "读不了 KOReader 的统计数据库 —— 先在 KOReader 里打开一次 Reading statistics，让它把数据库升级"
 local MSG_LAG = "刚读完的那几页可能还没落库（内置 statistics 是攒着写库的：每 50 次翻页 / 关掉书 / 息屏才落库）—— 关掉书或息屏后再汇报"
@@ -336,15 +341,30 @@ function DexPlugin:onSelfTest()
             sum_minutes(minutes_by_day), Report.credits(minutes_by_day, CREDITS_PER_MINUTES))
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "怎么对照：KOReader 里打开「工具 → Reading statistics →"
-    lines[#lines + 1] = "Time range」，页面标题是「Time range statistics」，"
-    lines[#lines + 1] = "里面有一项「Last week」（最近 7 天，逐天），"
-    lines[#lines + 1] = "30 天那张叫「Last month by day」。"
+    -- 下面对照说明里的**上游菜单名**要照抄上游原文（中文界面显示的是括号前那个）：
+    --   工具 → 阅读统计（Reading statistics）→ 时长范围（Time range）
+    --     → 页面标题「时长范围统计（Time range statistics）」
+    --   → 「最近一周（Last week）」（7 天，逐天）、「最近一个月按天统计（Last month by day）」（30 天，逐天）
+    --     「最近一年按天统计（Last year by day）」是 365 天那张，我们用不上。
+    -- **上游的日期格式带星期几**（上游 main.lua:1963-1966 的 string.format("%s (%s)", …)）——
+    -- 少了星期几，她照着示例找会以为内置那边多了一列 ⇒ 误判插件坏了。
+    lines[#lines + 1] = "怎么对照：KOReader 里打开「工具 → 阅读统计（Reading statistics）→"
+    lines[#lines + 1] = "时长范围（Time range）」，页面标题是「时长范围统计（Time range statistics）」，"
+    lines[#lines + 1] = "里面有一项「最近一周（Last week）」（最近 7 天，逐天），"
+    lines[#lines + 1] = "30 天那张叫「最近一个月按天统计（Last month by day）」。"
+    lines[#lines + 1] = "（上游还有一张「最近一年按天统计（Last year by day）」= 365 天，"
+    lines[#lines + 1] = "我们用不上 —— 这个自检只到 30 天。）"
     lines[#lines + 1] = "它每行是「日期 (星期几)  时长 (N 页)」，例如"
-    lines[#lines + 1] = "「2026-11-19  00:00:45 (1 page)」。"
+    lines[#lines + 1] = "「2026-11-19 (周四)   00:00:45 (1 page)」（星期几按界面语言显示，"
+    lines[#lines + 1] = "英文界面写的是「Thu」）。"
+    lines[#lines + 1] = "⚠️ 顺序不能反：先打开上面那个内置页面，再跑这个自检 ——"
+    lines[#lines + 1] = "内置统计在查询之前会先把当前数据写进库；反过来（先跑自检）"
+    lines[#lines + 1] = "内置那边会多出刚落库的那一段 ⇒ 两边对不上，那是假警报。"
     lines[#lines + 1] = "对照：「Last week」是最近 7 天、「Last month by day」是最近 30 天，"
     lines[#lines + 1] = "它们也只列有记录的天 ⇒ 跟上面这张表里同一个日子的那行比："
     lines[#lines + 1] = "分钟数要一样、页数要一样。口径一样 ⇒ 必须一模一样。"
+    lines[#lines + 1] = "（内置那边的时长格式会随设置变：默认 classic 是 时:分:秒；"
+    lines[#lines + 1] = "改过设置的话可能是 1h30' 那种，对不上时先看设置。）"
     lines[#lines + 1] = ""
     lines[#lines + 1] = MSG_LAG
 

@@ -82,6 +82,14 @@ git worktree add --detach "$WT" >/dev/null
   # 油猴脚本也发布到线上：这样插件有稳定安装地址，
   # 加上 @updateURL/@downloadURL 后 Tampermonkey 能自动更新，不用每次手动换文件。
   cp "$ROOT/plugin/weread-dex.user.js" ./weread-dex.user.js
+  # KOReader 插件目录也发布出去 —— 不然她没地方拿插件文件（插件不能像油猴脚本那样
+  # 一个文件装完，得整个目录丢进设备的 plugins/）。
+  # 发的是**整个目录**：
+  #   https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/
+  #   https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/main.lua
+  # 目录名必须是 koreader-dex.koplugin（KOReader 靠它认出插件）⇒ 别改名。
+  rm -rf ./koreader-dex.koplugin
+  cp -r "$ROOT/plugin/koreader-dex.koplugin" ./koreader-dex.koplugin
   git add -A
   git -c user.name="Mavis" -c user.email="mavis@local" commit -q -m "chore: 图鉴站 $(date -u +%FT%TZ)"
 )
@@ -94,3 +102,4 @@ done
 
 echo "[4/4] 完成"
 echo "图鉴页： https://lilia-shound.github.io/pokemon-dex/"
+echo "KOReader 插件： https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/"
