@@ -159,6 +159,15 @@ case("decode_days 只认 ASCII 数字（不认 Unicode 数字）", function()
     eq(next(Report.decode_days("2026-11-21:٢٥")), nil, "Unicode 数字的分钟不能收")
 end)
 
+case("decode_days 段尾带换行的段整段丢掉", function()
+    -- Lua 的 `$` 只认字符串末尾 ⇒ 段尾带换行的段**不匹配**，整段丢掉。
+    -- Python 以前用 `$` 会放过这个换行（偏松）⇒ 现在改成 fullmatch，三端一致了。
+    eq(next(Report.decode_days("2026-11-21:25\n")), nil, "段尾带换行的段不能收")
+    local days = Report.decode_days("2026-11-21:25\n,2026-11-20:50")
+    eq(days["2026-11-21"], nil, "带换行的那一段要整段丢掉")
+    eq(days["2026-11-20"], 50, "别的段不受影响")
+end)
+
 case("decode_days 空段直接跳过（不影响别的段）", function()
     local days = Report.decode_days("2026-11-21:25,,2026-11-20:50")
     eq(days["2026-11-21"], 25, "第一段")
@@ -610,10 +619,15 @@ end
 ---
 --- 好坏线都在里面 —— 跨语言对拍要**逐例**比，
 --- 只喂干净的 fixture 的话，空白 / Unicode 数字这类分歧根本看不见。
+---
+--- **转义**：用例里的 `\n`（反斜杠 + n）表示一个**真的换行符** ——
+--- 文件一行只能放一条线，而「段尾带换行」这种用例必须真的带一个换行符。
+--- （Python 侧与 JS 侧用的是同一套约定，见 tests/koreader_lua_bridge.py。）
 --- @return string JSON
 local function probe_cases()
     local out = {}
-    for wire in tostring(WIRE_CASES or ""):gmatch("[^\n]+") do
+    for line in tostring(WIRE_CASES or ""):gmatch("[^\n]+") do
+        local wire = line:gsub("\\n", "\n")
         local days = Report.decode_days(wire)
         out[#out + 1] = '{"wire":' .. json_str(wire) ..
                         ',"decoded":' .. json_days(days) ..

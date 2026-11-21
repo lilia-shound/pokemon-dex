@@ -38,7 +38,7 @@
    *
    * JS 的 `$`（没有 /m flag）只匹配字符串**末尾** ——
    * 所以 "2026-11-21:25\n" 这种带尾换行的段在这里**不匹配**（整段丢掉），
-   * 与 Lua 一致（Python 的 `$` 会放过尾换行，那是三端里唯一偏松的一处）。
+   * 与 Lua 一致（Python 侧现在也用 fullmatch，三端一样紧 —— 见 tests/test_koreader_lua.py）。
    */
   const WIRE_CHUNK = /^([0-9]{4}-[0-9]{2}-[0-9]{2}):([0-9]+)$/;
 
@@ -104,6 +104,32 @@
   }
 
   /**
+   * 把每天的分钟数**夹到单日上限**。
+   *
+   * 为什么要在落地页夹：服务端 `scripts/collect_reports.py` 的规则是
+   * 「任一天超过该源的 maxPerDay ⇒ **整份报告丢弃**」——
+   * 而插件的 collect_days 不夹单日分钟数 ⇒ 理论上能产出服务端拒收的报告，
+   * 而页面只字不提 ⇒ 用户会以为交上去了。所以在编 body 时先夹住，
+   * 夹过的那些天要在页面上说清楚（见 renderClampNote）。
+   *
+   * @param {Object<string, number>} days
+   * @param {number} cap 单日上限（分钟）
+   * @returns {{days: Object<string, number>, clamped: Array<{day: string, raw: number, capped: number}>}}
+   */
+  function clampDays(days, cap) {
+    const limit = Number(cap) >= 0 ? Number(cap) : DEFAULT_MAX_PER_DAY;
+    const out = {};
+    const clamped = [];
+    Object.keys(days || {}).forEach(d => {
+      const raw = Number(days[d]);
+      const amount = (Number.isFinite(raw) && raw > limit) ? limit : raw;
+      out[d] = amount;
+      if (amount !== raw) clamped.push({ day: d, raw: raw, capped: amount });
+    });
+    return { days: out, clamped: clamped };
+  }
+
+  /**
    * 最新的一天（日期倒序里的第一个）。ISO 日期字符串比大小就是比日期先后。
    * @param {Object<string, number>} days
    * @returns {string} 没有就空串
@@ -144,10 +170,31 @@
       '&body=' + encodeURIComponent(JSON.stringify(buildReport(days)));
   }
 
+  /* ---------- 页面状态 ---------- */
+
+  /** 页面当前状态：解出来的天数、额度口径、算出来的额度、issue 链接。
+   *
+   *  - `days`       —— 短链里解出来的**原始**分钟数（一天一个键）
+   *  - `reportDays` —— **夹过单日上限**的分钟数（真正提交给服务端的就是它）
+   *  - `clamped`    —— 被夹过的那些天（{day, raw, capped}）—— 页面上要提示
+   *  - `registryLoaded` —— **注册表已经生效**（读到真注册表了，或者兜底口径生效了）
+   *
+   *  `registryLoaded` 为什么要有：页面**第一次**渲染用的是默认口径（per=15），
+   *  注册表是之后异步换上去的 ⇒ 「画完了」**不等于**「注册表生效了」。
+   *  测试要证明「per 来自注册表」，等的必须是这个标志，不是「页面画完了」。
+   */
+  const state = {
+    days: {}, reportDays: {}, clamped: [],
+    per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY,
+    credits: 0, issueTitle: '', issueUrl: '',
+    registryLoaded: false,
+  };
+
   const API = {
     parseDays, encodeDays, creditsForDay, creditsForDays,
-    latestDay, buildReport, buildIssueTitle, buildIssueUrl,
+    latestDay, buildReport, buildIssueTitle, buildIssueUrl, clampDays,
     DEFAULT_PER, DEFAULT_MAX_PER_DAY, SOURCE_ID, ISSUE_NEW, REPO, CDN,
+    state,
   };
 
   /* node 侧（tests/koreader_landing_spec.js）要 require 这个文件做对拍；
@@ -157,10 +204,6 @@
 
   /* ---------- 页面部分（只在浏览器里跑） ---------- */
   if (typeof document === 'undefined') return;
-
-  /** 页面当前状态：解出来的天数、额度口径、算出来的额度、issue 链接 */
-  const state = { days: {}, per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, credits: 0, issueTitle: '', issueUrl: '' };
-  API.state = state;
 
   const $ = s => document.querySelector(s);
 
@@ -188,17 +231,25 @@
         const cap = Number(src.maxPerDay);
         return { per: per, cap: (cap >= 0) ? cap : DEFAULT_MAX_PER_DAY };
       })
-      .catch(() => ({ per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY }));
+      .catch(err => {
+        // 失败原因**不要整个吞掉**：线上注册表挂了会静默退回 15，事后无从查。
+        // 打个 warn 就能在浏览器控制台里看到「为什么退回了默认口径」。
+        console.warn('[koreader] 读注册表失败，退回默认口径（' + DEFAULT_PER +
+          ' 分钟 = 1 个额度）：', err);
+        return { per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY };
+      });
   }
 
   /** 渲染有效天数的那一屏 */
   function renderDays() {
-    const keys = Object.keys(state.days).sort().reverse();   // 日期倒序：最新的一天在前
+    // 显示的是**要提交给服务端的那份**（夹过单日上限的）——
+    // 页面写 1440、报 1440、额度也按 1440 算，三者永远一致。
+    const keys = Object.keys(state.reportDays).sort().reverse();   // 日期倒序：最新的一天在前
     const list = $('#dayList');
     list.innerHTML = '';
     let total = 0;
     keys.forEach(d => {
-      const minutes = state.days[d];
+      const minutes = state.reportDays[d];
       total += minutes;
       const li = document.createElement('li');
       const c = creditsForDay(minutes, state.per, state.cap);
@@ -215,12 +266,39 @@
     $('#submitBtn').href = state.issueUrl;
     const titleEl = $('#issueTitle');
     if (titleEl) titleEl.textContent = state.issueTitle;
+    renderClampNote();
+  }
+
+  /** 单日超上限时的提示（有夹取才显示，没有就藏起来） */
+  function renderClampNote() {
+    const note = $('#clampNote');
+    if (!note) return;
+    if (!state.clamped.length) {
+      note.hidden = true;
+      note.textContent = '';
+      return;
+    }
+    note.hidden = false;
+    note.textContent = '⚠️ ' + state.clamped.map(c =>
+      c.day + ' 那天读了 ' + c.raw + ' 分钟，超过单日上限 ' + state.cap +
+      ' —— 提交时按 ' + c.capped + ' 分钟报（服务端会整份拒收超上限的报告）。'
+    ).join(' ');
   }
 
   /** 渲染「没读出有效时长」那一屏 */
   function renderBad() {
     $('#badBox').hidden = false;
     $('#mainBox').hidden = true;
+  }
+
+  /** 按当前口径（per / cap）重算一遍：夹上限后的天数、额度、issue 链接 */
+  function recompute() {
+    const clamped = clampDays(state.days, state.cap);
+    state.reportDays = clamped.days;      // 真正提交给服务端的是它
+    state.clamped = clamped.clamped;       // 被夹过的天（页面上要提示）
+    state.credits = creditsForDays(state.days, state.per, state.cap);
+    state.issueTitle = buildIssueTitle(state.days);
+    state.issueUrl = buildIssueUrl(state.reportDays);
   }
 
   /** 主流程：解线 → 算额度 → 渲染；然后去拉注册表（拉到了就按真口径重算） */
@@ -234,9 +312,7 @@
     }
     state.per = DEFAULT_PER;
     state.cap = DEFAULT_MAX_PER_DAY;
-    state.credits = creditsForDays(state.days, state.per, state.cap);
-    state.issueTitle = buildIssueTitle(state.days);
-    state.issueUrl = buildIssueUrl(state.days);
+    recompute();
     $('#badBox').hidden = true;
     $('#mainBox').hidden = false;
     renderDays();
@@ -245,8 +321,11 @@
     loadRegistry().then(reg => {
       state.per = reg.per;
       state.cap = reg.cap;
-      state.credits = creditsForDays(state.days, state.per, state.cap);
+      recompute();
       renderDays();
+      // 注册表（真口径或兜底口径）**已经生效** ⇒ 这一行是「可以断言了」的信号。
+      // 放在 renderDays 之后：等到这个标志为 true 时，页面上的数字一定已经是新口径的了。
+      state.registryLoaded = true;
     });
   }
 

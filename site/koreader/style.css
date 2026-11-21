@@ -49,6 +49,7 @@ h1{font-size:23px;font-weight:700;letter-spacing:.5px}
 .card.warn h2{color:var(--ink)}
 .big{font-size:19px;font-weight:600;margin-top:2px}
 .hint{color:var(--dim);font-size:13.5px;line-height:1.8;margin-top:12px}
+.hint.warn{color:var(--accent)}
 .hint.center{text-align:center;margin-top:12px}
 .hint b{color:var(--ink)}
 

@@ -51,6 +51,15 @@ const raw = readText(WIRE_CASES, '线格式用例文件');
 const wireCases = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
 if (!wireCases) die('线格式用例文件是空的');
 
+/*
+ * 用例里的转义：`\n`（反斜杠 + n）表示一个**真的换行符** ——
+ * 文件一行只能放一条线，而「段尾带换行」这种用例必须真的带一个换行符。
+ * （Python 侧与 Lua 侧用的是同一套约定，见 tests/koreader_lua_bridge.py。）
+ */
+function decodeWire(line) {
+  return line.replace(/\\n/g, '\n');
+}
+
 /* 额度折算口径（几分钟 1 个额度）从服务端注册表里读，别在测试里另抄一份 */
 let per = 15;
 let cap = 1440;
@@ -65,7 +74,7 @@ try {
 }
 
 /* ---------- 逐例跑一遍 ---------- */
-const cases = wireCases.split('\n').map(wire => {
+const cases = wireCases.split('\n').map(decodeWire).map(wire => {
   const decoded = page.parseDays(wire);
   return {
     wire: wire,

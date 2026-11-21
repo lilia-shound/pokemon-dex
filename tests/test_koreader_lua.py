@@ -33,7 +33,12 @@ SPEC = bridge.SPEC
 #
 # **数字只认 ASCII 0-9** —— 用 [0-9] 而不是 \d：
 # Python 的 \d 也认 Unicode 数字（"٢��٦" 那种），Lua 的 %d 不认 ⇒ 两边会分歧。
-WIRE_CHUNK = re.compile(r"^([0-9]{4}-[0-9]{2}-[0-9]{2}):([0-9]+)$")
+#
+# **用 fullmatch 而不是 `^…$`**：Python 的 `$` 会放过**字符串末尾的换行**
+# （"2026-11-21:25\n" 在 `$` 口径下算合法），而 JS 的 `$`（无 /m）与 Lua 的 `$`
+# **只认字符串末尾** ⇒ 三端会分歧。
+# fullmatch 要求整段完全匹配 ⇒ 与 JS / Lua 一样紧。
+WIRE_CHUNK = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2}):([0-9]+)")
 
 # 断言集至少要跑这么多条（防止 spec 被清空 ⇒ 一片绿但什么都没测）
 MIN_LUA_CASES = 20
@@ -49,7 +54,7 @@ def parse_days(wire: str) -> dict[str, int]:
     """
     out: dict[str, int] = {}
     for chunk in (wire or "").split(","):
-        m = WIRE_CHUNK.match(chunk)
+        m = WIRE_CHUNK.fullmatch(chunk)
         if m:
             out[m.group(1)] = int(m.group(2))
     return out
@@ -136,6 +141,17 @@ class KoreaderLuaTest(unittest.TestCase):
         self.assertEqual(parse_days(" 2026-11-21:25"), {})
         self.assertEqual(parse_days("2026-11-21:25 "), {})
         self.assertEqual(parse_days("2026-11-21:2 5"), {})
+
+    def test_python_parser_drops_chunks_with_a_trailing_newline(self):
+        """段尾带**换行**的段整段丢掉 —— 与 JS / Lua 一致。
+
+        Python 的 `$` 会放过字符串末尾的换行（"…:25\\n" 在 `$` 口径下算匹配），
+        而 JS 的 `$`（无 /m）与 Lua 的 `$` 只认字符串末尾 ⇒
+        换 fullmatch 之后三端在这一点上也一致了。
+        """
+        self.assertEqual(parse_days("2026-11-21:25\n"), {})
+        self.assertEqual(parse_days("2026-11-21:25\n,2026-11-20:50"), {"2026-11-20": 50})
+        self.assertEqual(parse_days("2026-11-21:25\n2026-11-20:50"), {})
 
     def test_python_parser_drops_unicode_digits(self):
         """数字只认 ASCII 0-9 —— Python 的 \\d 会认 Unicode 数字，所以不能用它。"""

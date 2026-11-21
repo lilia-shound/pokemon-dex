@@ -144,13 +144,17 @@ def read_wire_cases() -> list[str]:
 
     **不 trim 每一行** —— 带空白的行本身就是用例（规则是「段不完全匹配就整段丢掉」）。
     只去掉文件末尾那一个换行符（文件末尾换行是文本文件的常规，不是内容）。
+
+    **转义**：行里的 ``\\n``（反斜杠 + n）表示一个**真的换行符** ——
+    文件一行只能放一条线，而「段尾带换行」这种用例必须真的带一个换行符
+    （JS 的 `$` 与 Lua 的 `$` 都不放过它；Python 以前放过，现在改成 fullmatch 了）。
     """
     text = WIRE_CASES.read_text(encoding="utf-8")
     if text.endswith("\n"):
         text = text[:-1]
     if not text:
         return []
-    return text.split("\n")
+    return [line.replace("\\n", "\n") for line in text.split("\n")]
 
 
 def strip_lua_comments(text: str) -> str:
