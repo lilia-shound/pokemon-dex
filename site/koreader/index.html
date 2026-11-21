@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
+<meta name="description" content="KOReader 阅读时长 → 训练家图鉴：把 Kindle 上读到的分钟数交回去">
+<title>KOReader 阅读时长 · 训练家图鉴</title>
+<!-- 图标内联（data URI）：不许外链，外链在她那边会挂 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23c8623a'/%3E%3Ctext x='32' y='45' font-size='36' text-anchor='middle'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+
+  <header class="top">
+    <div class="badge" aria-hidden="true">📚</div>
+    <h1>KOReader 阅读时长</h1>
+    <p class="sub">交回训练家图鉴 · 只报数，不抽卡</p>
+    <noscript><p class="hint center">这一页要用 JavaScript 才能把分钟数算成额度 —— 请在浏览器里允许它运行。</p></noscript>
+  </header>
+
+  <!-- 读不出有效时长时的提示（默认藏着） -->
+  <section class="card warn" id="badBox" hidden>
+    <h2>😅 没读出有效的时长</h2>
+    <p class="big">是不是链接不完整？</p>
+    <p class="hint">短链可能被截断了。回到 Kindle 上的插件重新弹一次二维码，再扫一次就好 —— 插件那边会重新算一遍分钟数。</p>
+  </section>
+
+  <!-- 正常内容（有有效天数时显示） -->
+  <div id="mainBox" hidden>
+
+    <section class="card">
+      <h2>读到的时长</h2>
+      <ul class="days" id="dayList"></ul>
+
+      <div class="sum">
+        <span class="sl">合计</span>
+        <span class="sv" id="totalMin">—</span>
+      </div>
+
+      <div class="credit">
+        <div class="cnum" id="creditNum">—</div>
+        <div class="clab">折算成 <b id="creditCount">—</b> 个额度</div>
+      </div>
+      <p class="hint" id="perNote"></p>
+    </section>
+
+    <a class="btn" id="submitBtn" href="#" target="_blank" rel="noopener noreferrer">去 GitHub 提交</a>
+    <p class="hint center">点开是 GitHub 的新建 issue 页，标题和内容都填好了 —— 在那个页面上点一下 <b>Submit</b> 才算交上去。</p>
+
+    <section class="card">
+      <h2>点完 Submit 之后</h2>
+      <ol class="steps">
+        <li>这条 issue 提到 <b>lilia-shound/pokemon-dex</b> 这个仓库，标题长这样：<code id="issueTitle">[report] koreader …</code>。</li>
+        <li>服务端的定时任务读它 → 校验（源、日期、数值）→ 并进逐日账本（同源同一天取最大值，重复交不吃亏）。</li>
+        <li>当天额度凑够了，就从还没收服的池子里掉一只宝可梦，进你的图鉴。</li>
+        <li>抽卡权只在服务端 —— 这一页只报「我读了多少分钟」，不发任何写请求。</li>
+      </ol>
+    </section>
+
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

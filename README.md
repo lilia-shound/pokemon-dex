@@ -144,6 +144,7 @@ scripts/push_notify.py   微信推送（pushplus）
 scripts/deploy.sh        推 main + gh-pages，发布图鉴页
 site/                    图鉴页静态站
 site/pomodoro/           网页版番茄钟（PWA）
+site/koreader/           KOReader 手机落地页（Kindle 短链扫开的那一页）
 plugin/                  油猴脚本
 tests/                   单元测试
 ```
