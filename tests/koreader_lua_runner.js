@@ -5,6 +5,9 @@
  *   node tests/koreader_lua_runner.js                     跑 tests/koreader_lua_spec.lua
  *   node tests/koreader_lua_runner.js --probe             跑完再输出一行探针结果（JSON）
  *   node tests/koreader_lua_runner.js --daily-sql 123     输出设备上真正执行的那条 SQL（原始字节）
+ *   node tests/koreader_lua_runner.js --syntax <文件>     只编译不执行（抓 main.lua 的低级错误）
+ *   node tests/koreader_lua_runner.js --collect-days <json>
+ *          把一份「查询结果」喂给 report.lua 的纯函数，返回 JSON（跨语言对拍用）
  *
  * 沙箱里没有真的 Lua 解释器（Kindle 上才有），fengari 就是替身。
  * 退出码：0 = 全部通过；1 = 有用例失败；2 = runner 自己没跑起来。
@@ -60,8 +63,31 @@ try {
 const dailySqlIdx = process.argv.indexOf('--daily-sql');
 const dailySqlMode = dailySqlIdx !== -1;
 
+/*
+ * --syntax：只**编译**一个 Lua 文件，**不执行**。
+ * 用来抓 main.lua / _meta.lua 里的低级错误（关键字拼错、括号不配、end 少一个）。
+ */
+const syntaxIdx = process.argv.indexOf('--syntax');
+const syntaxMode = syntaxIdx !== -1;
+
 const L = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(L);
+
+if (syntaxMode) {
+  const file = process.argv[syntaxIdx + 1];
+  if (!file) {
+    die('--syntax 后面要跟一个文件路径');
+  }
+  const source = readText(file, '要编译的文件');
+  // luaL_loadstring 只编译不执行 ⇒ 顶层的 require 不会被调用
+  const status = lauxlib.luaL_loadstring(L, to_luastring(source));
+  if (status !== lua.LUA_OK) {
+    console.error('编译失败：' + file + ' :: ' + to_jsstring(lua.lua_tostring(L, -1)));
+    process.exit(1);
+  }
+  console.log('编译通过：' + file);
+  process.exit(0);
+}
 
 /** 把一个字符串塞进全局变量（spec 里直接读，不用 io —— fengari 的 io 是残的） */
 function setGlobal(name, value) {
@@ -74,7 +100,7 @@ setGlobal('DAYS_FIXTURE', fixture);
 setGlobal('WIRE_CASES', wireCasesBody);
 setGlobal('KOREADER_PER', String(per));
 /* --daily-sql 模式下 stdout 只放 SQL ⇒ 断言集别往 stdout 打印明细 */
-setGlobal('SILENT', dailySqlMode ? '1' : '0');
+setGlobal('SILENT', (dailySqlMode || process.argv.includes('--collect-days')) ? '1' : '0');
 
 const status = lauxlib.luaL_dofile(L, to_luastring(SPEC));
 if (status !== lua.LUA_OK) {
@@ -113,6 +139,75 @@ function callStringFunction(name, arg) {
 
 const passed = readIntField('passed');
 const failed = readIntField('failed');
+
+/*
+ * --collect-days <json>：把一份「查询结果」喂给 report.lua 的纯函数，
+ * 再把结果原样吐回 JSON（给 Python 侧做跨语言对拍）。
+ *
+ * json 的形状：{"fn": "collect_days", "cols": [[第1列], [第2列], ...]}
+ * —— **「每一列一个数组」**，正是 ljsqlite3 的 conn:exec() 返回的那种形状。
+ */
+const collectIdx = process.argv.indexOf('--collect-days');
+if (collectIdx !== -1) {
+  if (failed > 0) {
+    die('断言集有失败用例，collect 模式不可信');
+  }
+  const raw = process.argv[collectIdx + 1];
+  if (!raw) {
+    die('--collect-days 后面要跟一份 JSON');
+  }
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (err) {
+    die('--collect-days 的参数不是合法 JSON：' + err.message);
+  }
+  const fnName = payload.fn || 'collect_days';
+  const cols = payload.cols || [];
+
+  /* 建 res 表：res[列号][行号] */
+  lua.lua_newtable(L);
+  for (let c = 0; c < cols.length; c++) {
+    lua.lua_newtable(L);
+    const arr = cols[c] || [];
+    for (let r = 0; r < arr.length; r++) {
+      const v = arr[r];
+      if (v === null || v === undefined) {
+        lua.lua_pushnil(L);
+      } else if (typeof v === 'number') {
+        lua.lua_pushnumber(L, v);
+      } else if (typeof v === 'boolean') {
+        lua.lua_pushboolean(L, v);
+      } else {
+        lua.lua_pushstring(L, to_luastring(String(v)));
+      }
+      lua.lua_rawseti(L, -2, r + 1);
+    }
+    lua.lua_rawseti(L, -2, c + 1);
+  }
+  lua.lua_setglobal(L, to_luastring('RES_TABLE'));
+
+  lua.lua_getfield(L, 1, to_luastring(fnName));
+  if (lua.lua_pcall(L, 0, 1, 0) !== lua.LUA_OK) {
+    die(fnName + ' 调用失败：' + to_jsstring(lua.lua_tostring(L, -1)));
+  }
+  /* 结果是一个 {日期 = 数字} 的表 ⇒ 序列化成 JSON */
+  const out = {};
+  lua.lua_pushnil(L);
+  while (lua.lua_next(L, -2) !== 0) {
+    const key = to_jsstring(lua.lua_tostring(L, -2));
+    const value = lua.lua_tonumber(L, -1);
+    lua.lua_pop(L, 1);   // 弹掉值，键留给下一次 lua_next
+    out[key] = value;
+  }
+  lua.lua_pop(L, 1);
+  try {
+    fs.writeSync(1, Buffer.from(JSON.stringify(out), 'utf8'));
+  } catch (err) {
+    if (err && err.code !== 'EPIPE') throw err;
+  }
+  process.exit(0);
+}
 
 if (dailySqlMode) {
   if (failed > 0) {

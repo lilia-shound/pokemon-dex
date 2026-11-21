@@ -104,6 +104,40 @@ def lua_daily_sql(node: str, since: int) -> str:
     return sql
 
 
+def lua_compile(node: str, path: pathlib.Path) -> subprocess.CompletedProcess:
+    """只**编译**一个 Lua 文件（不执行）—— 抓 main.lua 里的低级错误。
+
+    走 runner 的 ``--syntax`` 模式：``luaL_loadstring`` 只编译不执行 ⇒
+    顶层的 ``require`` 不会被调用（沙箱里根本没有 KOReader 的模块）。
+    """
+    return run_runner(node, "--syntax", str(path))
+
+
+def lua_collect(node: str, fn: str, cols: list[list]) -> dict:
+    """让 Lua 侧（report.lua 的 ``Report.collect_days`` / ``Report.collect_pages``）
+    处理一份「查询结果」，返回 ``{日期: 数字}``。
+
+    ``cols`` 是**「每一列一个数组」**的形状 —— 正是 ljsqlite3 的
+    ``conn:exec(sql)`` 返回的那种（不是行数组）。
+
+    走 runner 的 ``--collect-days`` 模式：结果表由 runner 塞进 Lua 的
+    全局 ``RES_TABLE``，再把返回值序列化成 JSON 吐回来。
+    """
+    payload = json.dumps({"fn": fn, "cols": cols})
+    proc = run_runner(node, "--collect-days", payload)
+    if proc.returncode != 0:
+        raise AssertionError(
+            "%s 调用失败（退出码 %d）\nstdout:\n%s\nstderr:\n%s"
+            % (fn, proc.returncode, proc.stdout, proc.stderr)
+        )
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            "%s 没有返回 JSON：%s\nstdout:\n%s" % (fn, exc, proc.stdout)
+        ) from exc
+
+
 def read_wire_cases() -> list[str]:
     """读线格式的用例文件（一行一条线）。
 

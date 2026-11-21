@@ -108,7 +108,8 @@ class KoreaderLuaTest(unittest.TestCase):
         proc = self.run_runner()
         for fn in ("encode_days", "decode_days", "short_url", "to_minutes",
                    "pick_days", "credits", "DAILY_SQL", "daily_sql",
-                   "MAX_MINUTES_PER_DAY"):
+                   "MAX_MINUTES_PER_DAY", "collect_days", "collect_pages",
+                   "filter_dates"):
             self.assertIn(fn, proc.stdout, "断言集里没有 %s 的用例" % fn)
 
     def test_fixture_roundtrips_in_lua(self):
@@ -194,6 +195,115 @@ class KoreaderLuaTest(unittest.TestCase):
         self.assertEqual(self.probe["max_per_day"], cfg["sources"]["koreader"]["maxPerDay"])
 
 
+class KoreaderCollectTest(unittest.TestCase):
+    """`Report.collect_days` / `Report.collect_pages` 的跨语言对拍。
+
+    Lua 侧跑的是 report.lua 里的真函数；Python 侧是**独立实现**的同一套规则
+    （秒 → 分钟，向下取整）—— 两边对不上就说明有一边错了。
+
+    还要**端到端**对一次：拿真的 SQL（插件那条 DAILY_SQL）在假库上查出来的行，
+    折成 ljsqlite3 那种「每一列一个数组」的形状喂给 Lua ⇒
+    这样连**列号**（第 1 列日期 / 第 2 列页数 / 第 3 列秒数）都对上了才算数。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = bridge.find_node()
+        if not cls.node:
+            raise unittest.SkipTest("找不到 node，跳过 KOReader Lua 单测")
+        if not bridge.fengari_available(cls.node):
+            raise unittest.SkipTest("找不到 fengari（npm install 没跑），跳过 KOReader Lua 单测")
+
+    # -- 跑 Lua 侧 ---------------------------------------------------------
+
+    def lua_collect(self, fn: str, cols: list[list]) -> dict:
+        """让 Lua 侧处理一份查询结果。"""
+        return bridge.lua_collect(self.node, fn, cols)
+
+    @staticmethod
+    def to_columns(rows: list[tuple]) -> list[list]:
+        """把行数组折成「每一列一个数组」（ljsqlite3 的 conn:exec 返回的形状）。"""
+        cols: list[list] = [[] for _ in range(4)]
+        for row in rows:
+            for i, value in enumerate(row):
+                cols[i].append(value)
+        return cols
+
+    # -- 用例 ---------------------------------------------------------------
+
+    def test_collect_days_matches_the_python_reference(self):
+        """同一份查询结果，两边解出来的分钟数必须一样。"""
+        cols = [
+            ["2026-11-21", "2026-11-20"],
+            [3, 8],
+            [1500, 720],
+            [1766275200, 1766188800],
+        ]
+        # Python 侧的独立实现：秒 → 分钟，向下取整
+        expected = {d: s // 60 for d, s in zip(cols[0], cols[2])}
+        self.assertEqual(expected, {"2026-11-21": 25, "2026-11-20": 12})
+        self.assertEqual(self.lua_collect("collect_days", cols), expected)
+
+    def test_collect_days_floors_seconds_to_minutes(self):
+        """秒数向下取整（119 秒 → 1 分钟，59 秒 → 0 分钟）。"""
+        cols = [["2026-11-21"], [1], [119], [0]]
+        self.assertEqual(self.lua_collect("collect_days", cols), {"2026-11-21": 1})
+        cols = [["2026-11-21"], [1], [59], [0]]
+        self.assertEqual(self.lua_collect("collect_days", cols), {"2026-11-21": 0})
+
+    def test_collect_days_on_an_empty_result(self):
+        """空结果 ⇒ 空表（不是 nil，也不是炸）。"""
+        self.assertEqual(self.lua_collect("collect_days", []), {})
+        self.assertEqual(self.lua_collect("collect_pages", []), {})
+
+    def test_collect_pages_matches_the_python_reference(self):
+        """页数取的是第 2 列。"""
+        cols = [
+            ["2026-11-21", "2026-11-20"],
+            [3, 8],
+            [1500, 720],
+            [1766275200, 1766188800],
+        ]
+        expected = {d: p for d, p in zip(cols[0], cols[1])}
+        self.assertEqual(self.lua_collect("collect_pages", cols), expected)
+
+    def test_collect_agrees_with_the_rows_the_real_sql_returns(self):
+        """**端到端**：真 SQL 查出来的行 ⇒ Lua 整理出来的分钟数/页数。
+
+        这一条把「列号」也盯住了：日期取第 1 列、页数第 2 列、秒数第 3 列 ——
+        写错一个下标的话，这里立刻红（而不是在真机上悄悄报出错的数字）。
+        """
+        from tests.test_koreader_sql import (
+            DAY_START,
+            add_book,
+            add_reading,
+            device_timezone,
+            make_db,
+        )
+
+        db = make_db()
+        add_book(db, 1, pages=100)
+        add_reading(db, 1, page=5, start_time=DAY_START, duration=300, total_pages=100)
+        add_reading(db, 1, page=6, start_time=DAY_START + 60, duration=120, total_pages=100)
+        add_reading(db, 1, page=7, start_time=DAY_START + 86400, duration=1500, total_pages=100)
+
+        sql = bridge.lua_daily_sql(self.node, 0)
+        with device_timezone("UTC-8"):     # 设备在台州 = UTC+8
+            rows = db.execute(sql).fetchall()
+
+        cols = self.to_columns(rows)
+        self.assertEqual(
+            self.lua_collect("collect_days", cols),
+            {"2026-11-22": 25, "2026-11-21": 7},
+            "Lua 侧整理出来的分钟数与真 SQL 的行对不上",
+        )
+        self.assertEqual(
+            self.lua_collect("collect_pages", cols),
+            {"2026-11-22": 1, "2026-11-21": 2},
+            "Lua 侧整理出来的页数与真 SQL 的行对不上",
+        )
+
+
 class KoreaderReportSourceTest(unittest.TestCase):
     """report.lua 这个文件本身的形状（不需要 Lua 解释器）。"""
 
@@ -212,7 +322,8 @@ class KoreaderReportSourceTest(unittest.TestCase):
     def test_report_lua_defines_every_pure_function(self):
         """brief 里点名的纯逻辑，report.lua 里都要有对应的函数。"""
         for fn in ("encode_days", "decode_days", "short_url", "to_minutes",
-                   "pick_days", "credits", "daily_sql"):
+                   "pick_days", "credits", "daily_sql", "collect_days",
+                   "collect_pages", "filter_dates"):
             self.assertIn(f"function Report.{fn}(", self.text, "少了 Report.%s" % fn)
 
     def test_report_lua_has_the_daily_sql_constant(self):

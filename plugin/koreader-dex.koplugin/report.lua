@@ -125,6 +125,83 @@ function Report.to_minutes(seconds)
     return math.floor((tonumber(seconds) or 0) / 60)
 end
 
+--- 把 ljsqlite3 的查询结果整理成 {日期 = 分钟}
+---
+--- **查询结果的形状要记牢**：ljsqlite3 的 `conn:exec(sql)` 返回的是
+--- **「每一列一个数组」的表**，不是行数组：
+---     res[1][i] = 日期字符串（DAILY_SQL 的第 1 列）
+---     res[2][i] = 页数（第 2 列）
+---     res[3][i] = 时长秒数（第 3 列）
+---     res[4][i] = 起始时间戳（第 4 列）
+--- （列号比列名稳 —— 用列名的话，SQL 里改了别名这里就悄悄空了。）
+---
+--- 这个函数是**纯的**（不碰 DB、不碰 KOReader）⇒ 能在沙箱里用 fengari 单测 ✓
+---
+--- **0 分钟的天会留着**（秒数不够一分钟就是 0）——
+--- 要不要留是「要不要报」的问题，交给 `Report.pick_days` 决定 ✓
+---
+--- @param res table|nil conn:exec() 的返回值
+--- @return table<string, number> {["2026-11-21"] = 25}（分钟，向下取整）
+function Report.collect_days(res)
+    local days = {}
+    if not res then return days end
+    local dates = res[1]
+    local durations = res[3]
+    if not dates then return days end
+    for i = 1, #dates do
+        local date = dates[i]
+        if date then
+            days[tostring(date)] = Report.to_minutes(durations and durations[i] or 0)
+        end
+    end
+    return days
+end
+
+--- 把 ljsqlite3 的查询结果整理成 {日期 = 页数}
+---
+--- 与 `Report.collect_days` 读的是**同一个结果表**（第 2 列）——
+--- 自检那张表要显示页数（跟内置 statistics 的页数逐天对照）✓
+---
+--- @param res table|nil conn:exec() 的返回值
+--- @return table<string, number> {["2026-11-21"] = 3}（页）
+function Report.collect_pages(res)
+    local pages = {}
+    if not res then return pages end
+    local dates = res[1]
+    local counts = res[2]
+    if not dates then return pages end
+    for i = 1, #dates do
+        local date = dates[i]
+        if date then
+            pages[tostring(date)] = math.floor(tonumber(counts and counts[i] or 0) or 0)
+        end
+    end
+    return pages
+end
+
+--- 只留下日期落在 [lower, upper] 里的天
+---
+--- 日期是 "YYYY-MM-DD"（SQLite 的 strftime('%Y-%m-%d') 出来的，零填充 ✓）
+--- ⇒ **字符串比大小就是比日期先后** ✓
+---
+--- 为什么要它：内置 statistics 的「Last week by day」用的是**本地零点**窗口，
+--- 我们的查询窗口是滚动窗口 ⇒ 两边可能差一天。
+--- 按日历日切一刀，两边的「是哪几天」就严格一致了（对账用）✓
+---
+--- @param days table<string, number>
+--- @param lower string|nil 起始日期（含）；nil = 不限
+--- @param upper string|nil 结束日期（含）；nil = 不限
+--- @return table<string, number>
+function Report.filter_dates(days, lower, upper)
+    local out = {}
+    for d, m in pairs(days or {}) do
+        if (not lower or d >= lower) and (not upper or d <= upper) then
+            out[d] = m
+        end
+    end
+    return out
+end
+
 --- 取最近 max_days 天（有分钟数的才要），日期倒序
 -- @param all_days table<string, number>
 -- @param max_days number|nil 上限（认不出来的数就当「没有上限」）

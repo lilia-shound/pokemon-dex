@@ -363,6 +363,98 @@ case("daily_sql 负的 epoch 也照样填进去", function()
 end)
 
 ------------------------------------------------------------------
+-- collect_days / collect_pages：把查询结果整理成 {日期 = 分钟/页数}
+--
+-- ljsqlite3 的 conn:exec() 返回的是**「每一列一个数组」的表**，不是行数组：
+--     res[1][i] = 日期、res[2][i] = 页数、res[3][i] = 秒数、res[4][i] = 时间戳
+------------------------------------------------------------------
+
+-- 一份典型的查询结果（DAILY_SQL 的四列）
+local RES = {
+    { "2026-11-21", "2026-11-20" },        -- 第 1 列：日期
+    { 3, 8 },                              -- 第 2 列：页数
+    { 1500, 720 },                         -- 第 3 列：秒数
+    { 1766275200, 1766188800 },            -- 第 4 列：起始时间戳
+}
+
+case("collect_days 把秒数折成分钟", function()
+    local days = Report.collect_days(RES)
+    eq(days["2026-11-21"], 25, "2026-11-21 的分钟")
+    eq(days["2026-11-20"], 12, "2026-11-20 的分钟")
+end)
+
+case("collect_days 分钟向下取整", function()
+    local days = Report.collect_days({
+        { "2026-11-21" }, { 1 }, { 119 }, { 0 },
+    })
+    eq(days["2026-11-21"], 1, "119 秒 → 1 分钟")
+end)
+
+case("collect_days 0 分钟的天留着（要不要报交给 pick_days 决定）", function()
+    local days = Report.collect_days({
+        { "2026-11-21" }, { 1 }, { 59 }, { 0 },
+    })
+    eq(days["2026-11-21"], 0, "59 秒 → 0 分钟，但那天还在表里")
+    -- pick_days 会把 0 分钟的天丢掉
+    eq(next(Report.pick_days(days, 7)), nil, "pick_days 之后就没了")
+end)
+
+case("collect_days 认不出的数当 0", function()
+    local days = Report.collect_days({
+        { "2026-11-21" }, { 1 }, { "abc" }, { 0 },
+    })
+    eq(days["2026-11-21"], 0, "非数字的秒数当 0")
+end)
+
+case("collect_days 缺列/空表不炸", function()
+    eq(next(Report.collect_days(nil)), nil, "nil")
+    eq(next(Report.collect_days({})), nil, "空表")
+    -- 只有日期列（秒数列整个没有）⇒ 那天的秒数当 0
+    local only_dates = Report.collect_days({ { "2026-11-21" } })
+    eq(only_dates["2026-11-21"], 0, "只有日期列 ⇒ 0 分钟")
+    -- 各列的行数对不上 ⇒ 少的那个当 0，不抛错
+    local days = Report.collect_days({
+        { "2026-11-21", "2026-11-20" }, { 3 }, { 1500 }, { 0 },
+    })
+    eq(days["2026-11-21"], 25, "第一行照常")
+    eq(days["2026-11-20"], 0, "第二行没有秒数 ⇒ 0 分钟")
+end)
+
+case("collect_pages 把第 2 列整理成页数", function()
+    local pages = Report.collect_pages(RES)
+    eq(pages["2026-11-21"], 3, "2026-11-21 的页数")
+    eq(pages["2026-11-20"], 8, "2026-11-20 的页数")
+    eq(next(Report.collect_pages(nil)), nil, "nil")
+end)
+
+------------------------------------------------------------------
+-- filter_dates：只留下落在某个日历日窗口里的天
+------------------------------------------------------------------
+
+case("filter_dates 按日期窗口切一刀", function()
+    local days = {
+        ["2026-11-21"] = 25,
+        ["2026-11-20"] = 50,
+        ["2026-11-01"] = 10,
+    }
+    local got = Report.filter_dates(days, "2026-11-15", "2026-11-21")
+    eq(Report.encode_days(got), "2026-11-21:25,2026-11-20:50", "窗口里的两天")
+end)
+
+case("filter_dates 两端都含", function()
+    local days = { ["2026-11-21"] = 25, ["2026-11-15"] = 10 }
+    local got = Report.filter_dates(days, "2026-11-15", "2026-11-21")
+    eq(Report.encode_days(got), "2026-11-21:25,2026-11-15:10", "两端都在")
+end)
+
+case("filter_dates nil 边界 = 不限", function()
+    local days = { ["2026-11-21"] = 25 }
+    eq(Report.encode_days(Report.filter_dates(days, nil, nil)), "2026-11-21:25", "都不限")
+    eq(Report.encode_days(Report.filter_dates(days, "2026-11-22", nil)), "", "下界在后面 ⇒ 空")
+    eq(Report.encode_days(Report.filter_dates(nil, "2026-01-01", nil)), "", "nil")
+end)
+
+------------------------------------------------------------------
 -- 跨语言探针：Python 侧要拿同一份结果做对照
 ------------------------------------------------------------------
 
@@ -434,4 +526,7 @@ return {
     probe_cases = probe_cases,
     -- 给 runner 的 --daily-sql 模式用：设备上真正执行的那条 SQL
     daily_sql = function(since) return Report.daily_sql(since) end,
+    -- 给 runner 的 --collect-days 模式用：结果表由 runner 塞进全局 RES_TABLE
+    collect_days = function() return Report.collect_days(RES_TABLE) end,
+    collect_pages = function() return Report.collect_pages(RES_TABLE) end,
 }
