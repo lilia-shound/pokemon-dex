@@ -66,18 +66,31 @@
         "weread"
       ],
       "form": "0373"
+    },
+    {
+      "id": "0471",
+      "nameZh": "冰伊布",
+      "shiny": false,
+      "at": "2026-11-21T19:24:08.986564+08:00",
+      "date": "2026-11-21",
+      "sources": [
+        "weread",
+        "pom"
+      ],
+      "form": "0471"
     }
   ],
-  "streak": 1,
-  "lastAwardDate": "2026-11-20",
+  "streak": 2,
+  "lastAwardDate": "2026-11-21",
   "today": {
-    "date": "2026-11-20",
-    "seconds": 1071,
+    "date": "2026-11-21",
+    "seconds": 1245,
     "threshold": 1800,
     "sources": {
-      "weread": 1071
+      "weread": 1245,
+      "pom": 25
     },
-    "credit": 1,
+    "credit": 2,
     "perAward": 2
   },
   "ledger": {
@@ -100,14 +113,22 @@
       "weread": 121
     },
     "2026-11-20": {
-      "weread": 1071
+      "weread": 1796
+    },
+    "2026-11-21": {
+      "weread": 1245,
+      "pom": 25
     }
   },
   "chains": {
     "宝贝龙": {
       "firstDate": "2026-11-20",
       "lastShinyDate": null
+    },
+    "伊布": {
+      "firstDate": "2026-11-21",
+      "lastShinyDate": null
     }
   },
-  "updatedAt": "2026-11-20T19:36:18.749461+08:00"
+  "updatedAt": "2026-11-21T19:24:08.986564+08:00"
 }
