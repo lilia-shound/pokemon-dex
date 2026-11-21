@@ -1,0 +1,8 @@
+{
+  "name": "pokemon-dex-dev",
+  "private": true,
+  "description": "沙箱里的开发工具：fengari 用来跑 KOReader 插件的 Lua 单元测试",
+  "devDependencies": {
+    "fengari": "^0.1.4"
+  }
+}

@@ -1,6 +1,7 @@
 .cache/
 __pycache__/
 *.pyc
+node_modules/
 site-preview.png
 plugin-preview.png
 .DS_Store
