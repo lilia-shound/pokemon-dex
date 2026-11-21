@@ -31,6 +31,15 @@
       "mode": "push",
       "enabled": false,
       "maxPerDay": 500
+    },
+    "koreader": {
+      "name": "KOReader",
+      "icon": "📚",
+      "unit": "分钟",
+      "per": 15,
+      "mode": "push",
+      "enabled": true,
+      "maxPerDay": 1440
     }
   }
 }
