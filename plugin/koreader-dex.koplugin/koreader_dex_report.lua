@@ -1,10 +1,16 @@
 --[[--
-纯逻辑：拼短链、格式化天数、SQL 常量。
+纯逻辑：拼短链、格式化天数、SQL 常量、日历窗口。
 
 **刻意不 require 任何 KOReader 模块** —— 这样这一整个文件能在沙箱里
 （用 fengari 这个 Lua VM）跑单元测试，不必等上真机才发现拼错了 URL。
 
 KOReader 插件里凡是「能脱离 KOReader 单独算」的部分，都放这里。
+
+**文件名为什么带前缀**：KOReader 会把**所有**插件目录都加进 package.path
+（上游 frontend/pluginloader.lua：`package.path = package.path .. ";" .. plugin.path .. "/?.lua"`），
+所以 `require("report")` 这种**太通用的名字**会被别的插件的同名文件抢走
+（谁先被加进 package.path 谁赢）⇒ 我们的模块会被静默替换成别人的。
+故取一个全局唯一的名字。
 --]]--
 
 local Report = {}
@@ -252,6 +258,146 @@ function Report.credits(days, per, max_per_day)
         total = total + math.floor(amount / p)
     end
     return total
+end
+
+------------------------------------------------------------------
+-- 日历窗口：最近 N 天（含今天）
+--
+-- **时钟是参数**（now_stamp）：调用方自己传 os.time()。
+-- 这样这段纯日历逻辑能脱离 KOReader 在沙箱里测（fengari）——
+-- 日历边界一旦算错，表现是「少一天/多一天」：不会崩，
+-- 只会静默报出错的窗口 ⇒ 对账时被她误判成「口径不一致」。
+------------------------------------------------------------------
+
+-- 每个月的天数（2 月按闰年算）
+local MONTH_DAYS = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+
+--- 闰年判定（公历：四年一闰，百年不闰，四百年再闰）
+--- @param year number
+--- @return boolean
+local function is_leap_year(year)
+    local y = math.floor(tonumber(year) or 0)
+    return (y % 4 == 0 and y % 100 ~= 0) or (y % 400 == 0)
+end
+
+--- 某年某月有几天
+--- @param year number
+--- @param month number 1..12
+--- @return number
+local function days_in_month(year, month)
+    if month == 2 and is_leap_year(year) then
+        return 29
+    end
+    return MONTH_DAYS[month] or 0
+end
+
+--- 两位数补零（月份/日期）
+---
+--- **不用 string.format**：report.lua 里只准有 Report.daily_sql 一处 string.format
+--- （SQL 的格式化要收口在一个入口，有测试盯着）。
+--- @param n number
+--- @return string
+local function pad2(n)
+    local i = math.floor(tonumber(n) or 0)
+    if i < 10 then
+        return "0" .. tostring(i)
+    end
+    return tostring(i)
+end
+
+--- 年月日 → "YYYY-MM-DD"
+--- @param year number
+--- @param month number
+--- @param day number
+--- @return string
+local function format_date(year, month, day)
+    return tostring(math.floor(tonumber(year) or 0)) .. "-" .. pad2(month) .. "-" .. pad2(day)
+end
+
+--- 把 "YYYY-MM-DD" 加减若干天（**纯日历算术**，不碰时区）
+---
+--- 为什么自己算，而不用 `os.time{day = 现在的日 - N}` 让 mktime 去归一：
+---   - os.time 走 mktime，跨月跨年能不能归一**取决于操作系统**；
+---     而且本地午夜正好落在夏令时切换的那个小时里时，mktime 会返回 -1
+---     （Lua 的 os.time 直接抛错）⇒ 插件会在真机上炸。
+---   - 这里纯算术 ⇒ 结果只跟日历有关，与时区、夏令时、操作系统都无关
+---     ⇒ 沙箱里能逐个边界测（跨月、跨年、闰年）。
+---
+--- @param date_str string "YYYY-MM-DD"
+--- @param delta number 要加减的天数（正数往后，负数往前）
+--- @return string "YYYY-MM-DD"（输入不是合法日期就原样返回）
+function Report.date_shift(date_str, delta)
+    local y, m, d = tostring(date_str or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+    if not y then
+        return date_str
+    end
+    y, m, d = math.floor(tonumber(y)), math.floor(tonumber(m)), math.floor(tonumber(d))
+    local step = math.floor(tonumber(delta) or 0)
+    while step > 0 do
+        d = d + 1
+        if d > days_in_month(y, m) then
+            d = 1
+            m = m + 1
+            if m > 12 then
+                m = 1
+                y = y + 1
+            end
+        end
+        step = step - 1
+    end
+    while step < 0 do
+        d = d - 1
+        if d < 1 then
+            m = m - 1
+            if m < 1 then
+                m = 12
+                y = y - 1
+            end
+            d = days_in_month(y, m)
+        end
+        step = step + 1
+    end
+    return format_date(y, m, d)
+end
+
+--- 时间戳 → **本地**日历日（"YYYY-MM-DD"）
+---
+--- 本地（不是 UTC）：内置 statistics 就是按**设备本地时区**分天的
+--- （上游 sqlDaily() 里的 strftime(..., 'localtime')）⇒ 两边必须一样。
+---
+--- @param now_stamp number 当前时刻（epoch 秒）；给不了就用系统当前时间
+--- @return string "YYYY-MM-DD"
+function Report.local_date(now_stamp)
+    local stamp = tonumber(now_stamp)
+    if not stamp then
+        stamp = os.time()
+    end
+    return os.date("%Y-%m-%d", stamp)
+end
+
+--- 窗口下界：今天往前推 count-1 天的**本地日历日**（"YYYY-MM-DD"）
+---
+--- 为什么不用「现在往前推 count 天」那种滚动窗口：
+--- 内置 statistics 的「Last week / Last month by day」用的就是**本地零点**窗口
+--- （上游 getDatesFromAll：period_begin = now_stamp - (sdays-1)*86400 - 当天已过的秒数），
+--- 我们跟它一模一样 ⇒ 两边的「是哪几天」严格相同（对账时不会多出一天、少一天）。
+---
+--- @param now_stamp number 当前时刻（epoch 秒）—— **时钟由调用方传进来**
+--- @param count number 窗口天数（含两端）
+--- @return string "YYYY-MM-DD"
+function Report.window_lower(now_stamp, count)
+    local n = math.floor(tonumber(count) or 1)
+    if n < 1 then
+        n = 1
+    end
+    return Report.date_shift(Report.local_date(now_stamp), -(n - 1))
+end
+
+--- 窗口上界：今天（本地日历日，"YYYY-MM-DD"）
+--- @param now_stamp number 当前时刻（epoch 秒）—— **时钟由调用方传进来**
+--- @return string "YYYY-MM-DD"
+function Report.window_upper(now_stamp)
+    return Report.local_date(now_stamp)
 end
 
 return Report

@@ -1,9 +1,10 @@
-"""Python → fengari 的桥：让 Python 侧能直接问 Lua（report.lua）要答案。
+"""Python → fengari 的桥：让 Python 侧能直接问 Lua（koreader_dex_report.lua）要答案。
 
 沙箱里没有真的 Lua 解释器（Kindle 上才有），fengari 就是替身：
     node tests/koreader_lua_runner.js            跑断言集
     node tests/koreader_lua_runner.js --probe    再输出一行探针 JSON
     node tests/koreader_lua_runner.js --daily-sql 123   输出设备上真正执行的那条 SQL
+    node tests/koreader_lua_runner.js --window <时间戳> <天数>   问日历窗口的上下界
 
 **为什么抽出来**：现在有两个测试文件都要调 Lua（断言集那边要探针，
 SQL 那边要 Lua 格式化出来的 SQL），各写一份「怎么找 node、怎么调 runner」
@@ -83,7 +84,7 @@ def run_probe(node: str) -> dict:
 
 
 def lua_daily_sql(node: str, since: int) -> str:
-    """让 Lua 侧（report.lua 的 ``Report.daily_sql``）格式化出设备上真正执行的那条 SQL。
+    """让 Lua 侧（koreader_dex_report.lua 的 ``Report.daily_sql``）格式化出设备上真正执行的那条 SQL。
 
     走 runner 的 ``--daily-sql`` 模式：**原始字节**，不过 JSON ——
     JSON 转义一旦有 bug，SQL 就会被悄悄改掉，而我们要的是字节级一致。
@@ -114,7 +115,7 @@ def lua_compile(node: str, path: pathlib.Path) -> subprocess.CompletedProcess:
 
 
 def lua_collect(node: str, fn: str, cols: list[list]) -> dict:
-    """让 Lua 侧（report.lua 的 ``Report.collect_days`` / ``Report.collect_pages``）
+    """让 Lua 侧（koreader_dex_report.lua 的 ``Report.collect_days`` / ``Report.collect_pages``）
     处理一份「查询结果」，返回 ``{日期: 数字}``。
 
     ``cols`` 是**「每一列一个数组」**的形状 —— 正是 ljsqlite3 的
@@ -150,3 +151,55 @@ def read_wire_cases() -> list[str]:
     if not text:
         return []
     return text.split("\n")
+
+
+def strip_lua_comments(text: str) -> str:
+    """去掉 Lua 的注释，只留**代码**。
+
+    静态检查要用它：**注释里提到某个 API 不算数**，代码里真的用了才算。
+    （比如插件主体里会写「`require("report")` 这种通用名会被别的插件抢走」——
+    这种说明性的注释不该被当成「真的 require 了 report」。）
+
+    处理两种注释：
+      - `--[[ ... ]]` 长注释（含嵌套的写法不管）；
+      - `--` 到行尾。
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("--[[", i):
+            end = text.find("]]", i + 4)
+            i = n if end == -1 else end + 2
+            continue
+        if text.startswith("--", i):
+            end = text.find("\n", i)
+            i = n if end == -1 else end
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def lua_window(node: str, now_stamp: int, count: int) -> dict:
+    """让 Lua 侧算日历窗口的下界/上界（跨语言对拍用）。
+
+    走 runner 的 ``--window`` 模式：把「当前时刻」当成**参数**传进去
+    （``Report.window_lower(now_stamp, count)`` / ``Report.window_upper(now_stamp)``），
+    所以结果与跑测试的机器的当前时间无关。
+
+    时区：runner 固定成 UTC（``KOREADER_TEST_TZ`` 可覆盖），
+    Python 侧要算「同一个本地日」也得用 UTC（见 tests/test_koreader_lua.py）。
+    """
+    proc = run_runner(node, "--window", str(int(now_stamp)), str(int(count)))
+    if proc.returncode != 0:
+        raise AssertionError(
+            "取 window_bounds 失败（退出码 %d）\nstdout:\n%s\nstderr:\n%s"
+            % (proc.returncode, proc.stdout, proc.stderr)
+        )
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            "window_bounds 没有返回 JSON：%s\nstdout:\n%s" % (exc, proc.stdout)
+        ) from exc

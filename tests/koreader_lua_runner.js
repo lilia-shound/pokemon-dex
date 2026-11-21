@@ -8,6 +8,8 @@
  *   node tests/koreader_lua_runner.js --syntax <文件>     只编译不执行（抓 main.lua 的低级错误）
  *   node tests/koreader_lua_runner.js --collect-days <json>
  *          把一份「查询结果」喂给 report.lua 的纯函数，返回 JSON（跨语言对拍用）
+ *   node tests/koreader_lua_runner.js --window <now_stamp> <count>
+ *          问日历窗口的下界/上界，返回 JSON（跨语言对拍用）
  *
  * 沙箱里没有真的 Lua 解释器（Kindle 上才有），fengari 就是替身。
  * 退出码：0 = 全部通过；1 = 有用例失败；2 = runner 自己没跑起来。
@@ -20,10 +22,18 @@ const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
 
 const ROOT = path.resolve(__dirname, '..');
 const SPEC = path.join(__dirname, 'koreader_lua_spec.lua');
-const REPORT = path.join(ROOT, 'plugin', 'koreader-dex.koplugin', 'report.lua');
+const REPORT = path.join(ROOT, 'plugin', 'koreader-dex.koplugin', 'koreader_dex_report.lua');
 const FIXTURE = path.join(__dirname, 'fixtures', 'koreader_days.txt');
 const WIRE_CASES = path.join(__dirname, 'fixtures', 'koreader_wire_cases.txt');
 const SOURCES_JSON = path.join(ROOT, 'data', 'sources.json');
+
+/*
+ * **时区固定成 UTC** —— Lua 的 os.date 走的是本地时区，
+ * 跑测试的机器换个时区，同一份日历断言就会飘（少一天/多一天）。
+ * 断言里的 epoch 都是按 UTC 写的（见 koreader_lua_spec.lua 的说明）。
+ * 想换时区就设环境变量 KOREADER_TEST_TZ。
+ */
+process.env.TZ = process.env.KOREADER_TEST_TZ || 'UTC';
 
 function die(msg) {
   console.error('runner 出错：' + msg);
@@ -99,8 +109,8 @@ setGlobal('REPORT_PATH', REPORT);
 setGlobal('DAYS_FIXTURE', fixture);
 setGlobal('WIRE_CASES', wireCasesBody);
 setGlobal('KOREADER_PER', String(per));
-/* --daily-sql 模式下 stdout 只放 SQL ⇒ 断言集别往 stdout 打印明细 */
-setGlobal('SILENT', (dailySqlMode || process.argv.includes('--collect-days')) ? '1' : '0');
+/* --daily-sql / --collect-days / --window 模式下 stdout 只放结果 ⇒ 断言集别往 stdout 打印明细 */
+setGlobal('SILENT', (dailySqlMode || process.argv.includes('--collect-days') || process.argv.includes('--window')) ? '1' : '0');
 
 const status = lauxlib.luaL_dofile(L, to_luastring(SPEC));
 if (status !== lua.LUA_OK) {
@@ -117,24 +127,38 @@ function readIntField(key) {
 }
 
 /**
- * 调用 spec 导出的一个函数（栈上的返回值）
+ * 调用 spec 导出的一个函数（栈上的返回值），可以传多个参数
  * @param {string} name spec 返回表里的字段名
- * @param {string|number} [arg] 一个参数（字符串或数字）
+ * @param {Array<string|number>} [args] 参数
  * @returns {string} 返回的字符串
  */
-function callStringFunction(name, arg) {
+function callStringFunctionArgs(name, args) {
   lua.lua_getfield(L, 1, to_luastring(name));
-  if (arg !== undefined) {
+  const list = args || [];
+  for (const arg of list) {
     if (typeof arg === 'string') {
       lua.lua_pushstring(L, to_luastring(arg));
     } else {
       lua.lua_pushnumber(L, arg);
     }
   }
-  if (lua.lua_pcall(L, arg === undefined ? 0 : 1, 1, 0) !== lua.LUA_OK) {
+  if (lua.lua_pcall(L, list.length, 1, 0) !== lua.LUA_OK) {
     die(name + ' 调用失败：' + to_jsstring(lua.lua_tostring(L, -1)));
   }
   return to_jsstring(lua.lua_tostring(L, -1));
+}
+
+/**
+ * 调用 spec 导出的一个函数（栈上的返回值）
+ * @param {string} name spec 返回表里的字段名
+ * @param {string|number} [arg] 一个参数（字符串或数字）
+ * @returns {string} 返回的字符串
+ */
+function callStringFunction(name, arg) {
+  if (arg === undefined) {
+    return callStringFunctionArgs(name, []);
+  }
+  return callStringFunctionArgs(name, [arg]);
 }
 
 const passed = readIntField('passed');
@@ -203,6 +227,32 @@ if (collectIdx !== -1) {
   lua.lua_pop(L, 1);
   try {
     fs.writeSync(1, Buffer.from(JSON.stringify(out), 'utf8'));
+  } catch (err) {
+    if (err && err.code !== 'EPIPE') throw err;
+  }
+  process.exit(0);
+}
+
+/*
+ * --window <now_stamp> <count>：问日历窗口的下界/上界（跨语言对拍用）。
+ *
+ * 窗口的日历边界是**唯一测得到**的部分：真机上它算错了不会崩，
+ * 只会静默报出错的窗口 ⇒ 对账时被她误判成「口径不一致」。
+ * Python 侧用 datetime 独立算一遍，两边必须一致。
+ */
+const windowIdx = process.argv.indexOf('--window');
+if (windowIdx !== -1) {
+  if (failed > 0) {
+    die('断言集有失败用例，window 模式不可信');
+  }
+  const stamp = Number(process.argv[windowIdx + 1]);
+  const count = Number(process.argv[windowIdx + 2]);
+  if (!Number.isFinite(stamp) || !Number.isFinite(count)) {
+    die('--window 后面要跟一个时间戳和一个天数');
+  }
+  const json = callStringFunctionArgs('window_bounds', [Math.trunc(stamp), Math.trunc(count)]);
+  try {
+    fs.writeSync(1, Buffer.from(json, 'utf8'));
   } catch (err) {
     if (err && err.code !== 'EPIPE') throw err;
   }

@@ -1,21 +1,25 @@
 --[[--
-report.lua 的断言集 —— **纯 Lua**，不依赖 fengari 的任何专属 API。
+koreader_dex_report.lua 的断言集 —— **纯 Lua**，不依赖 fengari 的任何专属 API。
 
 怎么跑：
     node tests/koreader_lua_runner.js        （沙箱里没有真解释器，用 fengari）
     lua   tests/koreader_lua_spec.lua         （哪天有真解释器了也能直接跑）
 
 runner 注入三个全局变量：
-    REPORT_PATH   —— report.lua 的路径（不给就用仓库根目录下的相对路径）
+    REPORT_PATH   —— koreader_dex_report.lua 的路径（不给就用仓库根目录下的相对路径）
     DAYS_FIXTURE  —— 跨语言共用的天数串（内容来自 tests/fixtures/koreader_days.txt）
     WIRE_CASES    —— 线格式的用例（一行一条，换行分隔；
                      内容来自 tests/fixtures/koreader_wire_cases.txt）
+
+**时区是固定的**：runner 会把 TZ 设成 UTC —— os.date 的结果跟着跑测试的机器的
+时区飘的话，同一份断言在别的机器上就会飘（下面的日历窗口用例全是按 UTC 写的）。
+真解释器直接跑这个文件时，请自己 `TZ=UTC lua tests/koreader_lua_spec.lua`。
 
 注意：这个文件**不许 require 任何 KOReader 模块**，也**不许用 io.open**
 （fengari 的 io 库是残的，io.open 是 nil）—— 所有外部输入都由 runner 注入。
 --]]--
 
-local Report = dofile(REPORT_PATH or "plugin/koreader-dex.koplugin/report.lua")
+local Report = dofile(REPORT_PATH or "plugin/koreader-dex.koplugin/koreader_dex_report.lua")
 
 -- 跨语言共用的 fixture：日期:分钟，逗号分隔，日期倒序
 local FIXTURE = (DAYS_FIXTURE or "2026-11-21:25,2026-11-20:50"):match("^%s*(.-)%s*$")
@@ -455,6 +459,107 @@ case("filter_dates nil 边界 = 不限", function()
 end)
 
 ------------------------------------------------------------------
+-- 日历窗口：window_lower / window_upper / date_shift
+--
+-- **为什么这几条这么要紧**：窗口的日历边界一旦算错，表现是「少一天/多一天」——
+-- 不会崩，只会静默报出错的窗口 ⇒ 对账时被她误判成「口径不一致」。
+-- 而这段逻辑是沙箱里**唯一测得到**的部分（真机上只能靠对账发现）。
+--
+-- 下面的 epoch 都是 **UTC 下当天中午**（中午 ⇒ 不会被时区/夏令时切到别的日子）；
+-- runner 把 TZ 固定成 UTC（见文件头）⇒ 断言是确定的。
+------------------------------------------------------------------
+
+local DAY = 86400
+-- 2026-01-01T00:00:00Z
+local EPOCH_2026_01_01 = 1767225600
+-- 2026-01-03T12:00:00Z（跨年用例的「今天」）
+local STAMP_JAN_03 = EPOCH_2026_01_01 + 2 * DAY + 12 * 3600
+-- 2026-03-01T12:00:00Z（跨月用例的「今天」）
+local STAMP_MAR_01 = EPOCH_2026_01_01 + 59 * DAY + 12 * 3600
+
+case("date_shift 跨月：2026-03-01 往前 29 天 = 2026-01-31", function()
+    eq(Report.date_shift("2026-03-01", -29), "2026-01-31", "跨月")
+end)
+
+case("date_shift 跨年：2026-01-03 往前 29 天 = 2025-12-05", function()
+    eq(Report.date_shift("2026-01-03", -29), "2025-12-05", "跨年")
+end)
+
+case("date_shift 月末与月初", function()
+    eq(Report.date_shift("2026-01-31", 1), "2026-02-01", "1 月 31 日 + 1 天")
+    eq(Report.date_shift("2026-03-01", -1), "2026-02-28", "3 月 1 日 - 1 天")
+    eq(Report.date_shift("2026-12-31", 1), "2027-01-01", "跨年 +1 天")
+    eq(Report.date_shift("2025-01-01", -1), "2024-12-31", "跨年 -1 天")
+end)
+
+case("date_shift 闰年", function()
+    eq(Report.date_shift("2024-02-28", 1), "2024-02-29", "2024 是闰年")
+    eq(Report.date_shift("2024-02-29", 1), "2024-03-01", "闰日 + 1 天")
+    eq(Report.date_shift("2026-02-28", 1), "2026-03-01", "2026 不是闰年")
+    eq(Report.date_shift("2024-02-29", -1), "2024-02-28", "闰日 - 1 天")
+end)
+
+case("date_shift 加 0 与非法输入", function()
+    eq(Report.date_shift("2026-03-01", 0), "2026-03-01", "加 0")
+    eq(Report.date_shift("2026-03-01", nil), "2026-03-01", "nil 当 0")
+    eq(Report.date_shift("不是日期", 1), "不是日期", "非法输入原样返回")
+    eq(Report.date_shift("2026-3-1", 1), "2026-3-1", "不是零填充的日期也不认")
+    eq(Report.date_shift(nil, 1), nil, "nil 原样返回")
+end)
+
+case("window_upper 就是今天（设备本地日历日）", function()
+    eq(Report.window_upper(STAMP_MAR_01), "2026-03-01", "2026-03-01")
+    eq(Report.window_upper(STAMP_JAN_03), "2026-01-03", "2026-01-03")
+end)
+
+case("window_lower count=1 就是今天", function()
+    eq(Report.window_lower(STAMP_MAR_01, 1), "2026-03-01", "count=1")
+    eq(Report.window_lower(STAMP_JAN_03, 1), "2026-01-03", "count=1")
+end)
+
+case("window_lower count=7 = 今天往前 6 天（两端都含）", function()
+    eq(Report.window_lower(STAMP_MAR_01, 7), "2026-02-23", "2026-03-01 往前 6 天")
+    eq(Report.window_lower(STAMP_JAN_03, 7), "2025-12-28", "2026-01-03 往前 6 天")
+    -- 另一条**独立**算的路：直接用 epoch 减 6 天（不经过日历加减）
+    eq(Report.window_lower(STAMP_MAR_01, 7), os.date("%Y-%m-%d", STAMP_MAR_01 - 6 * DAY),
+        "epoch 减 6 天")
+    -- 两端都含：窗口的第一天与最后一天都要留在表里，窗口外的那天要切掉
+    local days = { ["2026-02-23"] = 10, ["2026-03-01"] = 20, ["2026-02-22"] = 30 }
+    local got = Report.filter_dates(days,
+        Report.window_lower(STAMP_MAR_01, 7),
+        Report.window_upper(STAMP_MAR_01))
+    eq(Report.encode_days(got), "2026-03-01:20,2026-02-23:10", "两端都含")
+end)
+
+case("window_lower 跨月：2026-03-01 起 30 天 = 2026-01-31", function()
+    eq(Report.window_lower(STAMP_MAR_01, 30), "2026-01-31", "跨月")
+end)
+
+case("window_lower 跨年：2026-01-03 起 30 天 = 2025-12-05", function()
+    eq(Report.window_lower(STAMP_JAN_03, 30), "2025-12-05", "跨年")
+end)
+
+case("window_lower 天数认不出来就当 1 天", function()
+    eq(Report.window_lower(STAMP_MAR_01, nil), "2026-03-01", "nil")
+    eq(Report.window_lower(STAMP_MAR_01, "abc"), "2026-03-01", "非数字")
+    eq(Report.window_lower(STAMP_MAR_01, 0), "2026-03-01", "0 天 ⇒ 就是今天")
+    eq(Report.window_lower(STAMP_MAR_01, -3), "2026-03-01", "负数 ⇒ 就是今天")
+end)
+
+case("window_lower 的窗口长度就是 count 天（含两端）", function()
+    -- 窗口是 [今天-29, 今天] 共 30 天 ⇒ 中间不能少一天也不能多一天
+    local lower = Report.window_lower(STAMP_MAR_01, 30)
+    local upper = Report.window_upper(STAMP_MAR_01)
+    local days = {}
+    days[lower] = 1
+    days[upper] = 1
+    eq(Report.encode_days(Report.filter_dates(days, lower, upper)),
+        upper .. ":1," .. lower .. ":1", "两端都在窗口里")
+    eq(Report.date_shift(lower, 29), upper, "下界往前推 29 天正好是上界")
+    eq(Report.date_shift(lower, 30), "2026-03-02", "再多一天就出窗口了")
+end)
+
+------------------------------------------------------------------
 -- 跨语言探针：Python 侧要拿同一份结果做对照
 ------------------------------------------------------------------
 
@@ -529,4 +634,10 @@ return {
     -- 给 runner 的 --collect-days 模式用：结果表由 runner 塞进全局 RES_TABLE
     collect_days = function() return Report.collect_days(RES_TABLE) end,
     collect_pages = function() return Report.collect_pages(RES_TABLE) end,
+    -- 给 runner 的 --window 模式用：窗口的日历下界/上界（跨语言对拍用）
+    window_bounds = function(now_stamp, count)
+        local lower = Report.window_lower(now_stamp, count)
+        local upper = Report.window_upper(now_stamp)
+        return '{"lower":' .. json_str(lower) .. ',"upper":' .. json_str(upper) .. '}'
+    end,
 }

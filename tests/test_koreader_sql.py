@@ -1,9 +1,9 @@
 """用 Python 的 sqlite3 **真跑一遍**插件里那条 SQL（口径测试）。
 
-SQL 不是在测试里另抄一份 —— 是从 `plugin/koreader-dex.koplugin/report.lua`
+SQL 不是在测试里另抄一份 —— 是从 `plugin/koreader-dex.koplugin/koreader_dex_report.lua`
 里抽出来的（抄一份会把「插件改了、测试没改」这件事盖住）。
 
-**而且跑的就是 Lua 侧（report.lua 的 `Report.daily_sql`）格式化出来的那条** ——
+**而且跑的就是 Lua 侧（koreader_dex_report.lua 的 `Report.daily_sql`）格式化出来的那条** ——
 「测试执行的语句」与「设备上执行的语句」是同一条，不是两份各自维护的复刻。
 （`format_sql()` 留在这儿当**对照的独立实现**：两边必须字节级一致。）
 
@@ -30,7 +30,7 @@ import unittest
 from tests import koreader_lua_bridge as bridge
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-REPORT_LUA = ROOT / "plugin" / "koreader-dex.koplugin" / "report.lua"
+REPORT_LUA = ROOT / "plugin" / "koreader-dex.koplugin" / "koreader_dex_report.lua"
 
 # 假库里放的几个固定时刻（UTC 的 epoch）
 # 2026-11-21T00:00:00Z
@@ -103,7 +103,7 @@ DAILY_SQL_RE = re.compile(r"Report\.DAILY_SQL\s*=\s*\[\[(.*?)\]\]", re.S)
 
 
 def extract_daily_sql(text: str) -> str:
-    """从 report.lua 源码里把 DAILY_SQL 抽出来。
+    """从 koreader_dex_report.lua 源码里把 DAILY_SQL 抽出来。
 
     **不在测试里另抄一份 SQL** —— 抄了的话，插件改了 SQL 而测试没改，
     口径就悄悄跑偏了，还全绿。
@@ -116,7 +116,7 @@ def extract_daily_sql(text: str) -> str:
     """
     m = DAILY_SQL_RE.search(text)
     if not m:
-        raise AssertionError("report.lua 里找不到 Report.DAILY_SQL = [[...]]")
+        raise AssertionError("koreader_dex_report.lua 里找不到 Report.DAILY_SQL = [[...]]")
     body = m.group(1)
     if body.startswith("\n"):
         body = body[1:]
@@ -215,7 +215,7 @@ class DailySqlTest(unittest.TestCase):
     def daily_sql(self, since: int) -> str:
         """**设备上真正执行的那条 SQL**。
 
-        优先用 Lua 侧（report.lua 的 `Report.daily_sql`）格式化出来的 ——
+        优先用 Lua 侧（koreader_dex_report.lua 的 `Report.daily_sql`）格式化出来的 ——
         这样「测试跑的」与「设备跑的」是同一条语句，
         而不是两份各自维护、慢慢漂移的复刻。
         没有 node/fengari 时才退回 Python 的复刻
@@ -282,7 +282,7 @@ class DailySqlTest(unittest.TestCase):
         """测试执行的语句必须与 **Lua 格式化出来的**逐字节一致。
 
         这是「Important #1」的护栏：
-        - 执行的那条 == 插件（report.lua 的 Report.daily_sql）会执行的那条；
+        - 执行的那条 == 插件（koreader_dex_report.lua 的 Report.daily_sql）会执行的那条；
         - 两边的格式化语义也一样（Python 复刻 vs Lua 的 string.format）。
         """
         if not self.has_lua:

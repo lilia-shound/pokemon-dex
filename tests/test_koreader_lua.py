@@ -1,4 +1,4 @@
-"""KOReader 插件纯逻辑（report.lua）的单元测试。
+"""KOReader 插件纯逻辑（koreader_dex_report.lua）的单元测试。
 
 沙箱里没有 Lua 解释器，用 **fengari**（Lua 5.3 的 JS 实现）跑：
     node tests/koreader_lua_runner.js
@@ -15,6 +15,7 @@
 好坏线都在里面，Lua 侧与 Python 侧读的是同一份 ⇒ 两边不可能各自漂移。
 """
 
+import datetime
 import re
 import unittest
 
@@ -24,7 +25,7 @@ from tests import koreader_lua_bridge as bridge
 
 ROOT = bridge.ROOT
 FIXTURE = bridge.FIXTURE
-REPORT_LUA = ROOT / "plugin" / "koreader-dex.koplugin" / "report.lua"
+REPORT_LUA = ROOT / "plugin" / "koreader-dex.koplugin" / "koreader_dex_report.lua"
 SOURCES_JSON = ROOT / "data" / "sources.json"
 SPEC = bridge.SPEC
 
@@ -60,7 +61,7 @@ def encode_days(days: dict) -> str:
 
 
 class KoreaderLuaTest(unittest.TestCase):
-    """report.lua 的纯逻辑：用 fengari 跑 Lua 断言集。"""
+    """koreader_dex_report.lua 的纯逻辑：用 fengari 跑 Lua 断言集。"""
 
     @classmethod
     def setUpClass(cls):
@@ -109,7 +110,7 @@ class KoreaderLuaTest(unittest.TestCase):
         for fn in ("encode_days", "decode_days", "short_url", "to_minutes",
                    "pick_days", "credits", "DAILY_SQL", "daily_sql",
                    "MAX_MINUTES_PER_DAY", "collect_days", "collect_pages",
-                   "filter_dates"):
+                   "filter_dates", "date_shift", "window_lower", "window_upper"):
             self.assertIn(fn, proc.stdout, "断言集里没有 %s 的用例" % fn)
 
     def test_fixture_roundtrips_in_lua(self):
@@ -190,7 +191,7 @@ class KoreaderLuaTest(unittest.TestCase):
         self.assertEqual(self.probe["credits_over_cap"], server, "插件侧要跟服务端一样")
 
     def test_lua_daily_cap_matches_the_registry(self):
-        """report.lua 里的单日上限要跟服务端注册表一致（不许各写一份）。"""
+        """koreader_dex_report.lua 里的单日上限要跟服务端注册表一致（不许各写一份）。"""
         cfg = src.load_config(SOURCES_JSON)
         self.assertEqual(self.probe["max_per_day"], cfg["sources"]["koreader"]["maxPerDay"])
 
@@ -198,7 +199,7 @@ class KoreaderLuaTest(unittest.TestCase):
 class KoreaderCollectTest(unittest.TestCase):
     """`Report.collect_days` / `Report.collect_pages` 的跨语言对拍。
 
-    Lua 侧跑的是 report.lua 里的真函数；Python 侧是**独立实现**的同一套规则
+    Lua 侧跑的是 koreader_dex_report.lua 里的真函数；Python 侧是**独立实现**的同一套规则
     （秒 → 分钟，向下取整）—— 两边对不上就说明有一边错了。
 
     还要**端到端**对一次：拿真的 SQL（插件那条 DAILY_SQL）在假库上查出来的行，
@@ -304,26 +305,132 @@ class KoreaderCollectTest(unittest.TestCase):
         )
 
 
+class KoreaderWindowTest(unittest.TestCase):
+    """日历窗口（``Report.window_lower`` / ``Report.window_upper``）的跨语言对拍。
+
+    **为什么这条这么要紧**：窗口的日历边界算错了**不会崩**，
+    只会静默报出错的窗口（少一天/多一天）⇒ 对账时被她误判成「口径不一致」。
+    而这段逻辑恰好是沙箱里**唯一测得到**的部分（真机上只能靠对账发现）。
+
+    两边各算各的（免得一起漂移）：
+      - Lua 侧：``koreader_dex_report.lua`` 里的纯日历算术；
+      - Python 侧：``datetime``（独立实现）。
+    时区两边都固定成 UTC（runner 把 TZ 设成 UTC；Python 侧用 device_timezone）。
+    """
+
+    # 固定时刻：UTC 下当天中午（中午 ⇒ 不会被时区/夏令时切到别的日子）
+    STAMP_MAR_01 = 1772366400   # 2026-03-01T12:00:00Z（跨月）
+    STAMP_JAN_03 = 1767441600   # 2026-01-03T12:00:00Z（跨年）
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = bridge.find_node()
+        if not cls.node:
+            raise unittest.SkipTest("找不到 node，跳过 KOReader Lua 单测")
+        if not bridge.fengari_available(cls.node):
+            raise unittest.SkipTest("找不到 fengari（npm install 没跑），跳过 KOReader Lua 单测")
+
+    # -- 两边的实现 -------------------------------------------------------
+
+    @staticmethod
+    def python_window(now_stamp: int, count: int, tz: str = "UTC") -> dict:
+        """Python 侧的**独立实现**：用 datetime 算窗口的下界/上界。"""
+        from tests.test_koreader_sql import device_timezone
+
+        with device_timezone(tz):
+            today = datetime.datetime.fromtimestamp(now_stamp).date()
+        lower = today - datetime.timedelta(days=max(int(count), 1) - 1)
+        return {"lower": lower.isoformat(), "upper": today.isoformat()}
+
+    # -- 用例 ---------------------------------------------------------------
+
+    def test_window_matches_the_python_reference(self):
+        """Lua 侧算出来的窗口，要和 Python 用 datetime 算出来的一模一样。"""
+        cases = [
+            (self.STAMP_MAR_01, 30),    # 跨月
+            (self.STAMP_JAN_03, 30),    # 跨年
+            (self.STAMP_MAR_01, 7),     # 最近 7 天
+            (self.STAMP_MAR_01, 1),     # 今天
+            (self.STAMP_JAN_03, 365),   # 一年（跨年 + 闰年都压进去了）
+        ]
+        for stamp, count in cases:
+            with self.subTest(stamp=stamp, count=count):
+                got = bridge.lua_window(self.node, stamp, count)
+                self.assertEqual(got, self.python_window(stamp, count))
+
+    def test_window_boundaries_are_the_expected_calendar_days(self):
+        """窗口边界的**具体日期**：跨月、跨年都要落在正确的日子上。"""
+        cases = [
+            # (时刻, 天数, 下界, 上界)
+            (self.STAMP_MAR_01, 30, "2026-01-31", "2026-03-01"),   # 跨月
+            (self.STAMP_JAN_03, 30, "2025-12-05", "2026-01-03"),   # 跨年
+            (self.STAMP_MAR_01, 7, "2026-02-23", "2026-03-01"),    # 最近 7 天
+            (self.STAMP_MAR_01, 1, "2026-03-01", "2026-03-01"),    # 今天
+        ]
+        for stamp, count, lower, upper in cases:
+            with self.subTest(stamp=stamp, count=count):
+                got = bridge.lua_window(self.node, stamp, count)
+                self.assertEqual(got["lower"], lower, "窗口下界不对")
+                self.assertEqual(got["upper"], upper, "窗口上界不对")
+
+    def test_window_covers_exactly_count_days(self):
+        """窗口含两端 ⇒ 正好 count 天（少一天/多一天都要能抓住）。"""
+        for stamp, count in ((self.STAMP_MAR_01, 30), (self.STAMP_JAN_03, 30),
+                             (self.STAMP_MAR_01, 7)):
+            with self.subTest(stamp=stamp, count=count):
+                got = bridge.lua_window(self.node, stamp, count)
+                first = datetime.date.fromisoformat(got["lower"])
+                last = datetime.date.fromisoformat(got["upper"])
+                self.assertEqual((last - first).days + 1, count, "窗口天数不对")
+
+    def test_window_lower_equals_the_builtin_statistics_window(self):
+        """窗口下界要等于**内置 statistics** 用的那个本地零点。
+
+        上游 getDatesFromAll：period_begin = now_stamp - (sdays-1)*86400 - 当天已过的秒数
+        ⇒ 那是一个「本地零点」时间戳 ⇒ 它的本地日期就是窗口的第一天。
+        两边对不上 ⇒ 她的「是哪几天」跟内置不一样 ⇒ 对账必然对不上。
+        """
+        from tests.test_koreader_sql import device_timezone
+
+        for stamp, count in ((self.STAMP_MAR_01, 30), (self.STAMP_JAN_03, 30),
+                             (self.STAMP_MAR_01, 7)):
+            with self.subTest(stamp=stamp, count=count):
+                with device_timezone("UTC"):
+                    now = datetime.datetime.fromtimestamp(stamp)
+                    elapsed = now.hour * 3600 + now.minute * 60 + now.second
+                    period_begin = stamp - (count - 1) * 86400 - elapsed
+                    builtin_lower = datetime.datetime.fromtimestamp(
+                        period_begin).date().isoformat()
+                got = bridge.lua_window(self.node, stamp, count)
+                self.assertEqual(got["lower"], builtin_lower,
+                                 "窗口下界与内置 statistics 的对不上")
+
+
 class KoreaderReportSourceTest(unittest.TestCase):
-    """report.lua 这个文件本身的形状（不需要 Lua 解释器）。"""
+    """koreader_dex_report.lua 这个文件本身的形状（不需要 Lua 解释器）。"""
 
     @classmethod
     def setUpClass(cls):
         cls.text = REPORT_LUA.read_text(encoding="utf-8")
 
     def test_report_lua_does_not_require_koreader_modules(self):
-        """report.lua 不许 require 任何 KOReader 模块 —— 否则沙箱里根本跑不起来。"""
-        self.assertTrue("require(" not in self.text, "report.lua 里出现了 require")
+        """koreader_dex_report.lua 不许 require 任何 KOReader 模块 —— 否则沙箱里根本跑不起来。
+
+        只看**代码**（注释里提到 require 不算数）。
+        """
+        code = bridge.strip_lua_comments(self.text)
+        self.assertNotIn("require(", code, "koreader_dex_report.lua 里出现了 require")
 
     def test_report_lua_exports_the_report_table(self):
-        """report.lua 的最后一行得 return Report —— 插件才能 require 到它。"""
+        """koreader_dex_report.lua 的最后一行得 return Report —— 插件才能 require 到它。"""
         self.assertIn("return Report", self.text)
 
     def test_report_lua_defines_every_pure_function(self):
-        """brief 里点名的纯逻辑，report.lua 里都要有对应的函数。"""
+        """brief 里点名的纯逻辑，koreader_dex_report.lua 里都要有对应的函数。"""
         for fn in ("encode_days", "decode_days", "short_url", "to_minutes",
                    "pick_days", "credits", "daily_sql", "collect_days",
-                   "collect_pages", "filter_dates"):
+                   "collect_pages", "filter_dates", "date_shift",
+                   "window_lower", "window_upper"):
             self.assertIn(f"function Report.{fn}(", self.text, "少了 Report.%s" % fn)
 
     def test_report_lua_has_the_daily_sql_constant(self):
@@ -339,7 +446,7 @@ class KoreaderReportSourceTest(unittest.TestCase):
         """
         self.assertEqual(
             self.text.count("string.format("), 1,
-            "report.lua 里只准有 Report.daily_sql 一处 string.format",
+            "koreader_dex_report.lua 里只准有 Report.daily_sql 一处 string.format",
         )
 
     def test_spec_file_is_pure_lua(self):
