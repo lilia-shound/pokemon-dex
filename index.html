@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>训练家图鉴</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="ring" id="ring"><span id="ringText">—</span></div>
+  <div class="meta">
+    <h1>训练家图鉴</h1>
+    <p id="summary">载入中…</p>
+    <p id="streak" class="dim"></p>
+  </div>
+  <div class="todayMini" id="todayMini" hidden>
+    <span class="todayMiniLabel">今日</span>
+    <b id="todayMiniVal">0/30 分</b>
+  </div>
+</header>
+
+<section class="today" id="today" hidden>
+  <p class="todayLabel" id="todayLabel"></p>
+  <div class="card" id="todayCard"></div>
+</section>
+
+<nav class="filters" id="filters"></nav>
+
+<main class="grid" id="grid"></main>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheetInner" id="sheetInner"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

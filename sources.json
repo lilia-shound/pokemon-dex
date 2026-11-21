@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "perAward": 2,
+  "maxPerDay": 1,
+  "maxBackfill": 3,
+  "ledgerDays": 30,
+  "sources": {
+    "weread": {
+      "name": "微信读书",
+      "icon": "📖",
+      "unit": "秒",
+      "per": 900,
+      "mode": "pull",
+      "enabled": true,
+      "maxPerDay": 86400
+    },
+    "pom": {
+      "name": "番茄钟",
+      "icon": "🍅",
+      "unit": "分钟",
+      "per": 25,
+      "mode": "push",
+      "enabled": true,
+      "maxPerDay": 1440
+    },
+    "words": {
+      "name": "背单词",
+      "icon": "🔤",
+      "unit": "个",
+      "per": 20,
+      "mode": "push",
+      "enabled": false,
+      "maxPerDay": 500
+    }
+  }
+}
