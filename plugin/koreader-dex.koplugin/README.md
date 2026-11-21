@@ -25,10 +25,18 @@ plugins/
 
 **插件文件从哪儿拿**（不用去 GitHub 仓库里翻）：
 
-- 线上已经发布好了**整个目录**：
-  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/>
-  （`main.lua` / `koreader_dex_report.lua` / `_meta.lua` / `README.md` 都在里面）
-- 或者从仓库里拿：<https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin>
+- **线上目录**：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/>
+  ⚠️ **要等 `scripts/deploy.sh` 发布之后才会有** —— 现在还没部署，点过去是 404。
+  这一页是**索引**：打开能看到目录里有哪些文件，**文件直链在那一页的最下面**。
+- **线上文件直链**（同样是发布之后才有）：
+
+  - `main.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/main.lua>
+  - `koreader_dex_report.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/koreader_dex_report.lua>
+  - `_meta.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/_meta.lua>
+  - `README.md`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/README.md>
+
+- 或者从仓库里拿（**现在就能用**，不依赖部署）：
+  <https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin>
 
 Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/mnt/us/koreader/plugins/`）
 拷进去；**固件路径不一样的话，以「设备上的 koreader/plugins/ 目录」为准**，别照抄别人的路径。

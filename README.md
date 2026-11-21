@@ -142,7 +142,14 @@ KOReader 插件读内置 statistics 的库 → 屏幕上弹一个二维码（落
 
 - **怎么装、怎么报一次、怎么对账**：[`docs/koreader-setup.md`](docs/koreader-setup.md)
   （安装就是把 `koreader-dex.koplugin/` 整个目录复制到设备的 `plugins/` 目录，然后重启 KOReader；
-  插件文件线上有现成的：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/>）
+  插件文件**跑完 `scripts/deploy.sh` 发布之后**才有：目录页
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/>（只是索引，文件直链在最下面），
+  文件直链是下面这 4 条 ——
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/main.lua>、
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/koreader_dex_report.lua>、
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/_meta.lua>、
+  <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/README.md>；
+  不想等部署的话，仓库里那份 <https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin> 现在就能用）
 - **插件自己的说明书**：[`plugin/koreader-dex.koplugin/README.md`](plugin/koreader-dex.koplugin/README.md)
 - 菜单位置：KOReader 主菜单（☰）→「**工具**」→「**更多工具**」→「**训练家图鉴**」
   （内置那个「阅读统计（Reading statistics）」在**工具**一级，不在「更多工具」里）

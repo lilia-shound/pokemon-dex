@@ -44,13 +44,27 @@ Kindle / 平板上的 KOReader
 
    | 方式 | 地址 |
    |---|---|
-   | **线上目录（推荐）** | <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/> |
+   | **线上目录（发布之后才有）** | <https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/> |
    | 仓库目录 | <https://github.com/lilia-shound/pokemon-dex/tree/main/plugin/koreader-dex.koplugin> |
    | 已有源码的机器 | 仓库里的 `plugin/koreader-dex.koplugin/` |
+
+   ⚠️ **线上那个地址要等 `scripts/deploy.sh` 跑完（发布）之后才会有** ——
+   现在还没部署，点过去是 404；插件改过之后也要重新发布一次才会更新。
+   「仓库目录」和「已有源码的机器」这两条**现在就能用**，不依赖部署。
 
    线上那个地址是**整个插件目录**（`main.lua`、`koreader_dex_report.lua`、`_meta.lua`、`README.md`），
    一个个文件下下来，放进一个叫 `koreader-dex.koplugin` 的文件夹里即可
    （**目录名不能改**，KOReader 靠它认出插件）。
+
+   **文件直链**（一个一个下，不想用目录页就点这四条）：
+
+   - `main.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/main.lua>
+   - `koreader_dex_report.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/koreader_dex_report.lua>
+   - `_meta.lua`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/_meta.lua>
+   - `README.md`：<https://lilia-shound.github.io/pokemon-dex/koreader-dex.koplugin/README.md>
+
+   > 目录页（`…/koreader-dex.koplugin/`）**只是索引**：打开后能看到目录里有哪几个文件，
+   > **文件直链就在那一页的最下面**（也就是上面这四条）。
 
 2. 把 `koreader-dex.koplugin/` 这个目录复制到设备的 **`plugins/` 目录**里。
    - Kindle 上一般是把挂载出来的 `koreader/plugins/` 目录（常见是 `/mnt/us/koreader/plugins/`）拷进去。
