@@ -5,9 +5,11 @@ report.lua 的断言集 —— **纯 Lua**，不依赖 fengari 的任何专属 A
     node tests/koreader_lua_runner.js        （沙箱里没有真解释器，用 fengari）
     lua   tests/koreader_lua_spec.lua         （哪天有真解释器了也能直接跑）
 
-runner 注入两个全局变量：
+runner 注入三个全局变量：
     REPORT_PATH   —— report.lua 的路径（不给就用仓库根目录下的相对路径）
     DAYS_FIXTURE  —— 跨语言共用的天数串（内容来自 tests/fixtures/koreader_days.txt）
+    WIRE_CASES    —— 线格式的用例（一行一条，换行分隔；
+                     内容来自 tests/fixtures/koreader_wire_cases.txt）
 
 注意：这个文件**不许 require 任何 KOReader 模块**，也**不许用 io.open**
 （fengari 的 io 库是残的，io.open 是 nil）—— 所有外部输入都由 runner 注入。
@@ -21,6 +23,9 @@ local FIXTURE = (DAYS_FIXTURE or "2026-11-21:25,2026-11-20:50"):match("^%s*(.-)%
 local passed, failed = 0, 0
 local failures = {}
 local case_names = {}
+
+-- runner 的 --daily-sql 模式会把 stdout 只留给 SQL ⇒ 那时别打印用例明细
+local QUIET = (SILENT == "1")
 
 --- 断言两个值相等（不等就抛错，错误信息里写清楚期望与实际）
 local function eq(actual, expected, what)
@@ -42,11 +47,11 @@ local function case(name, fn)
     local good, err = pcall(fn)
     if good then
         passed = passed + 1
-        print("PASS  " .. name)
+        if not QUIET then print("PASS  " .. name) end
     else
         failed = failed + 1
         failures[#failures + 1] = { name = name, err = tostring(err) }
-        print("FAIL  " .. name .. " :: " .. tostring(err))
+        if not QUIET then print("FAIL  " .. name .. " :: " .. tostring(err)) end
     end
 end
 
@@ -134,6 +139,30 @@ case("decode_days 忽略坏块", function()
     eq(days["2026-1-1"], nil, "日期格式不对的不能收")
 end)
 
+case("decode_days 段里有空白就整段丢掉（不 trim）", function()
+    -- 规则是「段必须完全匹配」：带空白的段整段丢掉，不做容错
+    local days = Report.decode_days("2026-11-21:25, 2026-11-20:50")
+    eq(days["2026-11-21"], 25, "没带空白的那一段要留下")
+    eq(days["2026-11-20"], nil, "前面带空白的段要整段丢掉")
+    eq(Report.decode_days(" 2026-11-21:25")["2026-11-21"], nil, "段前面有空白就不收")
+    eq(Report.decode_days("2026-11-21:25 ")["2026-11-21"], nil, "段后面有空白就不收")
+    eq(Report.decode_days("2026-11-21:2 5")["2026-11-21"], nil, "分钟中间有空白就不收")
+end)
+
+case("decode_days 只认 ASCII 数字（不认 Unicode 数字）", function()
+    -- Lua 的 %d 本来就只认 ASCII 0-9；Python 侧要用 [0-9] 才跟得住
+    eq(next(Report.decode_days("٢٠٢٦-11-21:5")), nil, "Unicode 数字的日期不能收")
+    eq(next(Report.decode_days("2026-11-21:٢٥")), nil, "Unicode 数字的分钟不能收")
+end)
+
+case("decode_days 空段直接跳过（不影响别的段）", function()
+    local days = Report.decode_days("2026-11-21:25,,2026-11-20:50")
+    eq(days["2026-11-21"], 25, "第一段")
+    eq(days["2026-11-20"], 50, "第二段")
+    eq(Report.decode_days("2026-11-21:25,")["2026-11-21"], 25, "末尾多一个逗号")
+    eq(Report.decode_days(",2026-11-21:25")["2026-11-21"], 25, "开头多一个逗号")
+end)
+
 case("encode/decode 往返一致", function()
     local days = Report.decode_days(FIXTURE)
     eq(Report.encode_days(days), FIXTURE, "往返")
@@ -218,6 +247,17 @@ case("pick_days 上限是 0 就一天也不要", function()
     eq(Report.encode_days(got), "", "空")
 end)
 
+case("pick_days 上限不是数字就全要（不抛错）", function()
+    -- Lua 5.3 的 math.min 不接受字符串 ⇒ 上限要 tonumber 兜一下
+    local got = Report.pick_days(ALL_DAYS, "abc")
+    eq(Report.encode_days(got), "2026-11-21:25,2026-11-20:50,2026-11-18:10,2026-11-17:5", "全部")
+end)
+
+case("pick_days 上限是数字字符串也能用", function()
+    local got = Report.pick_days(ALL_DAYS, "2")
+    eq(Report.encode_days(got), "2026-11-21:25,2026-11-20:50", "最近 2 天")
+end)
+
 ------------------------------------------------------------------
 -- credits：这些分钟一共折算多少个额度
 ------------------------------------------------------------------
@@ -244,6 +284,23 @@ case("credits per 认不出就当 1", function()
     eq(Report.credits({ ["2026-11-21"] = 25 }, "abc"), 25, "per 非数字")
 end)
 
+case("MAX_MINUTES_PER_DAY 是 1440（一天 24 小时）", function()
+    eq(Report.MAX_MINUTES_PER_DAY, 1440, "单日上限（与服务端注册表一致）")
+end)
+
+case("credits 单日超过上限要夹住（与服务端口径一致）", function()
+    -- 服务端 scripts/sources.py 的 credit_for_day：min(原始量, maxPerDay) 再折算
+    eq(Report.credits({ ["2026-11-21"] = 5000 }, 15), 96, "5000 分钟按 1440 分钟算 ⇒ 96 个额度")
+    eq(Report.credits({ ["2026-11-21"] = 1440 }, 15), 96, "正好 1440 分钟")
+    eq(Report.credits({ ["2026-11-21"] = 1439 }, 15), 95, "1439 分钟")
+    eq(Report.credits({ ["2026-11-21"] = -100 }, 15), 0, "负的分钟夹到 0")
+end)
+
+case("credits 可以传别的上限", function()
+    eq(Report.credits({ ["2026-11-21"] = 5000 }, 15, 60), 4, "上限 60 分钟 ⇒ 4 个额度")
+    eq(Report.credits({ ["2026-11-21"] = 5000 }, 15, 0), 0, "上限 0 ⇒ 没有额度")
+end)
+
 ------------------------------------------------------------------
 -- DAILY_SQL：与 KOReader 内置 statistics 的 sqlDaily() 逐字一致
 ------------------------------------------------------------------
@@ -268,6 +325,41 @@ case("DAILY_SQL 留着一个 %d 的时间戳占位符", function()
     local flat = Report.DAILY_SQL:gsub("%s+", " ")
     ok(flat:find("start_time >= %d", 1, true) ~= nil, "要有 start_time >= %d")
     ok(flat:find("%%Y-%%m-%%d", 1, true) ~= nil, "日期格式要写成 %%Y-%%m-%%d（string.format 的转义）")
+end)
+
+------------------------------------------------------------------
+-- daily_sql：**唯一**的 SQL 格式化入口
+--
+-- 这几条是防「静默产出错数据」的护栏：
+--   万一有人把格式化改成绑定参数（或者绕过这个函数自己拼 SQL），
+--   `%%` 就会原样留在 SQL 里 ⇒ SQLite 的 strftime 把 %% 渲染成字面的 % ⇒
+--   每行日期都变成 "%Y-%m-%d"，分钟被汇总到一个假的日子上。
+------------------------------------------------------------------
+
+case("daily_sql 把 %d 填成 epoch 并把 %% 解开", function()
+    local sql = Report.daily_sql(123)
+    ok(sql:find("start_time >= 123", 1, true) ~= nil, "epoch 要填进 start_time >= %d")
+    ok(sql:find("strftime('%Y-%m-%d', start_time, 'unixepoch', 'localtime')", 1, true) ~= nil,
+        "%%Y-%%m-%%d 必须被解成 %Y-%m-%d")
+    ok(sql:find("%%", 1, true) == nil, "格式化后不该还剩 %%")
+    -- 格式化后整条 SQL 里只剩 strftime 日期格式的三个 %（模板里是 6 个 %% + 1 个 %d）
+    local _, percent = sql:gsub("%%", "")
+    eq(percent, 3, "格式化后剩下的百分号个数")
+end)
+
+case("daily_sql 的模板没被偷偷改过", function()
+    local _, template_percent = Report.DAILY_SQL:gsub("%%", "")
+    eq(template_percent, 7, "模板里应该是 6 个 %%（日期格式）+ 1 个 %d（epoch）")
+end)
+
+case("daily_sql 对小数与非数字都取整", function()
+    ok(Report.daily_sql(123.7):find("start_time >= 123", 1, true) ~= nil, "小数要取整")
+    ok(Report.daily_sql(nil):find("start_time >= 0", 1, true) ~= nil, "nil 当 0")
+    ok(Report.daily_sql("abc"):find("start_time >= 0", 1, true) ~= nil, "非数字当 0")
+end)
+
+case("daily_sql 负的 epoch 也照样填进去", function()
+    ok(Report.daily_sql(-1):find("start_time >= -1", 1, true) ~= nil, "负数")
 end)
 
 ------------------------------------------------------------------
@@ -298,10 +390,12 @@ local function json_days(days)
 end
 
 --- 给 Python 侧用的探针：把一个天数串过一遍 report.lua，返回 JSON
+---
+--- **不做 trim** —— 线格式的规则是「段必须完全匹配」，带空白就是坏段；
+--- 在探针里偷偷 trim 会把两边的不一致盖掉。
 --- @param wire string 形如 "2026-11-21:25,2026-11-20:50"
 --- @return string JSON
 local function probe(wire)
-    wire = tostring(wire or ""):match("^%s*(.-)%s*$")
     local days = Report.decode_days(wire)
     local encoded = Report.encode_days(days)
     local per = tonumber(KOREADER_PER) or 15
@@ -309,8 +403,26 @@ local function probe(wire)
         '"encoded":' .. json_str(encoded) .. "," ..
         '"decoded":' .. json_days(days) .. "," ..
         '"short_url":' .. json_str(Report.short_url(days)) .. "," ..
-        '"credits":' .. tostring(Report.credits(days, per)) ..
+        '"credits":' .. tostring(Report.credits(days, per)) .. "," ..
+        '"max_per_day":' .. tostring(Report.MAX_MINUTES_PER_DAY) .. "," ..
+        '"credits_over_cap":' .. tostring(Report.credits({ ["2026-11-21"] = 5000 }, per)) ..
         "}"
+end
+
+--- 把 WIRE_CASES 里的每一条线都过一遍，返回 JSON 数组
+---
+--- 好坏线都在里面 —— 跨语言对拍要**逐例**比，
+--- 只喂干净的 fixture 的话，空白 / Unicode 数字这类分歧根本看不见。
+--- @return string JSON
+local function probe_cases()
+    local out = {}
+    for wire in tostring(WIRE_CASES or ""):gmatch("[^\n]+") do
+        local days = Report.decode_days(wire)
+        out[#out + 1] = '{"wire":' .. json_str(wire) ..
+                        ',"decoded":' .. json_days(days) ..
+                        ',"encoded":' .. json_str(Report.encode_days(days)) .. '}'
+    end
+    return "[" .. table.concat(out, ",") .. "]"
 end
 
 return {
@@ -319,4 +431,7 @@ return {
     failures = failures,
     cases = case_names,
     probe = probe,
+    probe_cases = probe_cases,
+    -- 给 runner 的 --daily-sql 模式用：设备上真正执行的那条 SQL
+    daily_sql = function(since) return Report.daily_sql(since) end,
 }
