@@ -1,8 +1,9 @@
 let POKEDEX = null;
 let DEX = { collected: [], streak: 0, today: {} };
-let SOURCES = null;   // 源注册表（sources.json）—— 阈值的权威来源
+let SOURCES = null;   // 源注册表（sources.json）—— 额度的权威来源
 let FILTER = "all";
 const IMG = "img/";
+let POKEDEX_BY_ID = new Map();   // id → 图鉴记录（查形态用，别线性找）
 
 const $ = (id) => document.getElementById(id);
 const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
@@ -159,6 +160,7 @@ async function load() {
     return;
   }
   POKEDEX = pd.pokemon;
+  POKEDEX_BY_ID = buildPokedexMap(POKEDEX);
   DEX = dx || { collected: [], streak: 0, today: {} };
   SOURCES = reg;
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
@@ -188,6 +190,32 @@ function ownedMap() {
     if (c.shiny && !prev.shiny) m.set(c.id, c);
   }
   return m;
+}
+
+/** id → 图鉴记录（1028 只，别每次线性找）。 */
+function buildPokedexMap(list) {
+  const m = new Map();
+  for (const p of list || []) m.set(String(p.id), p);
+  return m;
+}
+
+/**
+ * 收服时的那只形态 —— collected[].form（进化了也显示进化形态，别再显示基础形态）。
+ *
+ * 三级回退：**form → id → 没有（剪影）**。
+ * 老数据没有 form ⇒ 回退到 id；万一 form 在图鉴里查不到 ⇒ 也回退到 id。
+ */
+function formEntry(c) {
+  if (!c) return null;
+  const formId = (c.form !== undefined && c.form !== null && c.form !== "")
+    ? String(c.form) : String(c.id);
+  return POKEDEX_BY_ID.get(formId) || POKEDEX_BY_ID.get(String(c.id)) || null;
+}
+
+/** 「妙蛙种子 → 妙蛙花」：形态和基础形态不是同一只时写这一行。 */
+function formLine(base, form) {
+  if (!base || !form || String(base.id) === String(form.id)) return "";
+  return `${base.nameZh} → ${form.nameZh}`;
 }
 
 // 页面**不再**拿 today.threshold 当任何数字：
@@ -333,7 +361,7 @@ function render() {
   const todays = collected.filter((c) => c.date === t.date);
   const last = todays.length ? todays[todays.length - 1]
     : (collected.length ? collected[collected.length - 1] : null);
-  const lp = last ? POKEDEX.find((x) => x.id === last.id) : null;
+  const lp = last ? formEntry(last) : null;
   if (last && lp && DEX.lastAwardDate === t.date) {
     $("today").hidden = false;
     setText("todayLabel", `今日捕获 · ${t.date}`);
@@ -390,16 +418,21 @@ function render() {
   } else {
   $("grid").innerHTML = list.map((p) => {
     const c = owned.get(p.id);
-    const art = c && c.shiny && p.artShiny ? p.artShiny : p.art;
+    // 显示的是**收服时的那只形态**（collected[].form），不是基础形态
+    const fe = c ? formEntry(c) : null;
+    const shown = fe || p;
+    const art = c && c.shiny && shown.artShiny ? shown.artShiny : shown.art;
     // 预告世代的条目：名字直接亮出来（本来就是公开资料），并挂个「预告」标记
     const prev = !!p.preview;
     const known = c || prev;
     const cls = c ? "" : (prev ? "preview" : "locked");
+    const fl = c && fe ? formLine(p, fe) : "";
     return `<div class="cell ${cls} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
       <div class="no">No.${esc(p.id)}${prev && p.provisionalNo ? "（暂定）" : ""}</div>
-      <img src="${IMG}${art}" alt="${esc(p.nameZh)}" ${prev ? 'loading="eager"' : 'loading="lazy"'} onerror="this.classList.add('broken')">
-      <div class="nm">${known ? esc(p.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
-      <div class="ty">${esc((p.types || []).join("/"))}</div>
+      <img src="${IMG}${art}" alt="${esc(shown.nameZh)}" ${prev ? 'loading="eager"' : 'loading="lazy"'} onerror="this.classList.add('broken')">
+      <div class="nm">${known ? esc(shown.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
+      ${fl ? `<div class="form">${esc(fl)}</div>` : ""}
+      <div class="ty">${esc((shown.types || []).join("/"))}</div>
       ${FILTER === "owned" && c && c.date ? `<div class="dt">${esc(String(c.date).slice(5))} 获得</div>` : ""}
     </div>`;
   }).join("");
@@ -438,20 +471,24 @@ function openSheet(id) {
         <div class="lockedMsg">还没收服这一只。<br>${thresholdSentence(false)}</div>`;
     }
   } else {
-    const art = c.shiny && p.artShiny ? p.artShiny : p.art;
+    // 已收服：显示的是**收服时的那只形态**（collected[].form）
+    const fe = formEntry(c) || p;
+    const art = c.shiny && fe.artShiny ? fe.artShiny : fe.art;
+    const fl = formLine(p, fe);
     inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
-      <img src="${IMG}${art}" alt="${esc(p.nameZh)}">
-      <div class="nm">${esc(p.nameZh)}${c.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
-      <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))} · ${esc(p.category)}</div>
+      <img src="${IMG}${art}" alt="${esc(fe.nameZh)}">
+      <div class="nm">${esc(fe.nameZh)}${c.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
+      ${fl ? `<div class="form">${esc(fl)}</div>` : ""}
+      <div class="sub">No.${esc(fe.id)} · ${esc((fe.types || []).join(" / "))} · ${esc(fe.category)}</div>
       <div class="rows">
         <div class="row"><b>捕获日</b><span>${esc(c.date || c.at || "-")}</span></div>
-        <div class="row"><b>特性</b><span>${esc((p.abilities || []).join("、") || "-")}</span></div>
-        <div class="row"><b>身高</b><span>${esc(p.height || "-")}</span></div>
-        <div class="row"><b>体重</b><span>${esc(p.weight || "-")}</span></div>
-        <div class="row"><b>进化链</b><span>${esc((p.evolution || []).join(" → ") || "-")}</span></div>
-        <div class="row"><b>日文名</b><span>${esc(p.nameJa || "-")}</span></div>
+        <div class="row"><b>特性</b><span>${esc((fe.abilities || []).join("、") || "-")}</span></div>
+        <div class="row"><b>身高</b><span>${esc(fe.height || "-")}</span></div>
+        <div class="row"><b>体重</b><span>${esc(fe.weight || "-")}</span></div>
+        <div class="row"><b>进化链</b><span>${esc((fe.evolution || []).join(" → ") || "-")}</span></div>
+        <div class="row"><b>日文名</b><span>${esc(fe.nameJa || "-")}</span></div>
       </div>
-      <div class="flavor">${esc(p.flavor)}</div>`;
+      <div class="flavor">${esc(fe.flavor)}</div>`;
   }
   sheet.hidden = false;
   $("sheetClose").onclick = () => { sheet.hidden = true; };
@@ -470,6 +507,8 @@ window.DexPage = {
   stateToday,
   referenceDate,
   daysBetween,
+  formEntry,
+  formLine,
   get state() { return { dex: DEX, sources: SOURCES }; },
 };
 
