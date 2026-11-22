@@ -152,6 +152,35 @@
   }
 
   /**
+   * 现在是不是「加到主屏后独立打开」（standalone 模式）。
+   *
+   * 两个都查：
+   *   - `matchMedia('(display-mode: standalone)')` —— 安卓 Chrome、桌面 Chrome 走这条；
+   *   - `navigator.standalone` —— iOS Safari（老版本）走这条。
+   *
+   * ⚠️ **检测不到就当「不在 standalone」**：浏览器不支持 matchMedia、或它抛异常，
+   * 一律按「不是」处理 —— 宁可多显示一行小字，也不许报错、不许整页崩。
+   *
+   * @returns {boolean}
+   */
+  function isStandalone() {
+    try {
+      if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+        const mq = window.matchMedia('(display-mode: standalone)');
+        if (mq && mq.matches) return true;
+      }
+    } catch (e) {
+      // 检测不到 ⇒ 当不在 standalone（见上面的说明）
+    }
+    try {
+      if (typeof navigator !== 'undefined' && navigator.standalone) return true;
+    } catch (e) {
+      // 同上
+    }
+    return false;
+  }
+
+  /**
    * issue 的标题：`[report] words <最新的一天>`（与番茄钟那套同一个格式）。
    * @param {Object<string, number>} days
    * @returns {string}
@@ -220,7 +249,7 @@
   const API = {
     creditsForDay, creditsForDays, clampDays, latestDay, previousRecordedDay,
     buildReport, buildIssueTitle, buildIssueUrl,
-    lastDays, todayKey, shortLabel, weekdayOf,
+    lastDays, todayKey, shortLabel, weekdayOf, isStandalone,
     DEFAULT_PER, DEFAULT_MAX_PER_DAY, SOURCE_ID, ISSUE_NEW, REPO,
     WINDOW_DAYS, MAX_REPORT_DAYS, REGISTRY_PATH,
     state,
@@ -515,10 +544,31 @@
     }
   }
 
+  /**
+   * 「加到主屏」的提示：**不在 standalone 模式时**显示一行小字。
+   *
+   * 不弹窗、不打断 —— 她每天就是「打开 → 改个数 → 提交」，
+   * 只有还在浏览器里用的时候才需要看到这一句怎么加。
+   * 已经加到主屏（一点就开）就不用再说了 ⇒ 藏起来。
+   */
+  function renderInstallNote() {
+    const note = $('#installNote');
+    if (!note) return;
+    if (isStandalone()) {
+      note.hidden = true;
+      note.textContent = '';
+      return;
+    }
+    note.hidden = false;
+    note.textContent = '可以把它加到主屏：iPhone 用 Safari「分享 → 添加到主屏幕」，' +
+      '安卓用 Chrome「菜单 → 添加到主屏幕」。';
+  }
+
   function render() {
     renderDay();
     renderWeek();
     renderSubmit();
+    renderInstallNote();
   }
 
   /* ---------- 交互 ---------- */

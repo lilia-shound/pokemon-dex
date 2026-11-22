@@ -7,7 +7,7 @@
 - 网页版番茄钟：<https://lilia-shound.github.io/pokemon-dex/pomodoro/>
 - 插件（油猴脚本）：`plugin/weread-dex.user.js`
 - KOReader 插件：`plugin/koreader-dex.koplugin/`（Kindle / Android 上读的时长也能算数）
-- 备考记数页：<https://lilia-shound.github.io/pokemon-dex/words/>（背单词的词数也能算数）
+- 备考记数页：<https://lilia-shound.github.io/pokemon-dex/words/>（背单词的词数也能算数，手机上可加到主屏）
 
 ## 它怎么运转
 
@@ -183,8 +183,16 @@ KOReader 读满 **30 分钟（得是同一天）** = 2 个额度 = 掉 1 只宝�
 
 <https://lilia-shound.github.io/pokemon-dex/words/>
 
-背单词的词数也算进图鉴：手机上打开上面那个页面 → 填「今天背了多少个词」→
-点「去 GitHub 提交」→ 在 GitHub 那个页面上点一下 **Submit**。
+背单词的词数也算进图鉴。**她在手机上背词 ⇒ 记数页就是正路**：
+
+**手机上打开上面那个页面 → 改成今天的数 → 点「去 GitHub 提交」→ 在 GitHub 那个页面上点一下
+**Submit**。**
+
+- **先加到主屏**（像 App 一样一点就开）：记数页带 manifest 和图标了 ⇒
+  iPhone 用 Safari「分享 → 添加到主屏幕」，安卓用 Chrome「菜单 → 添加到主屏幕」。
+  主屏上是个「字母卡 + 勾」的图标。
+- **数字不用她记**：今天还没记的时候，页面已经把「上次记的数」填在框里了 ⇒
+  多数时候只要改一下数字、点提交。（⚠️ 预填的数**还没算进今天的额度**，提交之后才算。）
 
 ```
 手机记数页（site/words/）
@@ -198,9 +206,15 @@ KOReader 读满 **30 分钟（得是同一天）** = 2 个额度 = 掉 1 只宝�
 额度口径：**100 个词 = 1 个额度**（和微信读书的 900 秒、番茄钟的 25 分钟同价）。
 背满 **200 个词（得是同一天）** = 2 个额度 = 掉 1 只宝可梦。
 
-**用百词斩的话可以少打几个字**：有个油猴脚本装在百词斩网页版上，认出「今天背了多少词」，
+**备用路（不是主路）**：有个油猴脚本装在**百词斩网页版**上，认出「今天背了多少词」，
 一键带进记数页（只带数，不代提交）——
 <https://lilia-shound.github.io/pokemon-dex/bcz-dex.user.js>
+
+- 它**读不到手机 App 里背的词**（它跑在网页版上）；
+  但百词斩**网页版和 App 数据是通的** ⇒ 背完打开一下网页版，它可能就把今天的量读出来了；
+- **读不出来就手打**（回到上面那条正路，一样算数）；
+- 兜底：百词斩「**学习日历**」那一屏有每天的新词 + 复习量 ⇒ **截图发我**，我帮你读出来 ✓
+
 细节见 [docs/words-setup.md](docs/words-setup.md) ✓
 
 - **按天算，零头不计**：今天 150 个 + 明天 50 个 = 1 + 0 = **1 个额度**（不是 2）
@@ -246,7 +260,7 @@ scripts/deploy.sh        推 main + gh-pages，发布图鉴页
 site/                    图鉴页静态站
 site/pomodoro/           网页版番茄钟（PWA）
 site/koreader/           KOReader 手机落地页（Kindle 短链扫开的那一页）
-site/words/              备考记数页（背单词：记词数 → 折算额度 → 投递）
+site/words/              备考记数页（背单词：记词数 → 折算额度 → 投递；可加到主屏）
 plugin/                  油猴脚本
 plugin/koreader-dex.koplugin/  KOReader 插件（读内置 statistics → 弹二维码 → 自检）
 docs/koreader-setup.md   KOReader 装到用起来的手册 + 四步对账方案

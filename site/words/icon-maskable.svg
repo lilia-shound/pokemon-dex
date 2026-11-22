@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="背单词记数">
+  <!--
+    maskable 版本：安卓会把图标裁成圆形/水滴形 ⇒ 内容必须缩进**安全区**
+    （以中心为圆心、直径约 80% 的那个圆）。
+    —— 做法：整块内容按 0.66 缩到中心（卡片角到中心 60 < 安全半径 61 ✓）；
+    —— 背景铺满（不圆角）：安卓自己裁形状。
+  -->
+  <rect width="192" height="192" fill="#5b63c8"/>
+  <g transform="translate(96 96) scale(0.66) translate(-96 -96)">
+    <rect x="36" y="28" width="112" height="124" rx="18" fill="#fffdf8"/>
+    <g fill="none" stroke="#5b63c8" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M64 130 L96 56 L128 130"/>
+      <path d="M75 104 L117 104"/>
+    </g>
+    <circle cx="142" cy="140" r="25" fill="#4a7a4a"/>
+    <path d="M130 140 L139 149 L155 131" fill="none" stroke="#fffdf8"
+          stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

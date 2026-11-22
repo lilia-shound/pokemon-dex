@@ -3,12 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 「添加到主屏幕」用的那几行（viewport 本身一个字没动） -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg" type="image/svg+xml">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="背单词记数">
 <meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
 <meta name="description" content="背单词记数页：记下今天背了多少个词，折算成额度交回训练家图鉴">
 <title>背单词记数 · 训练家图鉴</title>
-<!-- 图标内联（data URI）：不许外链，外链在她那边会挂 -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%235b63c8'/%3E%3Ctext x='32' y='45' font-size='36' text-anchor='middle'%3E%F0%9F%94%8D%3C/text%3E%3C/svg%3E">
+<!-- 图标走**本地文件**（不许外链，外链在她那边会挂；也不做 data-URI 大图标） -->
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,6 +24,8 @@
     <h1>背单词记数</h1>
     <p class="sub">交回训练家图鉴 · 只报数，不抽卡</p>
     <noscript><p class="hint center">这一页要用 JavaScript 才能把词数算成额度 —— 请在浏览器里允许它运行。</p></noscript>
+    <!-- 「加到主屏」的提示：已经加过（standalone 模式）就藏起来；不是就一行小字，不弹窗 -->
+    <p class="hint center" id="installNote" hidden></p>
   </header>
 
   <!-- 记数 -->

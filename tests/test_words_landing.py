@@ -37,7 +37,29 @@ WORDS_REGISTRY = ROOT / "site" / "words" / "sources.json"
 APP_JS = ROOT / "site" / "words" / "app.js"
 INDEX_HTML = ROOT / "site" / "words" / "index.html"
 STYLE_CSS = ROOT / "site" / "words" / "style.css"
+WORDS_DIR = ROOT / "site" / "words"
+MANIFEST = WORDS_DIR / "manifest.webmanifest"
+ICON = WORDS_DIR / "icon.svg"
+ICON_MASKABLE = WORDS_DIR / "icon-maskable.svg"
 CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+
+# 假装「已经是主屏图标打开的」：把 matchMedia 改成 display-mode: standalone 时命中。
+_STANDALONE_INIT_SCRIPT = """
+  (function () {
+    const real = window.matchMedia;
+    window.matchMedia = function (query) {
+      if (String(query).indexOf('display-mode: standalone') >= 0) {
+        return {
+          matches: true, media: String(query), onchange: null,
+          addListener: function () {}, removeListener: function () {},
+          addEventListener: function () {}, removeEventListener: function () {},
+          dispatchEvent: function () { return false; },
+        };
+      }
+      return real.call(window, query);
+    };
+  })();
+"""
 
 try:  # playwright 可能没装 —— 不能让整套测试挂掉
     from playwright.sync_api import sync_playwright
@@ -87,6 +109,110 @@ class WordsRegistryTest(unittest.TestCase):
             "const REGISTRY_PATH = 'sources.json';", app,
             "页面读的是同目录那份手工副本 —— 它永远不会被 deploy.sh 更新",
         )
+
+
+class WordsPwaAssetsTest(unittest.TestCase):
+    """记数页的「加到主屏」资产（manifest / 图标 / apple-touch-icon）。
+
+    为什么要有这些：她在**手机上**背词 ⇒ 记数页得能像 App 一样一点就开
+    ⇒ 需要 manifest（安卓 Chrome）+ apple-touch-icon（iOS Safari）。
+    """
+
+    def test_the_manifest_exists_and_is_valid_json(self):
+        """manifest 存在，而且是一份合法的 JSON。"""
+        self.assertTrue(MANIFEST.exists(), "site/words/manifest.webmanifest 不存在")
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.assertIsInstance(data, dict)
+
+    def test_the_manifest_describes_an_app(self):
+        """manifest 里那几项「像个 App」的值都得对。"""
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.assertTrue(data.get("name"), "manifest 没有 name")
+        self.assertTrue(data.get("short_name"), "manifest 没有 short_name")
+        self.assertEqual(data.get("display"), "standalone",
+                         "display 不是 standalone ⇒ 加到主屏后还是浏览器的样子")
+        self.assertTrue(data.get("start_url"), "manifest 没有 start_url")
+        self.assertTrue(data.get("theme_color"), "manifest 没有 theme_color")
+        self.assertTrue(data.get("background_color"), "manifest 没有 background_color")
+
+    def test_the_manifest_start_url_is_local(self):
+        """start_url / scope 必须是**相对路径**（不许外链，她那边外链会挂）。"""
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for key in ("start_url", "scope"):
+            url = data.get(key, "")
+            self.assertFalse(url.startswith("http://") or url.startswith("https://"),
+                             "%s 指到了外链：%s" % (key, url))
+            self.assertFalse(url.startswith("//"), "%s 是协议相对的外链：%s" % (key, url))
+
+    def test_the_manifest_lists_the_local_icons(self):
+        """icons 至少两个：普通版 + maskable 版，且都是**本地文件**。"""
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        icons = data.get("icons") or []
+        self.assertGreaterEqual(len(icons), 2, "manifest 里的 icons 太少：%r" % (icons,))
+        purposes = set()
+        for icon in icons:
+            src = icon.get("src", "")
+            self.assertFalse(src.startswith("http://") or src.startswith("https://"),
+                             "图标指到了外链：%s" % src)
+            self.assertFalse(src.startswith("data:"),
+                             "图标不许用 data-URI（要本地文件）：%s" % src)
+            self.assertTrue((WORDS_DIR / src).exists(), "图标文件不存在：%s" % src)
+            purposes.add(icon.get("purpose", "any"))
+        self.assertIn("maskable", purposes, "icons 里少了 maskable 版（安卓会裁形状）")
+
+    def test_the_icon_files_exist(self):
+        """两个图标文件都在（普通版 + maskable 版）。"""
+        self.assertTrue(ICON.exists(), "site/words/icon.svg 不存在")
+        self.assertTrue(ICON_MASKABLE.exists(), "site/words/icon-maskable.svg 不存在")
+
+    def test_the_icon_is_drawn_with_shapes_not_fonts(self):
+        """图标里不许依赖**字体**渲染文字。
+
+        她手机上（尤其电子墨水屏）不一定有那个字形 ⇒ 用 `<text>` 画的图标
+        在她那边可能变成一个方框。字母 A 用路径画 ⇒ 哪儿都长一个样。
+        """
+        for path in (ICON, ICON_MASKABLE):
+            svg = path.read_text(encoding="utf-8")
+            self.assertNotIn("<text", svg, "%s 用了 <text>（字体不一定有那个字形）" % path.name)
+            self.assertIn("<path", svg, "%s 里没有路径（画不出东西）" % path.name)
+
+    def test_the_page_links_the_manifest_and_the_apple_touch_icon(self):
+        """HTML 里要有 manifest 链接 + apple-touch-icon（iOS「添加到主屏幕」靠它）。"""
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        self.assertRegex(html, r"""<link[^>]+rel=["']manifest["'][^>]*>""",
+                         "HTML 里没有 manifest 链接")
+        self.assertRegex(html, r"""<link[^>]+rel=["']apple-touch-icon["'][^>]*>""",
+                         "HTML 里没有 apple-touch-icon")
+        # 两个 href 都得是**本地文件**
+        for m in re.finditer(r"""<link[^>]+rel=["'](?:manifest|apple-touch-icon)["'][^>]*>""", html):
+            tag = m.group(0)
+            href = re.search(r"""href\s*=\s*["']([^"']+)["']""", tag)
+            self.assertIsNotNone(href, "link 标签里没有 href：%s" % tag)
+            url = href.group(1)
+            self.assertFalse(url.startswith("http://") or url.startswith("https://"),
+                             "图标/manifest 指到了外链：%s" % url)
+            self.assertFalse(url.startswith("data:"),
+                             "图标不许用 data-URI（要本地文件）：%s" % url)
+            self.assertTrue((WORDS_DIR / url).exists(), "引用的文件不存在：%s" % url)
+
+    def test_the_viewport_is_untouched(self):
+        """viewport 那一行一个字都不许动（改了会在她手机上跑版）。"""
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">',
+                      html, "viewport 被改了")
+
+    def test_there_is_no_service_worker(self):
+        """记数页**不引 Service Worker**。
+
+        它不要求离线可用 ⇒ 加了 SW 只会带来「缓存陈旧」的问题
+        （她改了口径却还看老页面）。番茄钟要 SW 是因为它要计时，这里不要。
+        """
+        self.assertFalse((WORDS_DIR / "sw.js").exists(),
+                         "site/words/sw.js 不该存在（记数页不要 SW）")
+        app = APP_JS.read_text(encoding="utf-8")
+        self.assertNotIn("serviceWorker", app, "app.js 里不许注册 Service Worker")
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        self.assertNotIn("serviceWorker", html, "HTML 里不许注册 Service Worker")
 
 
 class WordsLandingBrowserTest(unittest.TestCase):
@@ -164,6 +290,18 @@ class WordsLandingBrowserTest(unittest.TestCase):
               const el = document.querySelector('#creditLine');
               return !!el && (el.textContent || '').trim().length > 0;
             }""",
+            timeout=30000,
+        )
+
+    def wait_app_ready(self):
+        """等**页面脚本真的跑起来了**（`WordsLanding` 挂好了）。
+
+        为什么不能只等 `wait_rendered()`：额度行在静态 HTML 里就有字
+        （「今天还没记」）⇒ 它有字不代表 app.js 已经执行过
+        ⇒ 这时候去问 `WordsLanding.xxx` 会撞上「is not defined」。
+        """
+        self.page.wait_for_function(
+            "() => typeof window.WordsLanding !== 'undefined'",
             timeout=30000,
         )
 
@@ -684,6 +822,59 @@ class WordsLandingBrowserTest(unittest.TestCase):
         # 额度还是算得出来（口径没变），但提交按钮不让点
         self.assertIn("1 个额度", self.credit_text())
 
+    # -- 加到主屏（PWA） -------------------------------------------------
+
+    def test_the_manifest_can_be_read_over_http(self):
+        """那份 manifest 能被读到，而且内容是对的（线上也一样：静态文件原样发）。"""
+        resp = self.page.request.get(self.origin + "/words/manifest.webmanifest")
+        self.assertEqual(resp.status, 200, "manifest 取不到")
+        data = resp.json()
+        self.assertEqual(data.get("display"), "standalone")
+        self.assertTrue(data.get("name"), "manifest 没有 name")
+        self.assertTrue(data.get("short_name"), "manifest 没有 short_name")
+        self.assertTrue(data.get("start_url"), "manifest 没有 start_url")
+        self.assertTrue(data.get("icons"), "manifest 没有 icons")
+        # 图标本身也要拿得到（图标 404 了，主屏上就是一块白）
+        for icon in data.get("icons", []):
+            r = self.page.request.get(self.origin + "/words/" + icon.get("src", ""))
+            self.assertEqual(r.status, 200, "图标取不到：%s" % icon.get("src"))
+
+    def test_the_install_hint_shows_when_the_page_is_not_standalone(self):
+        """还在浏览器里用（不是主屏图标）⇒ 显示一行「可以加到主屏」的小字。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_app_ready()
+        self.assertFalse(self.page.locator("#installNote").is_hidden(),
+                         "不在 standalone 时应该有加主屏的提示")
+        self.assertIn("主屏", self.page.inner_text("#installNote"))
+        self.assertEqual(self.page.evaluate("() => WordsLanding.isStandalone()"), False)
+
+    def test_the_install_hint_is_hidden_in_standalone_mode(self):
+        """已经是主屏图标（standalone）⇒ 不许再提示（不烦人）。"""
+        self.registry_response = _registry(per=100)
+        self.page.add_init_script(_STANDALONE_INIT_SCRIPT)
+        self.open_page()
+        self.wait_app_ready()
+        self.assertEqual(self.page.evaluate("() => WordsLanding.isStandalone()"), True)
+        self.assertTrue(self.page.locator("#installNote").is_hidden(),
+                        "已经是主屏图标了，不该再提示加主屏")
+
+    def test_a_broken_display_mode_detection_does_not_break_the_page(self):
+        """检测不到（matchMedia 抛异常）⇒ 当「不在 standalone」+ 整页不崩。
+
+        「检测不到就当不在 standalone，不要报错」—— 这条得钉死。
+        """
+        self.registry_response = _registry(per=100)
+        self.page.add_init_script("""
+          window.matchMedia = function () { throw new Error('不支持'); };
+        """)
+        self.open_page()
+        self.wait_app_ready()
+        self.assertEqual(self.page.evaluate("() => WordsLanding.isStandalone()"), False)
+        self.assertFalse(self.page.locator("#installNote").is_hidden(),
+                         "检测不到时应该按「不在 standalone」处理（显示提示）")
+        self.assertEqual(self.page_errors, [])
+
     def test_the_page_sends_exactly_one_network_request(self):
         """只许发一个网络请求：读 sources.json 拿 per。
 
@@ -856,12 +1047,14 @@ def _registry(per: int, max_per_day: int = 500, per_award: int = 2,
 
 
 def _is_local_static(url: str) -> bool:
-    """这个请求是不是本地静态服务器上的静态资源（html/css/js）。
+    """这个请求是不是本地静态服务器上的静态资源（html/css/js/manifest/图标）。
 
-    记数页除了这三个文件，不许再要别的东西 —— 别的都算「多余的网络请求」。
+    记数页除了这些文件，不许再要别的东西 —— 别的都算「多余的网络请求」。
+    （manifest 与图标是本地文件，不是外链。）
     """
     return bool(re.match(
-        r"^http://127\.0\.0\.1:\d+/words/(index\.html|style\.css|app\.js)(\?.*)?$",
+        r"^http://127\.0\.0\.1:\d+/words/(index\.html|style\.css|app\.js|"
+        r"manifest\.webmanifest|icon\.svg|icon-maskable\.svg)(\?.*)?$",
         url,
     ))
 
