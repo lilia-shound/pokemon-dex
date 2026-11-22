@@ -723,13 +723,17 @@ function showView(name, updateHash = true) {
     const src = cfg.src;
     // ★ 懒加载：第一次切到才建 src（别一进页面就把三个子页都拉起来）
     if (f && f.getAttribute("src") !== src) {
+      // ★ 监听器必须**先**挂上再设 src ——
+      //   iframe 命中缓存时 load 事件几乎立刻触发，
+      //   先设 src 再挂监听 ⇒ 事件已经过去了 ⇒ 永远等不到（2026-11-22 踩过）。
+      f.addEventListener("load", hideFrameBackLink, { once: true });
       f.setAttribute("src", src);
       // 同源 ⇒ 父页能直接改 iframe 里的 DOM ⇒ 把子页的「← 回训练家图鉴」藏掉
       // （父页顶部已经有导航了，重复反而乱）。
       // ★ 用父页来做，而不是让子页引一个脚本 —— 子页的纪律是「只许发一个网络请求」，
       //   多引一个文件就破了自己的测试（2026-11-22 踩过）。
-      f.addEventListener("load", hideFrameBackLink, { once: true });
     }
+    // 立刻也试一次：iframe 可能已经加载好了（第二次切回来时）
     hideFrameBackLink();
   }
   if (updateHash) {
