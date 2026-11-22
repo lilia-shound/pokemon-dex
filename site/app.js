@@ -342,11 +342,18 @@ function renderCreditPanel() {
     const pct = t.perAward > 0 ? Math.min(100, (t.total / t.perAward) * 100) : 0;
     fillBox.style.width = `${pct}%`;
   }
-  noteBox.textContent = !t.perAward
-    ? "还差几个额度才能掉一只，暂时算不出来（源注册表没加载上）"
-    : (t.total >= t.perAward
-      ? "今天已经凑够啦 —— 新的宝可梦在等你。"
-      : `还差 ${t.perAward - t.total} 个额度就能遇上新的宝可梦。`);
+  if (!t.perAward) {
+    // perAward 读不到有**两种**原因，别说错：
+    // 注册表整个没加载上（网络问题）/ 注册表加载了但里面没有可用的 perAward（配置问题）。
+    const why = (SOURCES && SOURCES.sources)
+      ? "注册表和状态文件里都没有 perAward"
+      : "源注册表没加载上";
+    noteBox.textContent = `还差几个额度才能掉一只，暂时算不出来（${why}）`;
+  } else if (t.total >= t.perAward) {
+    noteBox.textContent = "今天已经凑够啦 —— 新的宝可梦在等你。";
+  } else {
+    noteBox.textContent = `还差 ${t.perAward - t.total} 个额度就能遇上新的宝可梦。`;
+  }
 }
 
 /**

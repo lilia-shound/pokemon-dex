@@ -450,6 +450,36 @@ class DexPageCreditTest(unittest.TestCase):
         self.assertNotIn("读满", msg)
         self.assertNotIn("30 分钟", msg)
 
+    def test_the_note_says_which_kind_of_missing_per_award_it_is(self):
+        """perAward 读不到有**两种**原因 ⇒ 按实际情况说，别一律说「注册表没加载上」。
+
+        评审提的问题：以前这句写死了「（源注册表没加载上）」——
+        注册表明明加载上了、只是里面没有 perAward 时，也这么说 ⇒ 说错了。
+        """
+        # ① 注册表加载了，但注册表和状态文件里都没有 perAward
+        reg = _registry()
+        reg.pop("perAward")
+        self.registry_response = reg
+        self.state_response = _state(today_sources={"weread": 1753})
+        self.state_response["today"].pop("perAward")
+        self.open_page()
+        self.wait_rendered()
+        note = self.page.inner_text("#cpNote")
+        self.assertIn("perAward", note)
+        self.assertNotIn("源注册表没加载上", note)
+        # 面板还在，额度明细也照常列出来
+        self.assertEqual(self.page_errors, [])
+        self.assertIn("1 个额度", self.rows()["weread"])
+
+        # ② 注册表整个没加载上 ⇒ 说「注册表没加载上」（不是 perAward 的锅）
+        self.registry_response = None
+        self.state_response = _state(today_sources={"weread": 1753})
+        self.state_response["today"].pop("perAward")
+        self.open_page()
+        self.wait_rendered()
+        note = self.page.inner_text("#cpNote")
+        self.assertIn("源注册表没加载上", note)
+
     def test_the_page_survives_a_missing_state_file(self):
         """状态文件拉不到 ⇒ 页面不崩，顶栏空着就行（别显示一个假的 0）。"""
         self.page.route("**/dex.json", lambda r: r.abort())
