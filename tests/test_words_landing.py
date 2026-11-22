@@ -1,0 +1,654 @@
+"""备考（背单词）记数页（`site/words/`）的测试。
+
+两件事：
+
+1. **口径的端到端一致性** —— 页面算出来的额度要跟服务端（`scripts/sources.py`）
+   算的**一样**（按天 floor 再相加，不跨天凑零头）；
+   页面生成的 issue body 要能被服务端的 `scripts/collect_reports.py` 的 `parse_report` 认。
+2. **真实浏览器里的观感断言**（Playwright）—— 输入、快捷按钮、按天 floor、
+   补录历史、localStorage 记住数字、注册表拉不到时照样渲染、零外链、手机宽度下不横向溢出。
+
+跑法：
+
+    python3 -B run_tests.py                          # 整套（浏览器那部分自己起本地静态服务器）
+    python3 -B -m tests.test_words_landing           # 只跑这个文件（要在仓库根目录下跑）
+"""
+
+from __future__ import annotations
+
+import datetime
+import http.server
+import json
+import pathlib
+import re
+import shutil
+import socketserver
+import threading
+import unittest
+import urllib.parse
+
+from scripts import collect_reports as cr
+from scripts import sources as src
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SOURCES_JSON = ROOT / "data" / "sources.json"
+WORDS_REGISTRY = ROOT / "site" / "words" / "sources.json"
+APP_JS = ROOT / "site" / "words" / "app.js"
+INDEX_HTML = ROOT / "site" / "words" / "index.html"
+STYLE_CSS = ROOT / "site" / "words" / "style.css"
+CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+
+try:  # playwright 可能没装 —— 不能让整套测试挂掉
+    from playwright.sync_api import sync_playwright
+
+    HAVE_PLAYWRIGHT = True
+except Exception:  # pragma: no cover - 环境问题
+    HAVE_PLAYWRIGHT = False
+
+
+class WordsRegistryCopyTest(unittest.TestCase):
+    """记数页读的那份注册表（`site/words/sources.json`）不许漂移。
+
+    页面是从**同源**的 `sources.json` 读 `per` 的（不是绝对 CDN 地址）⇒
+    它读到的必须和服务端算账用的那份是同一个口径。
+    副本一旦与 `data/sources.json` 不一致 ⇒ 页面显示的额度与服务端给的不一样 ⇒ 这里要拦住。
+    """
+
+    def test_the_copy_matches_the_server_side_registry(self):
+        self.assertTrue(WORDS_REGISTRY.exists(), "site/words/sources.json 不存在")
+        server = json.loads(SOURCES_JSON.read_text(encoding="utf-8"))
+        page = json.loads(WORDS_REGISTRY.read_text(encoding="utf-8"))
+        self.assertEqual(page, server, "site/words/sources.json 与 data/sources.json 不一致")
+
+    def test_the_copy_knows_the_words_source(self):
+        page = json.loads(WORDS_REGISTRY.read_text(encoding="utf-8"))
+        self.assertEqual(page["sources"]["words"]["per"], 100)
+        self.assertEqual(page["sources"]["words"]["enabled"], True)
+
+
+class WordsLandingBrowserTest(unittest.TestCase):
+    """真实浏览器（Playwright）里的记数页观感断言。
+
+    浏览器自己起一个本地静态服务器（site/ 目录）—— 不依赖外网，
+    也不占用固定端口（免得跟别的测试撞车）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not HAVE_PLAYWRIGHT:
+            raise unittest.SkipTest("没装 playwright，跳过记数页的浏览器测试")
+        if not (shutil.which("chromium") or pathlib.Path(CHROME).exists()):
+            raise unittest.SkipTest("找不到 chromium，跳过记数页的浏览器测试")
+        cls.httpd = _make_server(ROOT / "site")
+        cls.origin = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls.base = cls.origin + "/words/index.html"
+        cls._pw = sync_playwright().start()
+        cls.browser = cls._pw.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.browser.close()
+        finally:
+            cls._pw.stop()
+            cls.httpd.shutdown()
+            cls.httpd.server_close()
+
+    def setUp(self):
+        self.page = self.browser.new_page(viewport={"width": 390, "height": 844})
+        self.page_errors = []
+        self.console_errors = []
+        self.console_warnings = []
+        self.registry_requests = []
+        self.all_requests = []
+        self.page.on("pageerror", lambda e: self.page_errors.append(str(e)))
+        self.page.on("console", lambda m: self.console_errors.append(m.text)
+                     if m.type == "error" else None)
+        self.page.on("console", lambda m: self.console_warnings.append(m.text)
+                     if m.type == "warning" else None)
+        self.page.on("request", lambda r: self.all_requests.append(r.url))
+        # 注册表（sources.json）是页面唯一的网络请求 —— 这里把它拦下来，
+        # 让每个用例自己决定「服务端给什么」「拉不到」。
+        self.registry_response = None
+
+        def handle(route):
+            self.registry_requests.append(route.request.url)
+            if self.registry_response is None:
+                route.abort()
+            else:
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps(self.registry_response))
+
+        # **相对路径**取的那份（页面就在 site/words/ 下，同源）
+        self.page.route("**/sources.json", handle)
+
+    def tearDown(self):
+        self.page.close()
+
+    # -- 辅助 -----------------------------------------------------------
+
+    def open_page(self, query: str = "", width: int = 390):
+        """打开记数页并等它真的渲染完（github.io 慢，不固定 sleep）。"""
+        self.page.set_viewport_size({"width": width, "height": 844})
+        url = self.base + (("?" + query) if query else "")
+        self.page.goto(url, wait_until="commit")
+        return url
+
+    def wait_rendered(self):
+        """等页面画出额度行（**不等于**注册表生效了）。"""
+        self.page.wait_for_function(
+            """() => {
+              const el = document.querySelector('#creditLine');
+              return !!el && (el.textContent || '').trim().length > 0;
+            }""",
+            timeout=30000,
+        )
+
+    def wait_registry_applied(self):
+        """等**注册表真的生效**（读到真注册表了，或者兜底口径生效了）。
+
+        页面第一次渲染用的是默认口径（per=100），注册表是之后异步换上去的 ⇒
+        「画完了」**不等于**「注册表生效了」。要断言注册表口径，必须等这个标志。
+        """
+        self.page.wait_for_function(
+            "() => !!(window.WordsLanding && WordsLanding.state.registryLoaded)",
+            timeout=30000,
+        )
+
+    def today_key(self) -> str:
+        """页面自己认为的「今天」（用页面的算式，别在 Python 那边另算一遍）。"""
+        return self.page.evaluate("() => WordsLanding.todayKey()")
+
+    def shift_key(self, key: str, days: int) -> str:
+        """把日期键挪几天（-1 = 昨天）。"""
+        y, m, d = (int(x) for x in key.split("-"))
+        return (datetime.date(y, m, d) + datetime.timedelta(days=days)).isoformat()
+
+    def fill(self, value: str):
+        """往大数字输入框里填个数。"""
+        self.page.fill("#countInput", value)
+        self.page.wait_for_function(
+            "(v) => document.querySelector('#countInput').value === v",
+            arg=value, timeout=10000,
+        )
+
+    def pick_day(self, key: str):
+        """点某一天的小卡片（补录历史）。"""
+        self.page.click('.dcell[data-day="%s"]' % key)
+        # 等那张卡片变成「选中」的样子（class=on）
+        self.page.wait_for_function(
+            """(k) => {
+              const el = document.querySelector('.dcell[data-day="' + k + '"]');
+              return !!el && el.classList.contains('on');
+            }""",
+            arg=key, timeout=10000,
+        )
+
+    def credit_text(self) -> str:
+        return self.page.inner_text("#creditLine")
+
+    def week_credit_text(self) -> str:
+        return self.page.inner_text("#weekCredit")
+
+    def issue_query(self) -> dict:
+        """提交按钮那个链接里的 title / body。"""
+        url = self.page.get_attribute("#submitBtn", "href")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        return {"url": url, "title": q.get("title", [""])[0], "body": q.get("body", [""])[0]}
+
+    def record_credit_history(self):
+        """在页面里挂一个观察者，记下额度行的**每一次**变化。
+
+        为什么要在页面里记：Python 线程不一定能在两次渲染之间插进去
+        ⇒「兜底口径那一版」与「注册表口径那一版」两态都只能在页面里抓。
+        """
+        self.page.add_init_script("""
+          window.__creditHistory = [];
+          window.__pushCredit = function () {
+            const el = document.querySelector('#creditLine');
+            if (!el) return;
+            const v = (el.textContent || '').trim();
+            const h = window.__creditHistory;
+            if (h[h.length - 1] !== v) h.push(v);
+          };
+          document.addEventListener('DOMContentLoaded', function () {
+            new MutationObserver(window.__pushCredit).observe(document.body, {
+              subtree: true, childList: true, characterData: true });
+            window.__pushCredit();
+          });
+          (function poll() {
+            window.__pushCredit();
+            requestAnimationFrame(poll);
+          })();
+        """)
+
+    def credit_history(self) -> list:
+        """页面记下来的额度行序列（按出现的先后）。"""
+        return self.page.evaluate("() => window.__creditHistory || []")
+
+    def delay_the_registry_in_the_browser(self, seconds: float):
+        """在**浏览器里**把注册表那次 fetch 延后 —— 模拟「CDN 慢」。
+
+        为什么在浏览器里延后，而不是在 route handler 里 sleep：
+        handler 里 sleep 会把 Playwright 的事件循环整个占住
+        （页面照跑，但测试这边读什么都要等到 sleep 结束）⇒ 那样就**测不出中间态**了。
+        """
+        self.page.add_init_script("""
+          (function () {
+            const realFetch = window.fetch;
+            window.fetch = function (input, init) {
+              const url = (typeof input === 'string') ? input : ((input && input.url) || '');
+              if (url.indexOf('sources.json') >= 0) {
+                return new Promise(function (resolve) {
+                  setTimeout(function () { resolve(realFetch(input, init)); }, %d);
+                });
+              }
+              return realFetch(input, init);
+            };
+          })();
+        """ % int(seconds * 1000))
+
+    # -- 用例 -----------------------------------------------------------
+
+    def test_a_hundred_and_fifty_words_is_one_credit(self):
+        """输入 150 ⇒ 显示「1 个额度」；输入 250 ⇒ 「2 个额度」。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.assertIn("150 个", self.credit_text())
+        self.assertIn("1 个额度", self.credit_text())
+        self.fill("250")
+        self.assertIn("250 个", self.credit_text())
+        self.assertIn("2 个额度", self.credit_text())
+
+    def test_ninety_nine_words_is_still_zero_credit(self):
+        """零头不计：99 个词 = 0 个额度（但页面要说清楚「今天记了 99 个」）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("99")
+        self.assertIn("99 个", self.credit_text())
+        self.assertIn("0 个额度", self.credit_text())
+
+    def test_credits_are_floored_per_day_not_over_the_total(self):
+        """**按天 floor 再相加**：第一天 250、第二天 50 ⇒ 合计 **2 个额度**（不是 3）。
+
+        floor(250/100) + floor(50/100) = 2 + 0 = 2；
+        要是按总数算就是 floor(300/100) = 3 ⇒ **多算一个额度** ⇒ 这条必须钉死。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.fill("250")
+        self.pick_day(yesterday)
+        self.fill("50")
+        self.assertEqual(self.week_credit_text(), "2 个额度")
+        # 而且要和服务端算的**一样**（同一个口径）
+        cfg = src.load_config(SOURCES_JSON)
+        ledger = {today: {"words": 250}, yesterday: {"words": 50}}
+        server = src.credits_for_days(cfg, ledger)
+        self.assertEqual(sum(server.values()), 2)
+        self.assertEqual(sum(server.values()), 3 - 1)  # 不是 3
+        # 页面上那一天的额度也是按天算的：50 个 = 0 个额度
+        self.assertIn("0 个额度", self.credit_text())
+
+    def test_the_quick_buttons_work(self):
+        """快捷按钮 +20 生效（点一下就 +20）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.page.click('#quick button[data-add="20"]')
+        self.page.wait_for_function(
+            "() => document.querySelector('#countInput').value === '170'",
+            timeout=10000,
+        )
+        self.assertIn("170 个", self.credit_text())
+        # 清零
+        self.page.click('#quick button[data-add="0"]')
+        self.page.wait_for_function(
+            "() => document.querySelector('#countInput').value === ''",
+            timeout=10000,
+        )
+        self.assertIn("还没记", self.credit_text())
+
+    def test_the_number_survives_a_reload(self):
+        """localStorage 记住：刷新后数字还在。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.page.reload(wait_until="commit")
+        self.wait_registry_applied()
+        self.assertEqual(self.page.input_value("#countInput"), "150")
+        self.assertIn("1 个额度", self.credit_text())
+
+    def test_a_day_can_be_backfilled(self):
+        """点某一天可以补录历史（改的是那一天，不是今天）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.pick_day(yesterday)
+        self.fill("80")
+        self.assertIn("80 个", self.credit_text())
+        # 今天还是空的
+        self.pick_day(today)
+        self.assertIn("今天还没记", self.credit_text())
+
+    def test_only_days_with_counts_go_into_the_body(self):
+        """body 里**只放有数的天**（零不报），标题是最新的一天。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.fill("150")
+        self.pick_day(yesterday)
+        self.fill("80")
+        q = self.issue_query()
+        body = json.loads(q["body"])
+        self.assertEqual(body.get("v"), 1)
+        self.assertEqual(body.get("source"), "words")
+        self.assertEqual(body.get("days"), {today: 150, yesterday: 80})
+        self.assertEqual(q["title"], "[report] words " + today)
+        self.assertTrue(q["url"].startswith(
+            "https://github.com/lilia-shound/pokemon-dex/issues/new?"))
+
+    def test_the_issue_body_is_accepted_by_the_server_parser(self):
+        """**端到端**：页面生成的 body，服务端的 parse_report 要认。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.fill("150")
+        self.pick_day(yesterday)
+        self.fill("80")
+        body = self.issue_query()["body"]
+        cfg = src.load_config(SOURCES_JSON)
+        days, err = cr.parse_report(body, cfg, today)
+        self.assertIsNone(err, "服务端不认这个 body：%s" % err)
+        self.assertEqual(days, {today: 150, yesterday: 80})
+        # 服务端按这个 body 折算出来的额度 = 1 + 0 = 1（按天 floor）
+        ledger = {d: {"words": v} for d, v in days.items()}
+        self.assertEqual(sum(src.credits_for_days(cfg, ledger).values()), 1)
+
+    def test_the_page_falls_back_to_a_hundred_when_the_registry_is_unreachable(self):
+        """拉不到 sources.json ⇒ 退回兜底的 100（**不能卡在「载入中…」**）。"""
+        self.registry_response = None      # 拦下来直接 abort
+        self.open_page()
+        self.wait_registry_applied()        # 等兜底口径生效（注册表试过了）
+        self.fill("150")
+        self.assertIn("1 个额度", self.credit_text())
+        self.assertIn("100 个 = 1 个额度", self.page.inner_text("#perNote"))
+        # 失败原因不许被整个吞掉 —— 控制台里要看得见「为什么退回默认口径」
+        self.assertTrue(
+            any("注册表" in w for w in self.console_warnings),
+            "注册表拉不到时应该有一条 warning：%r" % (self.console_warnings,),
+        )
+
+    def test_the_credit_comes_from_the_registry(self):
+        """per 真的来自注册表（**两态都要看到**）。
+
+        页面**第一次**渲染用的是兜底口径（per=100）⇒ 150 个 = 1 个额度；
+        注册表（per=50）生效后要重算成 150 // 50 = 3 个额度。
+
+        为了不靠时序侥幸，这里把注册表那次 fetch **人为延后**：
+        先用兜底口径把 150 填进去（看到「1 个额度」），
+        等注册表生效后再看到「3 个额度」—— 两态都在，才证明 per 是从注册表来的。
+        """
+        self.registry_response = _registry(per=50)
+        self.delay_the_registry_in_the_browser(1.5)
+        self.record_credit_history()
+        self.open_page()
+        self.wait_rendered()
+        self.fill("150")
+        # 兜底口径那一版：150 // 100 = 1 个额度
+        self.assertIn("1 个额度", self.credit_text())
+        self.wait_registry_applied()
+        # 注册表口径那一版：150 // 50 = 3 个额度
+        self.assertIn("3 个额度", self.credit_text())
+        self.assertIn("50 个 = 1 个额度", self.page.inner_text("#perNote"))
+        # 两态都要在页面上出现过，而且**先后顺序**要对
+        history = self.credit_history()
+        first = next((i for i, h in enumerate(history) if "1 个额度" in h), -1)
+        second = next((i for i, h in enumerate(history) if "3 个额度" in h), -1)
+        self.assertGreaterEqual(first, 0, "没看到兜底口径（per=100）那一版：%r" % (history,))
+        self.assertGreaterEqual(second, 0, "没看到注册表口径（per=50）那一版：%r" % (history,))
+        self.assertLess(first, second, "两次渲染的先后顺序不对：%r" % (history,))
+
+    def test_the_count_is_clamped_to_the_daily_cap_before_submitting(self):
+        """单日超上限的词数要**夹到 maxPerDay** 再提交。
+
+        服务端 `scripts/collect_reports.py` 的规则是「任一天超过 maxPerDay
+        ⇒ **整份报告丢弃**」⇒ 页面要是原样报上去，她会以为交上去了，其实被丢了。
+        """
+        self.registry_response = _registry(per=100, max_per_day=500)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("9999")
+        # 页面上有提示（原始值与上限都在）
+        note = self.page.inner_text("#clampNote")
+        self.assertIn("9999", note)
+        self.assertIn("500", note)
+        # 提交给服务端的是夹过的值
+        body = json.loads(self.issue_query()["body"])
+        today = self.today_key()
+        self.assertEqual(body.get("days"), {today: 500})
+        # 而且服务端认这份报告（没被丢掉）
+        cfg = src.load_config(SOURCES_JSON)
+        days, err = cr.parse_report(self.issue_query()["body"], cfg, today)
+        self.assertIsNone(err, "服务端不认这个 body：%s" % err)
+        self.assertEqual(days, {today: 500})
+
+    def test_zero_days_shows_a_friendly_hint(self):
+        """一天都没记 ⇒ 显示友好提示（不是空白页、也不是一个孤零零的 0）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.assertIn("今天还没记", self.credit_text())
+        self.assertNotIn("0 个额度", self.credit_text())
+        # 提交按钮没有量时是禁用的
+        self.assertEqual(self.page.get_attribute("#submitBtn", "aria-disabled"), "true")
+
+    def test_the_page_sends_exactly_one_network_request(self):
+        """只许发一个网络请求：读 sources.json 拿 per。
+
+        把**全部**请求都记下来：除了本地静态资源（html/css/js），
+        只应该剩下那一条 sources.json。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.assertEqual(len(self.registry_requests), 1, str(self.registry_requests))
+        others = [u for u in self.all_requests if not _is_local_static(u)]
+        self.assertEqual(others, list(self.registry_requests),
+                         "除了 sources.json 之外还有别的请求：%r" % (self.all_requests,))
+
+    def test_the_registry_is_fetched_from_a_relative_path(self):
+        """注册表走**相对路径**（同源），不是绝对 CDN 地址 —— 外链在她那边会挂。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.assertEqual(len(self.registry_requests), 1)
+        url = self.registry_requests[0]
+        self.assertTrue(url.startswith(self.origin + "/words/"),
+                        "注册表不是从同源的相对路径取的：%s" % url)
+        self.assertTrue(url.endswith("/sources.json"), url)
+
+    def test_the_page_works_without_any_query_parameter(self):
+        """被直接打开（没有 ? 参数）也能用。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.assertIn("1 个额度", self.credit_text())
+
+    def test_the_page_works_with_a_query_parameter(self):
+        """带参数打开（?day=）也能用 —— 落在那一天上。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        yesterday = self.shift_key(self.today_key(), -1)
+        self.open_page(query="day=" + yesterday)
+        self.wait_registry_applied()
+        self.fill("80")
+        self.assertIn("80 个", self.credit_text())
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {yesterday: 80})
+
+    def test_the_page_still_works_when_local_storage_is_unavailable(self):
+        """localStorage 不可用（隐私模式 / 沙箱 iframe）⇒ **整页不能崩**。"""
+        self.registry_response = _registry(per=100)
+        self.page.add_init_script("""
+          Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get() { throw new Error('SecurityError: storage is disabled'); }
+          });
+        """)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.assertIn("1 个额度", self.credit_text())
+        self.assertEqual(self.page_errors, [])
+        # 并且要告诉她「刷新就没了」
+        self.assertIn("不让存东西", self.page.inner_text("#storeNote"))
+
+    def test_the_page_does_not_overflow_horizontally_on_a_phone(self):
+        """手机宽度下不许横向溢出。"""
+        self.registry_response = _registry(per=100)
+        for width in (320, 390, 430):
+            with self.subTest(width=width):
+                self.open_page(width=width)
+                self.wait_rendered()
+                overflow = self.page.evaluate(
+                    "() => document.documentElement.scrollWidth - window.innerWidth")
+                self.assertLessEqual(overflow, 1, "宽 %d 像素时横向溢出 %s 像素"
+                                     % (width, overflow))
+
+    def test_no_page_errors(self):
+        """页面不许有未捕获的异常。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.assertEqual(self.page_errors, [])
+        self.assertEqual(self.console_errors, [])
+
+    def test_the_page_has_no_external_resource(self):
+        """不许引外部 CDN 的框架/字体/脚本 —— 外链在她那边（大陆直连）会挂。
+
+        页面只准跟两处说话：自己站上的 sources.json，和 GitHub 的新建 issue 页。
+
+        **看得要全**：
+          - HTML 的 `src` / `href` 属性（**双引号与单引号都要看**），
+            以及 HTML 里内联的 `url(...)`；
+          - CSS 的 `url(...)` 与 `@import`；
+          - JS 里的 URL 字面量（包括协议相对的 `//…`）。
+        漏了任何一处 ⇒ 这条守卫就形同虚设。
+        """
+        allowed_prefix = "https://github.com/"
+
+        def check_url(url: str, where: str):
+            url = url.strip()
+            self.assertFalse(
+                url.startswith("http://") or url.startswith("https://"),
+                "%s 引了外链：%s" % (where, url),
+            )
+            self.assertFalse(
+                url.startswith("//"),
+                "%s 引了协议相对的外链：%s" % (where, url),
+            )
+
+        # -- HTML：src / href 属性（双引号、单引号都算）--------------------
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        for m in re.finditer(r"""(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')""", html):
+            url = m.group(1) if m.group(1) is not None else m.group(2)
+            check_url(url, "记数页的 HTML")
+        # -- HTML：内联的 url(...) -----------------------------------------
+        for m in re.finditer(r"url\(\s*['\"]?([^'\")]*)", html):
+            check_url(m.group(1), "记数页的 HTML")
+
+        # -- CSS：url(...) 与 @import --------------------------------------
+        css = STYLE_CSS.read_text(encoding="utf-8")
+        for m in re.finditer(r"url\(\s*['\"]?([^'\")]*)", css):
+            check_url(m.group(1), "style.css")
+        self.assertNotIn("@import", css, "style.css 里不许 @import 外链")
+
+        # -- JS：URL 字面量 -------------------------------------------------
+        app = APP_JS.read_text(encoding="utf-8")
+        for url in re.findall(r"https?://[^\s'\"]+", app):
+            self.assertTrue(
+                url.startswith(allowed_prefix),
+                "app.js 里出现了意料之外的外链：%s" % url,
+            )
+        # 协议相对的外链（'//cdn.…'）
+        for url in re.findall(r"(?<=['\"])//[A-Za-z0-9][^\s'\"]*", app):
+            self.assertFalse(
+                url.startswith("//"),
+                "app.js 里出现了协议相对的外链：%s" % url,
+            )
+
+
+# -- 小工具 -------------------------------------------------------------
+
+
+def _registry(per: int, max_per_day: int = 500, per_award: int = 2) -> dict:
+    """给页面看的一份 sources.json（只放页面要用的那几个字段）。"""
+    return {
+        "version": 1,
+        "perAward": per_award,
+        "maxPerDay": 1,
+        "maxBackfill": 3,
+        "ledgerDays": 30,
+        "sources": {
+            "words": {
+                "name": "背单词",
+                "icon": "🔤",
+                "unit": "个",
+                "per": per,
+                "mode": "push",
+                "enabled": True,
+                "maxPerDay": max_per_day,
+            }
+        },
+    }
+
+
+def _is_local_static(url: str) -> bool:
+    """这个请求是不是本地静态服务器上的静态资源（html/css/js）。
+
+    记数页除了这三个文件，不许再要别的东西 —— 别的都算「多余的网络请求」。
+    """
+    return bool(re.match(
+        r"^http://127\.0\.0\.1:\d+/words/(index\.html|style\.css|app\.js)(\?.*)?$",
+        url,
+    ))
+
+
+def _make_server(directory: pathlib.Path):
+    """在 site/ 目录上起一个静态服务器（端口 0 = 随机端口，免得跟别的测试撞车）。"""
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def log_message(self, *args):  # 别把日志糊满终端
+            pass
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    httpd = Server(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+if __name__ == "__main__":
+    unittest.main()
