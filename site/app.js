@@ -671,6 +671,8 @@ window.DexPage = {
   evolutionText,
   formEntry,
   formLine,
+  // 名字 → 图鉴记录（进化链按名字查阶数用；调试/测试也要用）
+  pokedexByName: () => POKEDEX_BY_NAME,
 };
 
 load().catch((e) => { setText("summary", "载入失败：" + e.message); });
