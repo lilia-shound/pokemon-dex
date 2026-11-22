@@ -111,3 +111,7 @@ code{
   .cnum{font-size:48px}
   .btn{font-size:18px;padding:16px 14px}
 }
+
+/* 独立打开时回图鉴的入口 */
+.backHome a{color:var(--accent);text-decoration:none}
+.backHome a:hover{text-decoration:underline}

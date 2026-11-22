@@ -187,3 +187,7 @@ select,input[type=number]{background:rgba(0,0,0,.28);border:1px solid rgba(255,2
 .ok{color:#6ee7c8;font-size:13px}
 .warn{color:#ffb26b;font-size:13px}
 .big{font-size:30px;font-weight:700;margin:6px 0}
+
+/* 独立打开时回图鉴的入口 */
+.backHome a{color:var(--accent);text-decoration:none}
+.backHome a:hover{text-decoration:underline}

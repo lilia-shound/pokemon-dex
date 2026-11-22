@@ -9,6 +9,16 @@
 </head>
 <body>
 
+<!-- 统一入口：图鉴 / 背单词 / KOReader / 番茄钟 —— 都在这一个网址里切（hash 路由） -->
+<nav class="tabs" id="tabs">
+  <button type="button" class="tab on" data-view="dex">图鉴</button>
+  <button type="button" class="tab" data-view="words">背单词</button>
+  <button type="button" class="tab" data-view="koreader">KOReader</button>
+  <button type="button" class="tab" data-view="pomodoro">番茄钟</button>
+</nav>
+
+<!-- 图鉴视图（默认） -->
+<div id="viewDex">
 <header class="top">
   <div class="ring" id="ring"><span id="ringText">—</span></div>
   <div class="meta">
@@ -43,6 +53,25 @@
 <nav class="filters" id="filters"></nav>
 
 <main class="grid" id="grid"></main>
+
+<!-- 工具箱：装插件、看日志这类冷门入口 —— 放在这里就不用记别的网址了 -->
+<section class="toolbox" id="toolbox">
+  <p class="toolboxLabel">工具箱</p>
+  <ul class="toolboxList">
+    <li><a href="weread-dex.user.js">微信读书油猴脚本</a><span>装上以后微信读书网页版右上角出现图鉴胶囊</span></li>
+    <li><a href="bcz-dex.user.js">百词斩油猴脚本</a><span>网页版背单词时自动认词数（手机 App 用不了）</span></li>
+    <li><a href="koreader-dex.koplugin/">KOReader 插件</a><span>Kindle / 安卓上把阅读时长并进图鉴</span></li>
+    <li><a href="words/">背单词记数页</a><span>单独打开这一页也行</span></li>
+    <li><a href="koreader/">KOReader 落地页</a><span>Kindle 上扫码用的那一页</span></li>
+    <li><a href="pomodoro/">番茄钟</a><span>单独打开也行</span></li>
+  </ul>
+</section>
+</div>
+
+<!-- 其它视图：子页面用 iframe 承载（代码不重复，旧网址也全部保留） -->
+<div id="viewFrame" hidden>
+  <iframe id="frame" title="训练家图鉴 · 子页面"></iframe>
+</div>
 
 <div class="sheet" id="sheet" hidden>
   <div class="sheetInner" id="sheetInner"></div>

@@ -49,6 +49,10 @@ h1{font-size:23px;font-weight:700;letter-spacing:.5px}
 .hint.warn{color:var(--accent)}
 .hint.center{text-align:center;margin-top:12px}
 .hint b{color:var(--ink)}
+/* 独立打开时回图鉴的入口 */
+.backHome a{color:var(--accent);text-decoration:none}
+.backHome a:hover{text-decoration:underline}
+
 
 /* ── 大数字输入 ───────────────────────────────── */
 .counter{display:flex;justify-content:center;margin:2px 0 0}

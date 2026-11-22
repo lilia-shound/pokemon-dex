@@ -103,6 +103,45 @@ p{margin:0}
   display:inline-block;padding:2px 8px;border-radius:999px;
   background:var(--accent-soft)}
 
+/* ── 统一入口的 tab 导航 ───────────────── */
+.tabs{
+  position:sticky; top:0; z-index:30;
+  display:flex; gap:4px; padding:8px 12px;
+  background:var(--bg); border-bottom:1px solid var(--line);
+  overflow-x:auto; -webkit-overflow-scrolling:touch;
+}
+.tabs::-webkit-scrollbar{display:none}
+.tab{
+  flex:0 0 auto; border:1px solid var(--line); background:var(--card);
+  color:var(--dim); font:inherit; font-size:14px;
+  padding:6px 14px; border-radius:999px; cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.tab:hover{color:var(--ink)}
+.tab.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
+/* 子页面（iframe）：给个边框，看起来像个卡片而不是裸 iframe */
+#viewFrame{padding:10px 12px 24px}
+#frame{
+  display:block; width:100%; height:calc(100dvh - 120px); min-height:520px;
+  border:1px solid var(--line); border-radius:16px; background:var(--card);
+}
+
+/* ── 工具箱 ───────────────────────────── */
+.toolbox{
+  max-width:1120px; margin:26px auto 0; padding:0 20px 40px;
+}
+.toolboxLabel{font-size:12px;color:var(--dim);letter-spacing:1px;margin-bottom:10px}
+.toolboxList{list-style:none;margin:0;padding:0}
+.toolboxList li{
+  display:flex; flex-direction:column; gap:2px;
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:10px 14px; margin-bottom:8px;
+}
+.toolboxList a{color:var(--accent);font-weight:600;text-decoration:none;font-size:14px}
+.toolboxList a:hover{text-decoration:underline}
+.toolboxList span{font-size:12px;color:var(--dim)}
+
 /* ── 筛选 ───────────────────────────── */
 .filters{max-width:1120px;margin:20px auto 0;padding:0 20px;display:flex;gap:7px;flex-wrap:wrap}
 .filters button{

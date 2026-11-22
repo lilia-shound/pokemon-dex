@@ -656,8 +656,119 @@ $("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) $("sh
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sheet").hidden = true; });
 
 // 给测试看的小窗口（页面自己不用它）—— 与 site/words/app.js 的 WordsLanding 同一套路：
-// 测试要能**在浏览器里**问出「页面算出来的额度是多少」，才好跟服务端对拍。
-// **只给算法，不给数据**：整份 dex.json 不挂在 window 上（挂上去谁都能读）。
+// ─────────────────────────────────────────────────────────────
+// 统一入口：图鉴 / 背单词 / KOReader / 番茄钟 —— 同一个网址里切
+//
+// ★ 为什么用 iframe 承载子页面，而不是把它们的代码搬进来：
+//   三个子页面各自是**能独立跑的完整单页**（番茄钟 211KB、记数页、落地页），
+//   搬代码会重复三份逻辑 + 打架样式；iframe 里它们跑的是同一份文件，
+//   本地存储（localStorage）同源共享，逻辑改动不用改两处。
+// ★ 旧的独立网址**全部保留**（Kindle 扫码、主屏图标、老书签都不能断）。
+// ─────────────────────────────────────────────────────────────
+
+const VIEWS = {
+  dex: { el: "viewDex", src: null },
+  words: { el: "viewFrame", src: "words/" },
+  koreader: { el: "viewFrame", src: "koreader/" },
+  // ★ 番茄钟**不能**放进 iframe（2026-11-22）：
+  //   它的摸鱼检测是「专注期间 document.hidden 超过 3 秒就算摸鱼」，
+  //   而 iframe 被藏起来时 document.hidden 就是 true
+  //   ⇒ 她在同一个网址里切一下 tab，这轮专注就会被判成摸鱼。
+  //   所以它保持独立页面，点 tab 直接跳过去（页面里有「← 回训练家图鉴」）。
+  pomodoro: { el: null, src: "pomodoro/", jump: true },
+};
+
+/** 当前视图名（默认图鉴）。 */
+let currentView = "dex";
+
+/** 把 iframe 里的「← 回训练家图鉴」藏掉（同源，父页可以直接改子页的 DOM）。 */
+function hideFrameBackLink() {
+  try {
+    const doc = $("frame") && $("frame").contentDocument;
+    if (!doc) return;
+    for (const el of doc.querySelectorAll(".backHome")) el.hidden = true;
+  } catch (e) {
+    /* 跨域就读不到 —— 无所谓，那个链接本来就该显示 */
+  }
+}
+
+/**
+ * 切视图。
+ *
+ * `hash` 是路由：`#words` / `#koreader` / `#pomodoro` / `#dex`（默认）。
+ * 走 hash 而不是 query ⇒ **不刷新页面**就能切（手机上尤其重要：
+ * 切一次要重新拉 pokedex.json 的话，在弱网下会卡好几秒）。
+ */
+function showView(name, updateHash = true) {
+  if (!VIEWS[name]) name = "dex";
+  const cfg = VIEWS[name];
+  // ★ 要跳走的（番茄钟）：直接跳，不在 iframe 里跑（摸鱼检测会误判）
+  if (cfg.jump) {
+    location.href = cfg.src;
+    return;
+  }
+  currentView = name;
+  for (const btn of document.querySelectorAll("#tabs .tab")) {
+    btn.classList.toggle("on", btn.dataset.view === name);
+  }
+  const dex = $("viewDex");
+  const frameWrap = $("viewFrame");
+  if (name === "dex") {
+    dex.hidden = false;
+    frameWrap.hidden = true;
+  } else {
+    dex.hidden = true;
+    frameWrap.hidden = false;
+    const f = $("frame");
+    const src = cfg.src;
+    // ★ 懒加载：第一次切到才建 src（别一进页面就把三个子页都拉起来）
+    if (f && f.getAttribute("src") !== src) {
+      f.setAttribute("src", src);
+      // 同源 ⇒ 父页能直接改 iframe 里的 DOM ⇒ 把子页的「← 回训练家图鉴」藏掉
+      // （父页顶部已经有导航了，重复反而乱）。
+      // ★ 用父页来做，而不是让子页引一个脚本 —— 子页的纪律是「只许发一个网络请求」，
+      //   多引一个文件就破了自己的测试（2026-11-22 踩过）。
+      f.addEventListener("load", hideFrameBackLink, { once: true });
+    }
+    hideFrameBackLink();
+  }
+  if (updateHash) {
+    const h = name === "dex" ? "" : "#" + name;
+    if (location.hash !== h) {
+      history.replaceState(null, "", location.pathname + location.search + h);
+    }
+  }
+}
+
+function currentViewFromHash() {
+  const h = (location.hash || "").replace(/^#/, "");
+  return VIEWS[h] ? h : "dex";
+}
+
+/** 图鉴视图里滚动到顶（切回来时别停在半截）。 */
+function scrollTop() {
+  try { window.scrollTo({ top: 0, behavior: "instant" }); } catch (e) { window.scrollTo(0, 0); }
+}
+
+function initTabs() {
+  const tabs = $("tabs");
+  if (!tabs) return;
+  tabs.addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab");
+    if (!btn) return;
+    showView(btn.dataset.view);
+    scrollTop();
+  });
+  window.addEventListener("hashchange", () => {
+    showView(currentViewFromHash(), false);
+    scrollTop();
+  });
+  // 初始：按地址栏上的 hash 决定开哪个视图
+  showView(currentViewFromHash(), false);
+}
+
+// 整份 dex.json 不挂在 window 上（挂上去谁都能读），
+// 但测试要能**在浏览器里**问出「页面算出来的额度是多少」，才好跟服务端对拍。
 window.DexPage = {
   creditForSource,
   sourceCredits,
@@ -671,8 +782,11 @@ window.DexPage = {
   evolutionText,
   formEntry,
   formLine,
+  showView,
+  currentView: () => currentView,
   // 名字 → 图鉴记录（进化链按名字查阶数用；调试/测试也要用）
   pokedexByName: () => POKEDEX_BY_NAME,
 };
 
+initTabs();
 load().catch((e) => { setText("summary", "载入失败：" + e.message); });
