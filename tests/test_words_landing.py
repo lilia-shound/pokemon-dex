@@ -522,6 +522,127 @@ class WordsLandingBrowserTest(unittest.TestCase):
         body = json.loads(self.issue_query()["body"])
         self.assertEqual(body.get("days"), {self.today_key(): 150})
 
+    # -- 预填上次的数字（减摩擦） -----------------------------------------
+
+    def seed_days(self, days: dict):
+        """往本机存储里塞几条记录（相当于「她前几天记过了」），然后刷新。"""
+        self.page.evaluate(
+            "(v) => window.localStorage.setItem('pokemon-dex-words-v1', v)",
+            json.dumps({"v": 1, "days": days}))
+        self.page.reload(wait_until="commit")
+        self.wait_registry_applied()
+
+    def test_the_previous_count_is_prefilled_when_today_is_still_empty(self):
+        """今天还没记、昨天记过 ⇒ 上次的数字填进输入框，并有一行提示。
+
+        提示必须说清楚「这是上次的数，不是今天的」——
+        她要是以为那是今天已经背完的数，就会白交一次。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({yesterday: 150})
+        self.assertEqual(self.page.input_value("#countInput"), "150")
+        note = self.page.inner_text("#prefillNote")
+        self.assertIn("上次记的是", note)
+        self.assertIn("150", note)
+        self.assertIn("今天还没记", note)
+
+    def test_todays_own_count_is_not_overwritten_by_the_previous_one(self):
+        """今天已经有记录 ⇒ 不许用上次的数覆盖它。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({today: 120, yesterday: 150})
+        self.assertEqual(self.page.input_value("#countInput"), "120")
+        # 也没有预填提示了（没什么好提示的）
+        self.assertTrue(self.page.locator("#prefillNote").is_hidden())
+
+    def test_the_prefilled_number_does_not_count_as_a_credit(self):
+        """**预填的数不进额度** —— 额度仍按实际已记的天算。
+
+        昨天 150 个（1 个额度）⇒ 今天预填 150 个 **不算**今天的额度
+        （不然「还没提交」的日子提前达标了）。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({yesterday: 150})
+        # 输入框里是 150 …
+        self.assertEqual(self.page.input_value("#countInput"), "150")
+        # … 但今天还是「还没记」，额度只有昨天那 1 个
+        self.assertIn("今天还没记", self.credit_text())
+        self.assertEqual(self.week_credit_text(), "1 个额度")
+        # 近 7 天的合计也不含今天（那个 150 还没算进去）
+        total = self.page.inner_text("#weekTotal")
+        self.assertIn("150 个", total)
+
+    def test_the_prefilled_number_can_be_submitted_directly(self):
+        """预填的数能**直接提交** —— 链接里就带着它。
+
+        「改一下或直接提交」这句话要成立 ⇒ 提交按钮不能是灰的，
+        报告里也得带上今天这个数（否则点开是空的，等于没得交）。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({yesterday: 150})
+        self.assertNotEqual(self.page.get_attribute("#submitBtn", "aria-disabled"), "true")
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {today: 150, yesterday: 150})
+        # 服务端认这份报告（没被丢掉）
+        cfg = src.load_config(SOURCES_JSON)
+        days, err = cr.parse_report(self.issue_query()["body"], cfg, today)
+        self.assertIsNone(err, "服务端不认这个 body：%s" % err)
+        self.assertEqual(days, {today: 150, yesterday: 150})
+
+    def test_editing_the_prefilled_number_records_it(self):
+        """她把预填的数改一下 ⇒ 变成今天真正的记录（额度从这时才算）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({yesterday: 150})
+        self.fill("160")
+        self.assertIn("160 个", self.credit_text())
+        self.assertEqual(self.week_credit_text(), "2 个额度")
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {today: 160, yesterday: 150})
+
+    def test_a_quick_button_works_on_top_of_the_prefilled_number(self):
+        """快捷按钮在预填之上加（预填 150 ⇒ +20 ⇒ 170，不是 20）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        yesterday = self.shift_key(today, -1)
+        self.seed_days({yesterday: 150})
+        self.page.click('#quick button[data-add="20"]')
+        self.page.wait_for_function(
+            "() => document.querySelector('#countInput').value === '170'",
+            timeout=10000,
+        )
+        self.assertIn("170 个", self.credit_text())
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {today: 170, yesterday: 150})
+
+    def test_there_is_no_prefill_when_she_has_never_recorded_anything(self):
+        """从来没记过 ⇒ 没有预填（输入框是空的，也没有提示）。"""
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.assertEqual(self.page.input_value("#countInput"), "")
+        self.assertTrue(self.page.locator("#prefillNote").is_hidden())
+
     def test_days_outside_the_week_window_are_called_out(self):
         """存 30 天、只显示 7 天 ⇒ 报告里可能有**她看不见**的日子 ⇒ 必须提示。
 

@@ -113,6 +113,30 @@
   }
 
   /**
+   * **上一次记过的那一天**（今天之前、最近的一个有数的天）。
+   *
+   * 用途：打开页面时，今天还没记 ⇒ 把上次的数字**预填进输入框**，
+   * 她每天的量差不多 ⇒ 多数时候点一下提交就行。
+   *
+   * 两个限制：
+   *   - 必须是**今天之前**的（今天有记录就轮不到它）；
+   *   - 必须在「最近 WINDOW_DAYS 天」里 —— 那个数要能在她看得见的那一排里核对，
+   *     十天前的数拿来预填没有意义。
+   *
+   * @param {Object<string, number>} days
+   * @param {string} today 今天（YYYY-MM-DD）
+   * @param {number} [windowDays] 往回看几天（默认 WINDOW_DAYS）
+   * @returns {?{day: string, value: number}} 没有就 null
+   */
+  function previousRecordedDay(days, today, windowDays) {
+    const w = Number(windowDays) >= 1 ? Math.floor(Number(windowDays)) : WINDOW_DAYS;
+    const candidates = lastDays(w).filter(k => k !== today && Number((days || {})[k]) > 0);
+    if (!candidates.length) return null;
+    const day = candidates[candidates.length - 1];   // lastDays 是从早到晚排的
+    return { day: day, value: Math.floor(Number(days[day])) };
+  }
+
+  /**
    * 报告体：{v, source, days} —— 服务端 scripts/collect_reports.py 的 parse_report 认这个格式。
    * days 只带**有量**的天（零不报）；键按**日期倒序**排。
    * @param {Object<string, number>} days
@@ -181,16 +205,20 @@
    *  - `storageOk` —— 本机存储可用（隐私模式下不可用 ⇒ 页面照常用，只是不记住）
    *  - `enabled` —— 注册表里这个源是不是启用的（`enabled` 不为 true ⇒ 服务端拒收上报）
    *  - `linkNote` —— 链接参数（`?day=` / `?words=`）带来的提示
+   *  - `draft` —— **预填**：{day, value, from}（今天还没记时，把上次的数字填进输入框）
+   *     ⚠️ 预填**只影响输入框的初值**：它不进 `days` ⇒ 额度/周合计仍按实际已记的天算
+   *     （不然「还没提交」的日子会提前达标）。
    */
   const state = {
     days: {}, selected: todayKey(),
     per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, perAward: DEFAULT_PER_AWARD,
     registryLoaded: false, storageOk: true,
     enabled: true, linkNote: '',
+    draft: null,
   };
 
   const API = {
-    creditsForDay, creditsForDays, clampDays, latestDay,
+    creditsForDay, creditsForDays, clampDays, latestDay, previousRecordedDay,
     buildReport, buildIssueTitle, buildIssueUrl,
     lastDays, todayKey, shortLabel, weekdayOf,
     DEFAULT_PER, DEFAULT_MAX_PER_DAY, SOURCE_ID, ISSUE_NEW, REPO,
@@ -290,13 +318,23 @@
     return clampDays({ [day]: state.days[day] || 0 }, state.cap).days[day];
   }
 
-  /** 要提交的那些天：夹过上限、有量的（零不报）。 */
+  /**
+   * 要提交的那些天：夹过上限、有量的（零不报）。
+   *
+   * **预填的数也算在里面** —— 她点「去 GitHub 提交」就是要把今天这个数报上去
+   * （不然那个「直接提交」根本交不了东西）。
+   * 但它**不算进额度显示**：额度只按 `state.days`（实际已记的天）算。
+   */
   function reportDays() {
     const clamped = clampDays(state.days, state.cap);
     const days = {};
     Object.keys(clamped.days).sort().reverse().forEach(d => {
       if (clamped.days[d] > 0) days[d] = clamped.days[d];
     });
+    if (state.draft && !(days[state.draft.day] > 0)) {
+      const capped = clampDays({ [state.draft.day]: state.draft.value }, state.cap);
+      if (capped.days[state.draft.day] > 0) days[state.draft.day] = capped.days[state.draft.day];
+    }
     return { days: days, clamped: clamped.clamped };
   }
 
@@ -309,7 +347,17 @@
 
   function renderDay() {
     const input = $('#countInput');
-    if (input) input.value = state.days[state.selected] ? String(state.days[state.selected]) : '';
+    if (input) {
+      const recorded = state.days[state.selected];
+      if (recorded) {
+        input.value = String(recorded);
+      } else if (state.draft && state.draft.day === state.selected) {
+        // **预填**：今天还没记 ⇒ 把上次的数字填进来（她可以改）
+        input.value = String(state.draft.value);
+      } else {
+        input.value = '';
+      }
+    }
     $('#dayTitle').textContent = selectedLabel() + '背了多少个词';
     renderMetrics();
   }
@@ -367,6 +415,18 @@
     } else {
       link.hidden = true;
       link.textContent = '';
+    }
+
+    // **预填提示** —— 必须让她知道「这是上次的数，不是今天的」
+    const pre = $('#prefillNote');
+    if (state.draft && !(Number(state.days[state.draft.day]) > 0)) {
+      pre.hidden = false;
+      pre.textContent = '今天还没记 —— 上次记的是 ' + state.draft.value + ' 个（' +
+        shortLabel(state.draft.from) + '），已经填在上面的框里了：改一下或直接提交。' +
+        '（这个数还没算进今天的额度，提交之后才算。）';
+    } else {
+      pre.hidden = true;
+      pre.textContent = '';
     }
 
     const store = $('#storeNote');
@@ -463,24 +523,45 @@
 
   /* ---------- 交互 ---------- */
 
-  /** 把输入框里的数字写进状态（空 = 0，非法 = 0）。 */
-  function readInput() {
+  /**
+   * 把输入框里的数字写进状态（空 = 0，非法 = 0）。
+   *
+   * @param {boolean} [byUser] 这是**她自己动**的输入框吗？
+   *   - true  ⇒ 她打字了 ⇒ 照记（预填就此变成她自己的记录）。
+   *   - false ⇒ 只是失焦之类的被动事件 ⇒ 预填还没被动过就**别记**
+   *     （否则「只是点了一下别处」就把预填变成今天的记录 ⇒ 提前达标）。
+   */
+  function readInput(byUser) {
+    if (!byUser && state.draft && state.draft.day === state.selected &&
+        !(Number(state.days[state.selected]) > 0)) {
+      // 预填原封不动 ⇒ 不动状态
+      return;
+    }
     const input = $('#countInput');
     const v = Number(input.value);
     const n = Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
     if (n > 0) state.days[state.selected] = n;
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
+    state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
     saveDays();
   }
 
-  /** 快捷按钮：+10 / +20 / +50 / 清零。 */
+  /**
+   * 快捷按钮：+10 / +20 / +50 / 清零。
+   *
+   * 基数取**输入框里现在显示的数**（不是 `state.days`）——
+   * 这样「预填了 150，她点 +10」得到的是 160，而不是 10。
+   */
   function bump(delta) {
-    const cur = state.days[state.selected] || 0;
-    const next = delta === 0 ? 0 : Math.max(0, cur + delta);
+    const input = $('#countInput');
+    const shown = Number(input ? input.value : 0);
+    const base = Number.isFinite(shown) && shown > 0 ? Math.floor(shown) : (state.days[state.selected] || 0);
+    const next = delta === 0 ? 0 : Math.max(0, base + delta);
     if (next > 0) state.days[state.selected] = next;
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
+    state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
     saveDays();
     render();
   }
@@ -488,13 +569,13 @@
   function bind() {
     const input = $('#countInput');
     input.addEventListener('input', () => {
-      readInput();
+      readInput(true);
       // 不重画输入框（免得正在输入的数字被抹掉），只更新其余部分
       renderMetrics();
       renderWeek();
       renderSubmit();
     });
-    input.addEventListener('blur', readInput);
+    input.addEventListener('blur', () => readInput(false));
     $$('#quick button').forEach(b => {
       b.onclick = () => bump(Number(b.dataset.add || 0));
     });
@@ -503,6 +584,16 @@
       if (btn.getAttribute('aria-disabled') === 'true') {
         e.preventDefault();
         return;
+      }
+      // 她点了「去 GitHub 提交」⇒ 预填的数就此变成今天的记录
+      // （链接里已经带着它了 ⇒ 这里只是让页面上的状态跟上）。
+      if (state.draft && !(Number(state.days[state.draft.day]) > 0)) {
+        const n = Math.max(0, Math.floor(Number(state.draft.value) || 0));
+        if (n > 0) state.days[state.draft.day] = n;
+        state.days = trimDays(state.days);
+        state.draft = null;
+        saveDays();
+        render();
       }
     });
   }
@@ -561,6 +652,16 @@
       }
     }
     state.days = trimDays(state.days);
+    // **预填上次的数字**（减摩擦）：今天还没记、且上次记过 ⇒ 把上次的数填进输入框，
+    // 她每天的量差不多 ⇒ 多数时候点一下提交就行。
+    //
+    // ⚠️ 预填**只影响输入框的初值**：它**不进 `state.days`**
+    // ⇒ 额度/周合计仍按实际已记的天算（不然「还没提交」的日子会提前达标）。
+    const today = todayKey();
+    if (!(Number(state.days[today]) > 0)) {
+      const prev = previousRecordedDay(state.days, today, WINDOW_DAYS);
+      if (prev) state.draft = { day: today, value: prev.value, from: prev.day };
+    }
     saveDays();
     bind();
     render();
