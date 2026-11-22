@@ -310,7 +310,9 @@ function renderCreditPanel() {
       ? `${credit} / ${t.perAward} 个额度`
       : "今日额度";
     if (fillBox) fillBox.style.width = "0%";
-    noteBox.textContent = "各源明细暂时读不到（源注册表没加载上）";
+    noteBox.textContent = (SOURCES && SOURCES.sources)
+      ? "注册表里一个启用的源都没有（源全被停用了）"
+      : "各源明细暂时读不到（源注册表没加载上）";
     return;
   }
 
