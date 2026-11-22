@@ -405,7 +405,7 @@ function renderChains() {
     <div class="chainRow" data-chain="${esc(r.name)}">
       <div class="chainTop">
         <span class="chainName">${esc(r.name)}</span>
-        <span class="chainSince">自 ${esc(String(r.pr.base).slice(5))} 养成</span>
+        <span class="chainSince">自 ${esc(String(r.pr.base))} 养成</span>
         <span class="chainState">${esc(r.pr.stateText)}</span>
       </div>
       <div class="chainBar"><i style="width:${r.pr.pct}%"></i></div>

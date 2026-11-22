@@ -511,6 +511,9 @@ class DexPageCreditTest(unittest.TestCase):
         self.assertIn("保底可用 0 次 · 还差 28 天", rows["宝贝龙"])
         self.assertIn("保底可用 0 次 · 还差 9 天", rows["伊布"])   # 21 天 ⇒ 30 - 21
         self.assertIn("保底可用 1 次 · 已就绪（下一轮还差 30 天）", rows["快龙"])
+        # 基准日带年份（跨年的链看得出是哪一年）
+        self.assertIn("自 2026-11-20 养成", rows["宝贝龙"])
+        self.assertIn("自 2026-11-01 养成", rows["伊布"])
         # 进度条：2/30、21/30、满格
         widths = self.page.eval_on_selector_all(
             ".chainBar i", "els => els.map(e => e.style.width)")
