@@ -19,10 +19,16 @@ import subprocess
 import time
 import urllib.request
 
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+# 直接跑 `python3 scripts/fetch_pokemon.py` 时仓库根不在 path 上 ⇒ 先补上，
+# 否则 `from scripts import evo_tree` 会 ModuleNotFoundError（README 里就是这么写的）
+sys.path.insert(0, str(ROOT))
+
+from scripts import evo_tree  # noqa: E402
+
 REPO = "https://github.com/42arch/pokemon-dataset-zh.git"
 RAW_HOME = "https://raw.githubusercontent.com/42arch/pokemon-dataset-zh/main/data/images/home"
 RAW_FALLBACK = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork"
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / ".cache" / "pokemon-dataset-zh"
 OUT_JSON = ROOT / "data" / "pokedex.json"
 OUT_IMG = ROOT / "site" / "img"
@@ -113,18 +119,30 @@ def _fetch_pokeapi_flavor(pid: str) -> str:
     return ""
 
 
-def extract(src: dict) -> dict:
-    """把 42arch 单只 JSON 压成图鉴页需要的精简字段。"""
+def extract(src: dict, tree: dict | None = None) -> dict:
+    """把 42arch 单只 JSON 压成图鉴页需要的精简字段。
+
+    `tree` 是 `evo_tree.build_tree()` 的结果。**进化字段依赖全库信息**
+    （单只文件里只有它自己那条路径，看不到同链的其他成员）⇒ 没有 tree 时
+    退化成「只用自己文件里的路径」，chain 与 stage 会不完整。
+    """
     pid = str(src.get("pokedex_id") or "").zfill(4)
     name_zh = src.get("name_zh") or ""
     forms = src.get("forms") or []
     form = forms[0] if forms else {}
     abilities = [a.get("name") for a in (form.get("abilities") or []) if a.get("name")]
-    chain = []
-    for link in src.get("evolution_chains") or []:
-        for node in link:
-            if node.get("name"):
-                chain.append(node["name"])
+    if tree is not None:
+        # 同链所有成员拿到**完全一致**的数组（evo_tree 重建的真树）
+        chain = evo_tree.evolution_array(tree, name_zh)
+        stage = evo_tree.stage_of(tree, name_zh)
+    else:
+        # 没有全库上下文时的退化路径：只取自己文件里的第一条 path
+        chain = []
+        for link in src.get("evolution_chains") or []:
+            for node in link:
+                if node.get("name"):
+                    chain.append(node["name"])
+        stage = 0
     art = pick_art(src.get("home_images") or [], name_zh, False)
     art_shiny = pick_art(src.get("home_images") or [], name_zh, True)
     flavor = _first_flavor(src)
@@ -143,6 +161,7 @@ def extract(src: dict) -> dict:
         "summary": (src.get("description") or "").strip(),
         "profile": (src.get("profile") or "").strip(),
         "evolution": chain,
+        "evolutionStage": stage,
         "art": _home_url(art) if art else _fallback_url(pid),
         "artShiny": _home_url(art_shiny) if art_shiny else "",
         "artSource": "home" if art else "pokeapi-official",
@@ -188,9 +207,17 @@ def build() -> int:
         return 1
 
     entries = []
+    # ★ 进化关系是**全库**信息（一只的 JSON 里只有它自己那条路径，看不到同链其他人）
+    #   ⇒ 必须先扫一遍全库建树，再逐只产出条目。
+    raw = []
     for f in files:
         src = json.loads(f.read_text(encoding="utf-8"))
-        entry = extract(src)
+        raw.append(src)
+    tree = evo_tree.build_tree(raw)
+    print(f"[管线] 进化树：{len(raw)} 只 -> {len(tree['members'])} 条链")
+
+    for src in raw:
+        entry = extract(src, tree)
         if entry["nameZh"]:
             entries.append(entry)
 

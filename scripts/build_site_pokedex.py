@@ -29,7 +29,7 @@ OUT = ROOT / "site" / "pokedex.json"
 # 读方（图鉴页 site/app.js + 油猴插件）真正用到的字段
 KEEP = (
     "id", "nameZh", "nameJa", "types", "category", "abilities",
-    "height", "weight", "evolution", "flavor",
+    "height", "weight", "evolution", "evolutionStage", "flavor",
     "art", "artShiny", "preview", "provisionalNo",
 )
 
