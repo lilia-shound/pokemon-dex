@@ -69,6 +69,19 @@ trap cleanup EXIT
 # 上一次部署会在本地留下 orphan 分支 ghp。沙箱是持久的，同一个 clone 里第二次部署时
 # `git checkout --orphan ghp` 会因为分支已存在而失败 —— 而且原来那行是 >/dev/null 2>&1，
 # 报错被吞掉，表现就是「main 推了、gh-pages 没推」。这里先清掉旧分支。
+#
+# ★ 2026-11-22 踩到：光 `git branch -D ghp` 不够 ——
+#   **上一次部署的 worktree 可能还挂着 ghp**（沙箱会话被杀时 EXIT trap 没跑，
+#   /tmp 里的 worktree 就留下了）⇒ 删分支报
+#   「Cannot delete branch 'ghp' checked out at '/tmp/tmp.XXXX'」。
+#   所以先把**所有**引用了 ghp 的 worktree 强制移除，再删分支。
+git worktree prune
+for wt in $(git worktree list --porcelain | grep '^worktree ' | cut -d' ' -f2); do
+  if [ "$wt" != "$ROOT" ] && git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null | grep -qx ghp; then
+    echo "      清理上一次部署留下的 worktree：$wt"
+    git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  fi
+done
 git worktree prune
 git branch -D ghp >/dev/null 2>&1 || true
 
