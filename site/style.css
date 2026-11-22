@@ -85,6 +85,20 @@ p{margin:0}
   white-space:nowrap;
 }
 
+/* ── 链级养成 ───────────────────────────── */
+.chains{max-width:1120px;margin:14px auto 0;padding:0 20px}
+.chains[hidden]{display:none}
+.chainsLabel{font-size:12px;color:var(--dim);letter-spacing:1px;margin-bottom:7px}
+.chainList{display:grid;gap:8px}
+.chainRow{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 14px}
+.chainTop{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;font-size:13px}
+.chainName{font-weight:600}
+.chainSince{font-size:12px;color:var(--dim)}
+.chainState{margin-left:auto;font-size:12px;color:var(--dim)}
+.chainBar{height:6px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:8px}
+.chainBar i{display:block;height:100%;width:0;border-radius:999px;
+  background:linear-gradient(90deg,var(--accent-soft),var(--accent));transition:width .5s ease}
+
 /* ── 筛选 ───────────────────────────── */
 .filters{max-width:1120px;margin:20px auto 0;padding:0 20px;display:flex;gap:7px;flex-wrap:wrap}
 .filters button{

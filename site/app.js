@@ -337,6 +337,58 @@ function renderCreditPanel() {
       : `还差 ${t.perAward - t.total} 个额度就能遇上新的宝可梦。`);
 }
 
+/**
+ * 一条链的养成进度。
+ *
+ * **基准日**：进化链的保底规则是「这条链首次被收服后养满 30 天，再次抽到它就必定闪光」
+ * ⇒ 基准日 = firstDate；兑现过一次保底（lastShinyDate）之后重新计时
+ *   ⇒ 基准日 = lastShinyDate（与服务端 chain_shiny_ready 的实际口径一致）。
+ * **「今天」用状态文件里的 today.date**（服务端同一个口径），拿不到才用本地日期。
+ */
+function chainProgress(chain) {
+  const base = (chain && chain.lastShinyDate) ? chain.lastShinyDate
+    : (chain && chain.firstDate);
+  if (!base) return null;
+  const days = daysBetween(base, referenceDate());
+  if (days === null) return null;
+  const d = Math.max(0, days);
+  const cycles = Math.floor(d / 30);        // 保底可用数
+  const inCycle = d % 30;                  // 这一轮已经养了几天
+  // 满 30 天就满格（刚好养满一轮的那一天算满）
+  const filled = (d > 0 && inCycle === 0) ? 30 : inCycle;
+  const remain = 30 - inCycle;             // 距离下一次保底还差几天
+  return { base, days: d, cycles, remain, pct: (filled / 30) * 100 };
+}
+
+/** 画链级养成那一块（chains 为空 ⇒ 整块不显示，别留一个空标题）。 */
+function renderChains() {
+  const sec = $("chains");
+  if (!sec) return;
+  const box = $("chainList");
+  const chains = DEX.chains || {};
+  const rows = [];
+  for (const name of Object.keys(chains)) {
+    const pr = chainProgress(chains[name]);
+    if (!pr) continue;
+    rows.push({ name, pr });
+  }
+  if (!rows.length) {
+    sec.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  sec.hidden = false;
+  box.innerHTML = rows.map((r) => `
+    <div class="chainRow" data-chain="${esc(r.name)}">
+      <div class="chainTop">
+        <span class="chainName">${esc(r.name)}</span>
+        <span class="chainSince">自 ${esc(String(r.pr.base).slice(5))} 养成</span>
+        <span class="chainState">保底可用数 ${r.pr.cycles} · 距离下一次保底还差 ${r.pr.remain} 天</span>
+      </div>
+      <div class="chainBar"><i style="width:${r.pr.pct}%"></i></div>
+    </div>`).join("");
+}
+
 function render() {
   const owned = ownedMap();
   const n = owned.size;
@@ -377,6 +429,9 @@ function render() {
   } else {
     $("today").hidden = true;
   }
+
+  // 链级养成（chains 为空 ⇒ 整块不显示）
+  renderChains();
 
   // 筛选条
   // 「已获得」放在最后并用强调色区分 —— 她目前只有 5 只，在 1028 格里翻很松散，
@@ -507,6 +562,7 @@ window.DexPage = {
   stateToday,
   referenceDate,
   daysBetween,
+  chainProgress,
   formEntry,
   formLine,
   get state() { return { dex: DEX, sources: SOURCES }; },
