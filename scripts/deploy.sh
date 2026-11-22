@@ -82,6 +82,7 @@ git worktree add --detach "$WT" >/dev/null
   # 油猴脚本也发布到线上：这样插件有稳定安装地址，
   # 加上 @updateURL/@downloadURL 后 Tampermonkey 能自动更新，不用每次手动换文件。
   cp "$ROOT/plugin/weread-dex.user.js" ./weread-dex.user.js
+  cp "$ROOT/plugin/bcz-dex.user.js" ./bcz-dex.user.js
   # KOReader 插件目录也发布出去 —— 不然她没地方拿插件文件（插件不能像油猴脚本那样
   # 一个文件装完，得整个目录丢进设备的 plugins/）。
   # 发的是**整个目录**：
