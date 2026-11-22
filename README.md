@@ -124,6 +124,26 @@ KOReader（Kindle / Android）
 |---|---|---|---|---|---|
 | 概率 | 1/96 | 1/48 | 1/32 | 1/16 | **保底必出** |
 
+### 进化链与形态改写
+
+**链 = 一条进化线**（比如宝贝龙 → 甲壳龙 → 暴飞龙、伊布 + 8 个分支）。全图鉴共 **543 条链**。
+
+| 项 | 规则 |
+|---|---|
+| 链级保底闪光 | 这条链首次被收服后养满 **30 天**，再次抽到它就必定闪光 |
+| 形态推进 | 抽到链里**阶更高**的成员时，同链里阶更低的已收服条目会**进化**成它 |
+| 谁不会被拉回去 | 高阶不会被低阶覆盖（先收服暴飞龙、后收服宝贝龙 ⇒ 暴飞龙不变） |
+| 兄弟形态 | 同阶的兄弟（伊布的 8 个分支）谁先来谁生效，不互相覆盖 |
+
+图鉴页上，被推进的那一格显示的是**进化后的形态**，副标题写「宝贝龙 → 暴飞龙」；
+链级养成那块会显示「当前形态 暴飞龙（第 2 阶）」。
+
+> **形态推进由服务端自己算**（`award.py` → `dex_core.advance_chain_form`，幂等）。
+> 别手动改 `data/dex.json` 的 `form` 字段 —— 下次发奖会覆盖。
+>
+> 进化数据来自 `scripts/evo_tree.py`：它把上游拍平的进化路径**重建成一棵树**，
+> 同链的所有成员拿到**完全一致**的 `evolution` 数组，并带上自己的 `evolutionStage`（阶数）。
+
 ## 网页版番茄钟
 
 <https://lilia-shound.github.io/pokemon-dex/pomodoro/>
@@ -254,6 +274,8 @@ scripts/dex_core.py      抽卡与状态机（纯逻辑，可测）
 scripts/sources.py       配置校验 + 额度折算
 scripts/ledger.py        逐日账本：合并 / 裁剪 / 迁移
 scripts/fetch_pokemon.py 素材管线：拉 42arch 数据 → pokedex.json
+scripts/evo_tree.py     进化树：把上游拍平的进化路径重建成树（链分组 / 阶数）
+scripts/patch_evolution.py 一次性补丁：只重写 pokedex.json 的 evolution / evolutionStage
 scripts/award.py         发放器：取数 → 判定 → 抽 → 写状态 → 推送
 scripts/check_today.py   自检：把今日状态摊开打印
 scripts/collect_reports.py Issue 投递箱接收端：读 issue → 校验 → 并账本
