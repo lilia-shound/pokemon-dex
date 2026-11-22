@@ -24,6 +24,98 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ── 额度（必须与服务端 scripts/sources.py 逐字同构） ────────────────────
+   额度是中枢的中间货币：不同行为的单位不可通约（秒 / 分钟 / 个词），
+   但「每天掉一只宝可梦」的名额是统一的。
+   服务端的算式（scripts/sources.py 的 credit_for_day）：
+       min(raw, maxPerDay) → max(0, …) → // per     # 每个源各自 floor
+   当天总额度 = 各启用源的额度之和。
+   **差一个额度就是「她明明凑够了，页面却说没够」** ⇒ 这段口径不许改。
+*/
+
+/** 一个源今天折算出多少额度（与服务端 credit_for_day 同一算式）。 */
+function creditForSource(raw, src) {
+  const per = Number(src && src.per);
+  if (!(per >= 1)) return 0;          // per 不对就当 0（宁可不发也不错发）
+  let amount = Number(raw);
+  if (!Number.isFinite(amount)) amount = 0;
+  amount = Math.trunc(amount);        // 服务端 int()：向零取整
+  const cap = src.maxPerDay;
+  if (cap !== undefined && cap !== null) {
+    const c = Number(cap);
+    if (Number.isFinite(c)) amount = Math.min(amount, c);
+  }
+  amount = Math.max(0, amount);
+  return Math.floor(amount / per);
+}
+
+/** 注册表里启用的源（与服务端 enabled_sources 同一口径：enabled 为假就不算）。 */
+function registrySources() {
+  const reg = SOURCES && SOURCES.sources;
+  if (!reg || typeof reg !== "object") return [];
+  const out = [];
+  for (const sid of Object.keys(reg)) {
+    const s = reg[sid];
+    if (!s || typeof s !== "object") continue;
+    if (!s.enabled) continue;         // 停用的源不列、不结算
+    out.push({
+      id: sid,
+      name: s.name || sid,
+      icon: s.icon || "",
+      unit: s.unit || "",
+      cfg: s,
+    });
+  }
+  return out;
+}
+
+/** 今天各源的原始量（today.sources；**没有这个键就是 0**）。 */
+function todayRawAmounts() {
+  const map = (DEX.today || {}).sources;
+  return (map && typeof map === "object") ? map : {};
+}
+
+/** 今日各源明细：原始量 + 折算出来的额度。 */
+function sourceCredits() {
+  const raw = todayRawAmounts();
+  return registrySources().map((s) => {
+    const n = Number(raw[s.id]);
+    const amount = Number.isFinite(n) ? n : 0;
+    return {
+      id: s.id,
+      name: s.name,
+      icon: s.icon,
+      unit: s.unit,
+      raw: amount,
+      credit: creditForSource(amount, s.cfg),
+    };
+  });
+}
+
+/** 攒够几个额度掉 1 只（注册表优先；拿不到就用状态文件里那个）。 */
+function perAwardOf() {
+  const fromReg = Number(SOURCES && SOURCES.perAward);
+  if (Number.isFinite(fromReg) && fromReg >= 1) return Math.floor(fromReg);
+  const fromState = Number((DEX.today || {}).perAward);
+  if (Number.isFinite(fromState) && fromState >= 1) return Math.floor(fromState);
+  return 0;
+}
+
+/** 原始量按注册表里的单位写出来（1753 秒 / 25 分钟 / 0 个）。 */
+function formatRaw(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return unit ? `${n} ${unit}` : `${n}`;
+}
+
+/** 秒太多就折成分钟（1800 秒 ⇒ 30 分钟）—— 用在「几个额度 ≈ 多少」那种文案里。 */
+function formatNice(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  if (unit === "秒" && n % 60 === 0) return `${n / 60} 分钟`;
+  return formatRaw(n, unit);
+}
+
 /** 拉一个 JSON，带超时与重试。
  *
  * **必须有超时**：GitHub Pages 的 CDN 偶尔会把大文件传成爬行速度
@@ -98,49 +190,123 @@ function ownedMap() {
   return m;
 }
 
-// 「掉一只宝可梦」要读多久（秒）。
-// 权威口径在注册表：perAward × sources.weread.per；dex.json 的 today.threshold
-// 是发放器按同一口径写进状态文件的快照。两者都读不到就不显示进度 ——
-// 不再硬编码一个猜的数（那个数会是第三个真相源：perAward 改了它也不跟着变）。
-function registryThreshold() {
-  const reg = SOURCES && SOURCES.sources && SOURCES.sources.weread;
-  if (!reg) return 0;
-  const perAward = Number(SOURCES.perAward);
-  const per = Number(reg.per);
-  if (!perAward || !per) return 0;
-  return perAward * per;
-}
+// 页面**不再**拿 today.threshold 当任何数字：
+// 那是发放器按「微信读书专用口径」写的快照（perAward × sources.weread.per），
+// 拿它算多源额度就会算错（它看不见另外三个源）。
+// ⇒ 原来的 registryThreshold() / thresholdSeconds() 一并删掉了；
+//   多源额度一律走 creditForSource（与服务端 credit_for_day 同构）。
 
-function thresholdSeconds() {
-  const t = DEX.today || {};
-  const fromState = Number(t.threshold);
-  if (fromState > 0) return fromState;
-  return registryThreshold();
-}
-
+/** 今日各源的额度明细 + 合计（顶栏与文案都用它）。 */
 function todayInfo() {
-  const t = DEX.today || {};
-  const thr = thresholdSeconds();
-  const sec = t.seconds || 0;
-  return {
-    sec, thr,
-    pct: thr > 0 ? Math.min(100, Math.round((sec / thr) * 100)) : 0,
-    date: t.date,
-  };
+  const rows = sourceCredits();
+  const perAward = perAwardOf();
+  const total = rows.reduce((sum, r) => sum + r.credit, 0);
+  return { rows, perAward, total, date: stateToday() };
 }
 
-// 「读满多少分钟」的文案 —— 阈值拿不到时不说具体数字（宁可少说一句，也不说错的）
-function thresholdSentence(preview) {
-  const thr = thresholdSeconds();
-  if (thr > 0) {
-    const m = Math.round(thr / 60);
-    return preview
-      ? `读满 ${m} 分钟，照样能在图鉴里遇上它。`
-      : `读满 ${m} 分钟就能遇上新的宝可梦。`;
+/** 状态文件里那个「今天」（服务端口径；没有就是空串）。 */
+function stateToday() {
+  const d = (DEX.today || {}).date;
+  return (typeof d === "string" && d) ? d : "";
+}
+
+/** 算天数差用的基准日：优先状态文件里的今天（服务端同一个口径），拿不到就用本地日期。 */
+function referenceDate() {
+  const d = stateToday();
+  if (d) return d;
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/** 两个 ISO 日期之间隔了几天（按 UTC 算，不受浏览器时区影响）。 */
+function daysBetween(fromISO, toISO) {
+  const a = Date.parse(`${fromISO}T00:00:00Z`);
+  const b = Date.parse(`${toISO}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/** 「N 个额度 ≈ 多少」的等价值文案。 */
+function equivalentsText(perAward) {
+  const parts = [];
+  for (const s of registrySources()) {
+    const per = Number(s.cfg.per);
+    if (!(per >= 1)) continue;
+    parts.push(`${s.name} ${formatNice(per * perAward, s.unit)}`);
   }
+  // 注册表没加载上 ⇒ **不说具体数字**（宁可少说一句，也不说错的）：
+  // today.threshold 是微信读书专用的旧口径，不能拿它当多源的等价值。
+  return parts.join(" / ");
+}
+
+// 「凑满多少额度」的文案 —— 额度口径拿不到时不说具体数字（宁可少说一句，也不说错的）
+function thresholdSentence(preview) {
+  const perAward = perAwardOf();
+  if (!perAward) {
+    return preview
+      ? "凑满今天的额度，照样能在图鉴里遇上它。"
+      : "今天凑够额度就能遇上新的宝可梦。";
+  }
+  const eq = equivalentsText(perAward);
+  const head = eq ? `凑满 ${perAward} 个额度（${eq}）` : `凑满 ${perAward} 个额度`;
   return preview
-    ? "读满今天的阅读额度，照样能在图鉴里遇上它。"
-    : "今天读满就能遇上新的宝可梦。";
+    ? `${head}，照样能在图鉴里遇上它。`
+    : `${head}就能遇上新的宝可梦。`;
+}
+
+/**
+ * 画顶栏的「今日额度」面板。
+ *
+ * 每个启用的源一行：图标 + 名字 + 今日原始量 → 折算出的额度；
+ * 下面一条总进度 = 合计额度 / perAward。
+ *
+ * **额度口径与服务端 scripts/sources.py 的 credit_for_day 逐字同构** ——
+ * 每个源各自 floor，零头不跨天凑（见 creditForSource）。
+ */
+function renderCreditPanel() {
+  const panel = $("creditPanel");
+  if (!panel) return;
+  const rowsBox = $("cpRows");
+  const totalBox = $("cpTotal");
+  const fillBox = $("cpFill");
+  const noteBox = $("cpNote");
+  const t = todayInfo();
+
+  if (!t.rows.length) {
+    // 注册表没加载上（或一个启用的源都没有）⇒ 各源明细说不清，
+    // 但**不能一个字都不说**：总额度还有状态文件里那个（服务端自己算的）。
+    panel.hidden = false;
+    rowsBox.innerHTML = "";
+    const credit = Number((DEX.today || {}).credit);
+    totalBox.textContent = (Number.isFinite(credit) && credit >= 0 && t.perAward)
+      ? `${credit} / ${t.perAward} 个额度`
+      : "今日额度";
+    if (fillBox) fillBox.style.width = "0%";
+    noteBox.textContent = "各源明细暂时读不到（源注册表没加载上）";
+    return;
+  }
+
+  panel.hidden = false;
+  rowsBox.innerHTML = t.rows.map((r) => `
+    <div class="cpRow" data-src="${esc(r.id)}">
+      <span class="cpIcon">${esc(r.icon)}</span>
+      <span class="cpName">${esc(r.name)}</span>
+      <span class="cpRaw">${esc(formatRaw(r.raw, r.unit))}</span>
+      <span class="cpArrow">→</span>
+      <span class="cpCredit">${r.credit} 个额度</span>
+    </div>`).join("");
+  totalBox.textContent = t.perAward
+    ? `${t.total} / ${t.perAward} 个额度`
+    : `${t.total} 个额度`;
+  if (fillBox) {
+    const pct = t.perAward > 0 ? Math.min(100, (t.total / t.perAward) * 100) : 0;
+    fillBox.style.width = `${pct}%`;
+  }
+  noteBox.textContent = !t.perAward
+    ? "还差几个额度才能掉一只，暂时算不出来（源注册表没加载上）"
+    : (t.total >= t.perAward
+      ? "今天已经凑够啦 —— 新的宝可梦在等你。"
+      : `还差 ${t.perAward - t.total} 个额度就能遇上新的宝可梦。`);
 }
 
 function render() {
@@ -157,20 +323,10 @@ function render() {
     DEX.streak >= 7 ? "1/32" :
     DEX.streak >= 3 ? "1/48" : "1/96"}`);
 
+  // 今日额度（多源）：每个源一行 —— 原始量 → 折算出的额度，下面一条总进度
+  renderCreditPanel();
+
   const t = todayInfo();
-  if (t.thr > 0) {
-    $("todayMini").hidden = false;
-    // 向下取整：不虚报进度。1776 秒四舍五入会显示成「30/30 分」，
-    // 读起来像「今天已达标」，但其实额度 1 < 2，今天不会掉。
-    // 分子还要夹到阈值：perAward=1 时阈值是 900 秒（15 分），而她今天已读 1776 秒（29 分）
-    // ⇒ 不夹会显示成「29/15 分」（超过 100%）。满额时显示「15/15 分」。
-    const thrMin = Math.floor(t.thr / 60);
-    const readMin = Math.min(Math.floor(t.sec / 60), thrMin);
-    setText("todayMiniVal", `${readMin}/${thrMin} 分`);
-  } else {
-    // 阈值拿不到 —— 不显示猜的进度（宁可空着）
-    $("todayMini").hidden = true;
-  }
 
   // 今日开箱卡
   const collected = DEX.collected || [];
@@ -229,7 +385,7 @@ function render() {
   if (!list.length) {
     $("grid").innerHTML = `<div class="gridEmpty">${
       FILTER === "owned"
-        ? "图鉴还是空的 —— 读满今天的额度就会掉一只进来"
+        ? "图鉴还是空的 —— 今天凑够额度就会掉一只进来"
         : "这一代没有宝可梦"}</div>`;
   } else {
   $("grid").innerHTML = list.map((p) => {
@@ -303,5 +459,18 @@ function openSheet(id) {
 
 $("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) $("sheet").hidden = true; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sheet").hidden = true; });
+
+// 给测试看的小窗口（页面自己不用它）—— 与 site/words/app.js 的 WordsLanding 同一套路：
+// 测试要能**在浏览器里**问出「页面算出来的额度是多少」，才好跟服务端对拍。
+window.DexPage = {
+  creditForSource,
+  sourceCredits,
+  perAwardOf,
+  thresholdSentence,
+  stateToday,
+  referenceDate,
+  daysBetween,
+  get state() { return { dex: DEX, sources: SOURCES }; },
+};
 
 load().catch((e) => { setText("summary", "载入失败：" + e.message); });

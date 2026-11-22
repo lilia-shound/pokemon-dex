@@ -16,11 +16,18 @@
     <p id="summary">载入中…</p>
     <p id="streak" class="dim"></p>
   </div>
-  <div class="todayMini" id="todayMini" hidden>
-    <span class="todayMiniLabel">今日</span>
-    <b id="todayMiniVal">0/30 分</b>
-  </div>
 </header>
+
+<!-- 今日额度：四个源各一行（原始量 → 折算出的额度），下面一条总进度 -->
+<section class="creditPanel" id="creditPanel" hidden>
+  <div class="cpHead">
+    <span class="cpTitle">今日额度</span>
+    <span class="cpTotal" id="cpTotal"></span>
+  </div>
+  <div class="cpRows" id="cpRows"></div>
+  <div class="cpBar"><i class="cpFill" id="cpFill"></i></div>
+  <div class="cpNote" id="cpNote"></div>
+</section>
 
 <section class="today" id="today" hidden>
   <p class="todayLabel" id="todayLabel"></p>

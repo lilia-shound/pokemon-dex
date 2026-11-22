@@ -34,12 +34,28 @@ p{margin:0}
 .ring::after{content:"";position:absolute;inset:9px;border-radius:50%;background:var(--bg)}
 .ring span{position:relative;z-index:1;font-weight:600;font-size:13px;color:var(--ink)}
 .meta{flex:1 1 auto;min-width:200px}
-.todayMini{
-  display:flex;flex-direction:column;align-items:flex-end;gap:2px;
-  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:9px 15px;
-  box-shadow:var(--shadow);font-size:13px;
+
+/* ── 今日额度（多源进度） ──────────────── */
+.creditPanel{
+  max-width:1120px;margin:12px auto 0;padding:14px 18px;
+  background:var(--card);border:1px solid var(--line);border-radius:18px;
+  box-shadow:var(--shadow);
 }
-.todayMiniLabel{color:var(--dim);font-size:11px;letter-spacing:1px}
+.creditPanel[hidden]{display:none}
+.cpHead{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.cpTitle{font-size:12px;color:var(--dim);letter-spacing:2px}
+.cpTotal{font-size:15px;font-weight:600;white-space:nowrap}
+.cpRows{display:grid;gap:5px;margin:10px 0 0}
+.cpRow{display:flex;align-items:baseline;gap:9px;font-size:13px}
+.cpIcon{flex:0 0 auto;width:18px;text-align:center;font-size:14px}
+.cpName{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpRaw{flex:0 0 auto;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.cpArrow{flex:0 0 auto;color:var(--dim)}
+.cpCredit{flex:0 0 auto;margin-left:auto;font-weight:600;color:var(--accent);white-space:nowrap}
+.cpBar{height:8px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:12px}
+.cpFill{display:block;height:100%;width:0;border-radius:999px;
+  background:linear-gradient(90deg,var(--accent-soft),var(--accent));transition:width .5s ease}
+.cpNote{margin-top:7px;font-size:12px;color:var(--dim)}
 
 /* ── 今日开箱卡 ─────────────────────── */
 .today{max-width:1120px;margin:6px auto 0;padding:0 20px}
