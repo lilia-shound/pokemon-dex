@@ -480,6 +480,24 @@ class DexPageCreditTest(unittest.TestCase):
         note = self.page.inner_text("#cpNote")
         self.assertIn("源注册表没加载上", note)
 
+    def test_the_whole_state_is_not_exposed_on_the_window(self):
+        """整份 dex.json **不许挂在 window 上**（测试用的小窗口只给算法，不给数据）。
+
+        以前 `window.DexPage` 上有一个 `get state()`，把 dex.json 整个摊出去 ——
+        页面上任何脚本都能读到她的收集记录。去掉它；测试要数据就问各自的算法入口。
+        """
+        self.open_page()
+        self.wait_rendered()
+        self.assertNotIn("state", self.page.evaluate("() => Object.keys(window.DexPage)"))
+        # 顺带确认没有别的口子漏数据出去
+        blob = self.page.evaluate("() => JSON.stringify(window.DexPage)")
+        self.assertNotIn("collected", blob)
+        self.assertNotIn("streak", blob)
+        # 页面自己要的数据还是算得出来（走各自的算法入口）
+        self.assertEqual(
+            self.page.evaluate("() => DexPage.sourceCredits().reduce((s, r) => s + r.credit, 0)"),
+            2)
+
     def test_the_page_survives_a_missing_state_file(self):
         """状态文件拉不到 ⇒ 页面不崩，顶栏空着就行（别显示一个假的 0）。"""
         self.page.route("**/dex.json", lambda r: r.abort())

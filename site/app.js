@@ -598,6 +598,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sheet")
 
 // 给测试看的小窗口（页面自己不用它）—— 与 site/words/app.js 的 WordsLanding 同一套路：
 // 测试要能**在浏览器里**问出「页面算出来的额度是多少」，才好跟服务端对拍。
+// **只给算法，不给数据**：整份 dex.json 不挂在 window 上（挂上去谁都能读）。
 window.DexPage = {
   creditForSource,
   sourceCredits,
@@ -609,7 +610,6 @@ window.DexPage = {
   chainProgress,
   formEntry,
   formLine,
-  get state() { return { dex: DEX, sources: SOURCES }; },
 };
 
 load().catch((e) => { setText("summary", "载入失败：" + e.message); });
