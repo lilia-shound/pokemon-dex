@@ -692,6 +692,13 @@ function hideFrameBackLink() {
   }
 }
 
+/** iframe 加载完之后再补一次藏（load 事件与 DOM 解析完成的时序不总是对齐）。 */
+function hideFrameBackLinkSoon() {
+  hideFrameBackLink();
+  setTimeout(hideFrameBackLink, 300);
+  setTimeout(hideFrameBackLink, 1200);
+}
+
 /**
  * 切视图。
  *
@@ -726,7 +733,7 @@ function showView(name, updateHash = true) {
       // ★ 监听器必须**先**挂上再设 src ——
       //   iframe 命中缓存时 load 事件几乎立刻触发，
       //   先设 src 再挂监听 ⇒ 事件已经过去了 ⇒ 永远等不到（2026-11-22 踩过）。
-      f.addEventListener("load", hideFrameBackLink, { once: true });
+      f.addEventListener("load", hideFrameBackLinkSoon, { once: true });
       f.setAttribute("src", src);
       // 同源 ⇒ 父页能直接改 iframe 里的 DOM ⇒ 把子页的「← 回训练家图鉴」藏掉
       // （父页顶部已经有导航了，重复反而乱）。
@@ -734,7 +741,7 @@ function showView(name, updateHash = true) {
       //   多引一个文件就破了自己的测试（2026-11-22 踩过）。
     }
     // 立刻也试一次：iframe 可能已经加载好了（第二次切回来时）
-    hideFrameBackLink();
+    hideFrameBackLinkSoon();
   }
   if (updateHash) {
     const h = name === "dex" ? "" : "#" + name;
