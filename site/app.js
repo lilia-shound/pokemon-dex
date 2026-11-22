@@ -346,6 +346,21 @@ function renderCreditPanel() {
  * ⇒ 基准日 = firstDate；兑现过一次保底（lastShinyDate）之后重新计时
  *   ⇒ 基准日 = lastShinyDate（与服务端 chain_shiny_ready 的实际口径一致）。
  * **「今天」用状态文件里的 today.date**（服务端同一个口径），拿不到才用本地日期。
+ *
+ * 这里有**两个量**，别混成一个（评审提的问题：旧写法在边界那天自相矛盾）：
+ * - `cycles`（保底可用数）= floor(d / 30)：已经攒够几次保底。
+ * - `remain`（还差几天就绪）= `(本轮已过天数 === 0) ? 0 : 30 - 本轮已过天数`
+ *   —— 刚好养满一轮的那天（d = 30、60…）本轮已过 0 天 ⇒ remain = 0 ⇒ **已就绪**。
+ *   （d = 0 是「这条链刚开始」，本轮才起头 ⇒ 第一次保底在 30 天后 ⇒ remain = 30。）
+ * - `nextWait`（下一轮还差几天）= 满一轮之后重新计时 ⇒ 30；否则 = 30 - 本轮已过天数。
+ *
+ * 旧的写法在边界那天会说「保底可用 1 次 · 还要再等 30 天 · 条已经满了」——
+ * 三个信号互相打架。现在拆开：攒到了就写「已就绪」，**不再同时说还要等多久**；
+ * 没攒到才写「还差 N 天」。
+ *
+ * **进度条**：满 30 天就满格，而且**满格之后不倒退** ——
+ * 保底一旦就绪就一直就绪（页面看不出它什么时候被用掉），
+ * 只有这条链真的掉出闪光（基准日重置）才会重新从 0% 开始。
  */
 function chainProgress(chain) {
   const base = (chain && chain.lastShinyDate) ? chain.lastShinyDate
@@ -354,12 +369,18 @@ function chainProgress(chain) {
   const days = daysBetween(base, referenceDate());
   if (days === null) return null;
   const d = Math.max(0, days);
-  const cycles = Math.floor(d / 30);        // 保底可用数
-  const inCycle = d % 30;                  // 这一轮已经养了几天
-  // 满 30 天就满格（刚好养满一轮的那一天算满）
-  const filled = (d > 0 && inCycle === 0) ? 30 : inCycle;
-  const remain = 30 - inCycle;             // 距离下一次保底还差几天
-  return { base, days: d, cycles, remain, pct: (filled / 30) * 100 };
+  const cycles = Math.floor(d / 30);        // 保底可用数（已经攒够几次）
+  const inCycle = d % 30;                   // 本轮已过天数（0 = 刚好养满一轮）
+  const remain = inCycle === 0 ? (d === 0 ? 30 : 0) : 30 - inCycle;
+  const nextWait = inCycle === 0 ? 30 : 30 - inCycle;   // 下一轮还差几天
+  const ready = cycles > 0;                 // 保底已经就绪（可用数 ≥ 1）
+  // 满 30 天就满格；满格之后不倒退（d = 31 还是 100%，不是掉回 3.3%）
+  const filled = Math.min(d, 30);
+  const stateText = ready
+    ? `保底可用 ${cycles} 次 · 已就绪（下一轮还差 ${nextWait} 天）`
+    : `保底可用 ${cycles} 次 · 还差 ${remain} 天`;
+  return { base, days: d, cycles, inCycle, remain, nextWait, ready, stateText,
+           pct: (filled / 30) * 100 };
 }
 
 /** 画链级养成那一块（chains 为空 ⇒ 整块不显示，别留一个空标题）。 */
@@ -385,7 +406,7 @@ function renderChains() {
       <div class="chainTop">
         <span class="chainName">${esc(r.name)}</span>
         <span class="chainSince">自 ${esc(String(r.pr.base).slice(5))} 养成</span>
-        <span class="chainState">保底可用数 ${r.pr.cycles} · 距离下一次保底还差 ${r.pr.remain} 天</span>
+        <span class="chainState">${esc(r.pr.stateText)}</span>
       </div>
       <div class="chainBar"><i style="width:${r.pr.pct}%"></i></div>
     </div>`).join("");

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import datetime
 import http.server
 import json
 import pathlib
@@ -501,24 +502,81 @@ class DexPageCreditTest(unittest.TestCase):
                 "宝贝龙": {"firstDate": "2026-11-20", "lastShinyDate": None},
                 # 兑现过一次保底 ⇒ 从 lastShinyDate 重新计时（11-01 → 11-22 = 21 天）
                 "伊布": {"firstDate": "2026-10-01", "lastShinyDate": "2026-11-01"},
-                # 刚好养满 30 天 ⇒ 保底可用数 1，条满格
+                # 刚好养满 30 天 ⇒ 保底可用 1 次、**已就绪**、条满格
                 "快龙": {"firstDate": "2026-10-23", "lastShinyDate": None},
             })
         self.open_page()
         self.wait_rendered()
         rows = self.chain_rows()
-        self.assertIn("保底可用数 0", rows["宝贝龙"])
-        self.assertIn("距离下一次保底还差 28 天", rows["宝贝龙"])
-        self.assertIn("保底可用数 0", rows["伊布"])
-        self.assertIn("距离下一次保底还差 9 天", rows["伊布"])   # 21 天 ⇒ 30 - 21
-        self.assertIn("保底可用数 1", rows["快龙"])
-        self.assertIn("距离下一次保底还差 30 天", rows["快龙"])
+        self.assertIn("保底可用 0 次 · 还差 28 天", rows["宝贝龙"])
+        self.assertIn("保底可用 0 次 · 还差 9 天", rows["伊布"])   # 21 天 ⇒ 30 - 21
+        self.assertIn("保底可用 1 次 · 已就绪（下一轮还差 30 天）", rows["快龙"])
         # 进度条：2/30、21/30、满格
         widths = self.page.eval_on_selector_all(
             ".chainBar i", "els => els.map(e => e.style.width)")
         self.assertAlmostEqual(float(widths[0].rstrip("%")), 100 * 2 / 30, places=1)
         self.assertAlmostEqual(float(widths[1].rstrip("%")), 100 * 21 / 30, places=1)
         self.assertAlmostEqual(float(widths[2].rstrip("%")), 100.0, places=1)
+
+    def test_the_chain_progress_is_consistent_on_every_boundary_day(self):
+        """边界那六天：保底可用数、还差几天、进度条三者**不许互相打架**。
+
+        评审提的问题：旧写法在「刚好养满 30 天」那天会说
+        「保底可用 1 次 · 还要再等 30 天 · 条已经满了」—— 三个信号互相否定；
+        而且第 31 天的进度条会从 100% 掉回 3.3%（倒退）。
+        现在拆成两个量：攒到了就写「已就绪」，条满格之后不倒退。
+        """
+        today = datetime.date(2026, 11, 22)
+        # (链名, 养了几天, 保底可用数, 还差几天, 下一轮还差几天, 文案, 进度条)
+        cases = [
+            ("刚收养", 0, 0, 30, 30, "保底可用 0 次 · 还差 30 天", 0.0),
+            ("养了29天", 29, 0, 1, 1, "保底可用 0 次 · 还差 1 天", 100 * 29 / 30),
+            ("养了30天", 30, 1, 0, 30, "保底可用 1 次 · 已就绪（下一轮还差 30 天）", 100.0),
+            ("养了31天", 31, 1, 29, 29, "保底可用 1 次 · 已就绪（下一轮还差 29 天）", 100.0),
+            ("养了59天", 59, 1, 1, 1, "保底可用 1 次 · 已就绪（下一轮还差 1 天）", 100.0),
+            ("养了60天", 60, 2, 0, 30, "保底可用 2 次 · 已就绪（下一轮还差 30 天）", 100.0),
+        ]
+        chains = {}
+        for name, d, _cycles, _remain, _next, _text, _pct in cases:
+            base = (today - datetime.timedelta(days=d)).isoformat()
+            chains[name] = {"firstDate": base, "lastShinyDate": None}
+        self.state_response = _state(today_sources={"weread": 1753}, chains=chains)
+        self.open_page()
+        self.wait_rendered()
+        rows = self.chain_rows()
+        widths = self.page.eval_on_selector_all(
+            ".chainBar i", "els => els.map(e => e.style.width)")
+        for i, (name, d, cycles, remain, next_wait, text, pct) in enumerate(cases):
+            with self.subTest(days=d):
+                self.assertIn(text, rows[name],
+                              "养了 %d 天那行不对：%s" % (d, rows.get(name)))
+                self.assertAlmostEqual(float(widths[i].rstrip("%")), pct, places=1,
+                                       msg="养了 %d 天的进度条不对：%s" % (d, widths[i]))
+                # 页面自己算出来的量也对得上
+                pr = self.page.evaluate("(c) => DexPage.chainProgress(c)", chains[name])
+                self.assertEqual(pr["cycles"], cycles, "养了 %d 天的保底可用数不对" % d)
+                self.assertEqual(pr["remain"], remain, "养了 %d 天的还差天数不对" % d)
+                self.assertEqual(pr["nextWait"], next_wait, "养了 %d 天的下一轮还差天数不对" % d)
+                self.assertEqual(pr["ready"], cycles > 0)
+                self.assertAlmostEqual(pr["pct"], pct, places=1)
+
+    def test_the_chain_bar_never_goes_backwards_after_it_is_full(self):
+        """条满格之后**不许倒退**：养了 30 天是 100%，养了 31 天还是 100%。"""
+        today = datetime.date(2026, 11, 22)
+        chains = {}
+        for d in (29, 30, 31, 32, 59, 60, 61):
+            base = (today - datetime.timedelta(days=d)).isoformat()
+            chains["链%d" % d] = {"firstDate": base, "lastShinyDate": None}
+        self.state_response = _state(today_sources={"weread": 1753}, chains=chains)
+        self.open_page()
+        self.wait_rendered()
+        widths = [float(w.rstrip("%")) for w in self.page.eval_on_selector_all(
+            ".chainBar i", "els => els.map(e => e.style.width)")]
+        by_days = {d: w for d, w in zip((29, 30, 31, 32, 59, 60, 61), widths)}
+        self.assertAlmostEqual(by_days[29], 100 * 29 / 30, places=1)
+        for d in (30, 31, 32, 59, 60, 61):
+            self.assertAlmostEqual(by_days[d], 100.0, places=1,
+                                   msg="养了 %d 天进度条不该是 %s%%" % (d, by_days[d]))
 
     def test_the_chain_section_is_hidden_when_there_are_no_chains(self):
         """chains 为空 ⇒ 整块不显示（别留一个空标题）。"""
