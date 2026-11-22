@@ -111,14 +111,11 @@
   "streak": 3,
   "lastAwardDate": "2026-11-22",
   "today": {
-    "date": "2026-11-22",
-    "seconds": 1753,
+    "date": "2026-11-23",
+    "seconds": 0,
     "threshold": 1800,
-    "sources": {
-      "pom": 25,
-      "weread": 1753
-    },
-    "credit": 2,
+    "sources": {},
+    "credit": 0,
     "perAward": 2
   },
   "ledger": {
