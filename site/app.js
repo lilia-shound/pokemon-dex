@@ -4,6 +4,7 @@ let SOURCES = null;   // 源注册表（sources.json）—— 额度的权威来
 let FILTER = "all";
 const IMG = "img/";
 let POKEDEX_BY_ID = new Map();   // id → 图鉴记录（查形态用，别线性找）
+let POKEDEX_BY_NAME = new Map(); // 名字 → 图鉴记录（进化链按名字查阶数用）
 
 const $ = (id) => document.getElementById(id);
 const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
@@ -171,6 +172,8 @@ async function load() {
   }
   POKEDEX = pd.pokemon;
   POKEDEX_BY_ID = buildPokedexMap(POKEDEX);
+  POKEDEX_BY_NAME = new Map();
+  for (const p of POKEDEX) POKEDEX_BY_NAME.set(String(p.nameZh), p);
   DEX = dx || { collected: [], streak: 0, today: {} };
   SOURCES = reg;
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
@@ -403,17 +406,71 @@ function chainProgress(chain) {
            pct: (filled / 30) * 100 };
 }
 
+/**
+ * 一条链的**当前形态**（S6）。
+ *
+ * 链推进 = 这条链收服了阶更高的成员 ⇒ 链内已收服成员的展示形态会被推进。
+ * 这里算的是「这条链现在显示成什么」：
+ * 取链内**阶最高**的那只已收服成员（阶相同取最近收服的）——
+ * 兄弟形态同阶，谁先来谁生效（与服务端 `dex_core.advance_chain_form` 同一个口径）。
+ *
+ * 数据来自 `collected[].chain` / `collected[].evolutionStage`（服务端写好的）。
+ */
+function chainForms() {
+  const map = new Map();      // 链根 -> {stage, id, nameZh, date}
+  for (const c of (DEX.collected || [])) {
+    const chain = c.chain || "";
+    if (!chain) continue;
+    const stage = Number(c.evolutionStage || 0);
+    const cur = map.get(chain);
+    if (!cur) { map.set(chain, { stage, id: c.id, nameZh: c.nameZh, date: c.date || "" }); continue; }
+    // 阶更高就换；阶相同取**最近收服**的（日期新的优先，同日按 collected 顺序）
+    if (stage > cur.stage ||
+        (stage === cur.stage && String(c.date || "") > String(cur.date || ""))) {
+      map.set(chain, { stage, id: c.id, nameZh: c.nameZh, date: c.date || "" });
+    }
+  }
+  return map;
+}
+
+/**
+ * 进化链的显示文本。
+ *
+ * ★ S6 起 `evolution` 是**同链所有成员**的一致数组（evo_tree 重建的真树），
+ *   不是一条线性路径 —— 伊布链有 9 个成员（1 个根 + 8 个 1 阶分支），
+ *   直接 join(" → ") 会误导成「伊布 → 仙子伊布 → 冰伊布 → …」（其实它们是兄弟）。
+ *
+ * 按阶分组：同阶的用「/」分隔，不同阶之间用「→」——
+ * 「伊布 → 仙子伊布 / 冰伊布 / 火伊布 / …」。
+ */
+function evolutionText(entry) {
+  const evo = (entry && entry.evolution) || [];
+  if (!evo.length) return "-";
+  // 按 id 查每只的阶数（pokedex 里有 evolutionStage）
+  const groups = new Map();
+  for (const name of evo) {
+    const rec = POKEDEX_BY_NAME.get(name);
+    const stage = rec && rec.evolutionStage !== undefined
+      ? Number(rec.evolutionStage) : 0;
+    if (!groups.has(stage)) groups.set(stage, []);
+    groups.get(stage).push(name);
+  }
+  const stages = Array.from(groups.keys()).sort((a, b) => a - b);
+  return stages.map((s) => groups.get(s).join(" / ")).join(" → ");
+}
+
 /** 画链级养成那一块（chains 为空 ⇒ 整块不显示，别留一个空标题）。 */
 function renderChains() {
   const sec = $("chains");
   if (!sec) return;
   const box = $("chainList");
   const chains = DEX.chains || {};
+  const forms = chainForms();
   const rows = [];
   for (const name of Object.keys(chains)) {
     const pr = chainProgress(chains[name]);
     if (!pr) continue;
-    rows.push({ name, pr });
+    rows.push({ name, pr, form: forms.get(name) || null });
   }
   if (!rows.length) {
     sec.hidden = true;
@@ -429,6 +486,8 @@ function renderChains() {
         <span class="chainState">${esc(r.pr.stateText)}</span>
       </div>
       <div class="chainBar"><i style="width:${r.pr.pct}%"></i></div>
+      ${r.form ? `<div class="chainForm">当前形态 ${esc(r.form.nameZh)}${
+        r.form.stage > 0 ? `（第 ${r.form.stage} 阶）` : ""}</div>` : ""}
     </div>`).join("");
 }
 
@@ -557,7 +616,7 @@ function openSheet(id) {
           <div class="row"><b>特性</b><span>${esc((p.abilities || []).join("、") || "-")}</span></div>
           <div class="row"><b>身高</b><span>${esc(p.height || "-")}</span></div>
           <div class="row"><b>体重</b><span>${esc(p.weight || "-")}</span></div>
-          <div class="row"><b>进化链</b><span>${esc((p.evolution || []).join(" → ") || "-")}</span></div>
+          <div class="row"><b>进化链</b><span>${esc(evolutionText(p))}</span></div>
           <div class="row"><b>日文名</b><span>${esc(p.nameJa || "-")}</span></div>
         </div>
         <div class="flavor">${esc(p.flavor)}</div>
@@ -584,7 +643,7 @@ function openSheet(id) {
         <div class="row"><b>特性</b><span>${esc((fe.abilities || []).join("、") || "-")}</span></div>
         <div class="row"><b>身高</b><span>${esc(fe.height || "-")}</span></div>
         <div class="row"><b>体重</b><span>${esc(fe.weight || "-")}</span></div>
-        <div class="row"><b>进化链</b><span>${esc((fe.evolution || []).join(" → ") || "-")}</span></div>
+        <div class="row"><b>进化链</b><span>${esc(evolutionText(fe))}</span></div>
         <div class="row"><b>日文名</b><span>${esc(fe.nameJa || "-")}</span></div>
       </div>
       <div class="flavor">${esc(fe.flavor)}</div>`;
@@ -608,6 +667,8 @@ window.DexPage = {
   referenceDate,
   daysBetween,
   chainProgress,
+  chainForms,
+  evolutionText,
   formEntry,
   formLine,
 };

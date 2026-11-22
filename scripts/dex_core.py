@@ -156,9 +156,88 @@ def chain_key(pokemon: dict) -> str:
 
     基础形态名是同链所有成员共有的，本地就能算，不需要全局上下文。
     实测：用基础形态名分组 → 543 组，正好等于生物链数。
+
+    ★ S6 起 `data/pokedex.json` 的 evolution 数组由 `scripts/evo_tree.py` 重建，
+      同链成员拿到**完全一致**的一份 ⇒ 第一个名字就是链根 ✓（原来只是「碰巧对」）。
     """
+    # collected 的条目里没有 evolution 字段 ⇒ 允许直接用已存的 chain 字段
+    if not pokemon.get("evolution"):
+        return str(pokemon.get("chain") or "")
     names = _chain_names(pokemon)
     return names[0] if names else ""
+
+
+def chain_stage(pokemon: dict) -> int:
+    """这只宝可梦在自己链上的阶数（链根=0）。
+
+    数据来源是 `data/pokedex.json` 的 `evolutionStage` 字段 —— 由 `scripts/evo_tree.py`
+    从上游的进化树算出来（上游原始数据把分叉拍平了，「这一阶对应哪只」没有唯一答案）。
+
+    **老数据没有这个字段** ⇒ 退化成 0（当作链根）。
+    """
+    try:
+        return int(pokemon.get("evolutionStage", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def advance_chain_form(collected: list, pokemon: dict, stage_lookup=None) -> list:
+    """链形态推进：收服了某只之后，把同链里**阶更低**的已收服条目的 `form` 改写成它。
+
+    **规则（★ 本项目的核心裁决，写清楚免得以后改错）：**
+
+    > 链推进 = 这条链收服了阶更高的成员。
+    > 收服 X（阶 s）时，同链里阶 < s 的已收服条目，`form` 改成 X 的 id；
+    > 阶 ≥ s 的**不动**（高阶不会被低阶拉回去）。
+
+    为什么这样定：
+    - 只有「阶」能定义「这一阶对应哪只」—— 上游拍平的数据里做不到，重建真树后可以
+    - **低阶不能覆盖高阶**：先收服了暴飞龙（2 阶），后收服宝贝龙（0 阶），
+      宝贝龙的 form 不能把暴飞龙改回去
+    - 兄弟形态同阶（美丽花/霸王花都是 2 阶）⇒ 谁先来谁生效 ⇒ **天然幂等**：
+      同样的一组 collected 反复跑，结果完全一样
+
+    `stage_lookup(id) -> int` 是**外部注入的阶数查询**（pokedex 里才有阶数，
+    `collected` 的条目里没有）⇒ 本模块保持纯逻辑、不碰文件。
+    不传时退化成「查 collected 条目自己的 evolutionStage」。
+
+    **原地修改 `collected` 并返回它**（和 `advance_chain` 一样的风格）。
+    """
+    if not collected or not pokemon:
+        return collected
+    key = chain_key(pokemon)
+    if not key:
+        return collected
+    new_id = str(pokemon.get("id") or "")
+    if not new_id:
+        return collected
+    new_stage = chain_stage(pokemon)
+    if new_stage <= 0:
+        # 链根本身（0 阶）不会把同链的形态往回拉
+        return collected
+
+    lookup = stage_lookup or (lambda i: _stage_in_collected(i, collected))
+    for c in collected:
+        if not isinstance(c, dict):
+            continue
+        if chain_key(c) != key:
+            continue
+        cur_form = str(c.get("form") or c.get("id") or "")
+        cur_stage = int(lookup(cur_form) or 0)
+        if cur_stage >= new_stage:
+            continue          # 已经是更高阶（或同阶）⇒ 不动
+        if str(c.get("id") or "") == new_id:
+            continue          # 它自己
+        c["form"] = new_id
+    return collected
+
+
+def _stage_in_collected(pokemon_id: str, collected: list) -> int:
+    """在 collected 里查阶数；查不到当 0（链根）。"""
+    for c in collected:
+        if isinstance(c, dict) and str(c.get("id") or "") == str(pokemon_id):
+            return int(c.get("evolutionStage", 0) or 0)
+    return 0
 
 
 def advance_chain(chains: dict, pokemon: dict, day: str) -> dict:

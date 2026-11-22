@@ -10,7 +10,9 @@
       "sources": [
         "weread"
       ],
-      "form": "0563"
+      "form": "0563",
+      "chain": "哭哭面具",
+      "evolutionStage": 1
     },
     {
       "id": "1012",
@@ -21,7 +23,9 @@
       "sources": [
         "weread"
       ],
-      "form": "1012"
+      "form": "1012",
+      "chain": "斯魔茶",
+      "evolutionStage": 0
     },
     {
       "id": "0025",
@@ -32,7 +36,9 @@
       "sources": [
         "weread"
       ],
-      "form": "0025"
+      "form": "0025",
+      "chain": "皮丘",
+      "evolutionStage": 1
     },
     {
       "id": "0975",
@@ -43,7 +49,9 @@
       "sources": [
         "weread"
       ],
-      "form": "0975"
+      "form": "0975",
+      "chain": "走鲸",
+      "evolutionStage": 1
     },
     {
       "id": "0239",
@@ -54,7 +62,9 @@
       "sources": [
         "weread"
       ],
-      "form": "0239"
+      "form": "0239",
+      "chain": "电击怪",
+      "evolutionStage": 0
     },
     {
       "id": "0373",
@@ -65,7 +75,9 @@
       "sources": [
         "weread"
       ],
-      "form": "0373"
+      "form": "0373",
+      "chain": "宝贝龙",
+      "evolutionStage": 2
     },
     {
       "id": "0471",
@@ -77,7 +89,9 @@
         "weread",
         "pom"
       ],
-      "form": "0471"
+      "form": "0471",
+      "chain": "伊布",
+      "evolutionStage": 1
     },
     {
       "id": "0163",
@@ -89,7 +103,9 @@
         "weread",
         "pom"
       ],
-      "form": "0163"
+      "form": "0163",
+      "chain": "咕咕",
+      "evolutionStage": 0
     }
   ],
   "streak": 3,

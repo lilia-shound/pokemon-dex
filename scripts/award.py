@@ -69,6 +69,56 @@ def load_state() -> dict:
     return json.loads(DEX_PATH.read_text(encoding="utf-8"))
 
 
+def apply_chain_forms(state: dict, pool: list[dict]) -> None:
+    """S6：给 collected 补齐链信息，并推进链形态。原地修改 state。
+
+    两件事：
+
+    1. **补字段**：老条目没有 `chain` / `evolutionStage` ⇒ 从 pokedex 查出来补上。
+       （`chain` 是链根名，`collected` 条目自己算不出来 —— 它没有 evolution 字段。）
+    2. **形态推进**：按 `dex_core.advance_chain_form` 的规则，
+       同链里阶更低的已收服条目，`form` 改成更高阶那��的 id。
+
+    ★ 幂等：同样输入反复跑，结果一样（规则本身幂等 + 补字段不会改已有值）。
+    """
+    collected = state.get("collected") or []
+    if not collected:
+        return
+    by_id = {str(p.get("id")): p for p in pool}
+
+    # ---- 1. 补 chain / evolutionStage ----
+    for c in collected:
+        if not isinstance(c, dict):
+            continue
+        p = by_id.get(str(c.get("id") or ""))
+        if not p:
+            continue
+        if not c.get("chain"):
+            c["chain"] = dc.chain_key(p)
+        if c.get("evolutionStage") is None:
+            c["evolutionStage"] = dc.chain_stage(p)
+        # form 缺失 ⇒ 等于 id（规格 §5.3）
+        if not c.get("form"):
+            c["form"] = c.get("id")
+
+    # ---- 2. 形态推进 ----
+    # 每一只都当一次「链推进的触发者」过一遍：
+    # `advance_chain_form` 只改写**比自己阶低**的同链条目 ⇒ 顺序无关，结果幂等。
+    stage_of = {str(p.get("id")): dc.chain_stage(p) for p in pool}
+
+    def lookup(pokemon_id: str) -> int:
+        # form 指向的宝可梦**不一定被收服**（规格 §5.4）⇒ 查 pool，不查 collected
+        return int(stage_of.get(str(pokemon_id), 0) or 0)
+
+    for c in collected:
+        if not isinstance(c, dict):
+            continue
+        p = by_id.get(str(c.get("id") or ""))
+        if not p:
+            continue
+        dc.advance_chain_form(collected, p, stage_lookup=lookup)
+
+
 def save_state(state: dict) -> None:
     DEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     DEX_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -236,6 +286,10 @@ def main(argv: list[str] | None = None) -> int:
             "date": day,
             "sources": contributors,
             "form": award["id"],
+            # S6：把链根和阶数一起存下来 —— 形态推进时要用，
+            # 而且 collected 条目本身没有 evolution 字段，算不出链根。
+            "chain": dc.chain_key(award),
+            "evolutionStage": dc.chain_stage(award),
         }
         tag = "✦ 闪光" if award["shiny"] else "●"
         prefix = f"补发 {day} " if day != today else ""
@@ -248,6 +302,13 @@ def main(argv: list[str] | None = None) -> int:
 
     state = dc.build_state(old, cfg, today, today_sources, ledger_data,
                            chains, new_awards)
+
+    # S6：链形态推进。
+    # ★ 为什么在 build_state **之后**统一结算，而不是每抽一张就推一次：
+    #   一次结清可能补发好几天（同一天抽到链上的低阶、另一天抽到高阶），
+    #   逐张推进的中间态没有意义，只要**最终态**对就行。
+    #   而且规则本身幂等（兄弟形态同阶、谁先来谁生效），反复跑结果一样。
+    apply_chain_forms(state, pool)
 
     if args.dry_run:
         print("[dry-run] 未写入文件")
