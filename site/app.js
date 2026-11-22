@@ -538,7 +538,8 @@ function render() {
 }
 
 function openSheet(id) {
-  const p = POKEDEX.find((x) => x.id === id);
+  // 用 Map 查（1028 只，别每次线性找）
+  const p = POKEDEX_BY_ID.get(String(id));
   if (!p) return;
   const c = ownedMap().get(id);
   const sheet = $("sheet");
