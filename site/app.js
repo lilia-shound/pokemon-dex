@@ -212,8 +212,11 @@ function buildPokedexMap(list) {
 /**
  * 收服时的那只形态 —— collected[].form（进化了也显示进化形态，别再显示基础形态）。
  *
- * 三级回退：**form → id → 没有（剪影）**。
+ * **两级回退：form → id**。
  * 老数据没有 form ⇒ 回退到 id；万一 form 在图鉴里查不到 ⇒ 也回退到 id。
+ * （**没有第三级「剪影」**：墙上的格子是按图鉴的 id 生成的 ⇒ 按 id 必然命中。）
+ * 真的连 id 都查不到（状态文件里有一条图鉴里没有的记录）⇒ 返回 null，
+ * 由调用方自己兜底：图鉴墙回退到基础那条记录，今日捕获卡干脆不显示。
  */
 function formEntry(c) {
   if (!c) return null;
