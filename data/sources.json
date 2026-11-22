@@ -27,9 +27,9 @@
       "name": "背单词",
       "icon": "🔤",
       "unit": "个",
-      "per": 20,
+      "per": 100,
       "mode": "push",
-      "enabled": false,
+      "enabled": true,
       "maxPerDay": 500
     },
     "koreader": {
