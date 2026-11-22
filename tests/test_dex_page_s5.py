@@ -293,10 +293,13 @@ class DexPageCreditTest(unittest.TestCase):
         # 微信读书 1753 秒 ⇒ floor(1753/900) = 1 个额度
         self.assertIn("微信读书", rows["weread"])
         self.assertIn("1753 秒", rows["weread"])
+        # 秒太抽象 ⇒ 两种单位都给（1753 秒 ≈ 29 分钟）
+        self.assertIn("约 29 分钟", rows["weread"])
         self.assertIn("1 个额度", rows["weread"])
-        # 番茄钟 25 分钟 ⇒ floor(25/25) = 1 个额度
+        # 番茄钟 25 分钟 ⇒ floor(25/25) = 1 个额度（分钟不用再折）
         self.assertIn("番茄钟", rows["pom"])
         self.assertIn("25 分钟", rows["pom"])
+        self.assertNotIn("约", rows["pom"])
         self.assertIn("1 个额度", rows["pom"])
         # 今天没量的两个源也在（不隐藏）
         self.assertIn("0 个额度", rows["words"])

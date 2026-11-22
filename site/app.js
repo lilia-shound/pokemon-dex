@@ -109,6 +109,16 @@ function formatRaw(value, unit) {
   return unit ? `${n} ${unit}` : `${n}`;
 }
 
+/** 面板里那一行的原始量：**秒的源两种单位都给**（1753 秒（约 29 分钟））——
+ *  秒太抽象，自己心算才知道读了多少；别的源保留自己的单位（25 分钟 / 0 个）
+ *  —— 分钟、个不用再折一次。 */
+function formatPanelRaw(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  if (unit === "秒") return `${n} 秒（约 ${Math.round(n / 60)} 分钟）`;
+  return formatRaw(n, unit);
+}
+
 /** 秒太多就折成分钟（1800 秒 ⇒ 30 分钟）—— 用在「几个额度 ≈ 多少」那种文案里。 */
 function formatNice(value, unit) {
   const n = Number(value);
@@ -321,7 +331,7 @@ function renderCreditPanel() {
     <div class="cpRow" data-src="${esc(r.id)}">
       <span class="cpIcon">${esc(r.icon)}</span>
       <span class="cpName">${esc(r.name)}</span>
-      <span class="cpRaw">${esc(formatRaw(r.raw, r.unit))}</span>
+      <span class="cpRaw">${esc(formatPanelRaw(r.raw, r.unit))}</span>
       <span class="cpArrow">→</span>
       <span class="cpCredit">${r.credit} 个额度</span>
     </div>`).join("");
