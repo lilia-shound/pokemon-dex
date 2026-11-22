@@ -78,16 +78,31 @@
         "pom"
       ],
       "form": "0471"
+    },
+    {
+      "id": "0163",
+      "nameZh": "咕咕",
+      "shiny": false,
+      "at": "2026-11-22T12:09:48.847616+08:00",
+      "date": "2026-11-22",
+      "sources": [
+        "weread",
+        "pom"
+      ],
+      "form": "0163"
     }
   ],
-  "streak": 2,
-  "lastAwardDate": "2026-11-21",
+  "streak": 3,
+  "lastAwardDate": "2026-11-22",
   "today": {
     "date": "2026-11-22",
-    "seconds": 0,
+    "seconds": 1565,
     "threshold": 1800,
-    "sources": {},
-    "credit": 0,
+    "sources": {
+      "pom": 25,
+      "weread": 1565
+    },
+    "credit": 2,
     "perAward": 2
   },
   "ledger": {
@@ -115,6 +130,10 @@
     "2026-11-21": {
       "weread": 1245,
       "pom": 25
+    },
+    "2026-11-22": {
+      "pom": 25,
+      "weread": 1565
     }
   },
   "chains": {
