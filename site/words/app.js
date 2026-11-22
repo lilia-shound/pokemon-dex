@@ -28,8 +28,16 @@
   const WINDOW_DAYS = 7;
   /** 本机存储的键 */
   const LS_KEY = 'pokemon-dex-words-v1';
-  /** 注册表（sources.json）的路径 —— **相对路径**、同源，不许外链 */
-  const REGISTRY_PATH = 'sources.json';
+  /**
+   * 注册表（sources.json）的路径 —— **相对路径**、同源，不许外链。
+   *
+   * 为什么是 `../sources.json`（站根那份），不是同目录的 `sources.json`：
+   * 站根那份（`site/sources.json`）是 `scripts/deploy.sh` 从 `data/sources.json`
+   * 自动同步出来的**部署产物** ⇒ 改 `data/sources.json` 的 `per`，重新部署就生效，
+   * **永远不会漂移**。同目录再放一份手工副本的话，部署脚本根本不管它 ⇒
+   * 页面显示的额度会和服务端算账用的口径对不上。
+   */
+  const REGISTRY_PATH = '../sources.json';
 
   /* ---------- 纯逻辑（浏览器与 node 都跑得起来） ---------- */
 
@@ -171,11 +179,14 @@
    *  - `selected` —— 正在编辑的那一天（默认今天）
    *  - `registryLoaded` —— 注册表**已经生效**（读到真注册表了，或者兜底口径生效了）
    *  - `storageOk` —— 本机存储可用（隐私模式下不可用 ⇒ 页面照常用，只是不记住）
+   *  - `enabled` —— 注册表里这个源是不是启用的（`enabled` 不为 true ⇒ 服务端拒收上报）
+   *  - `linkNote` —— 链接参数（`?day=` / `?words=`）带来的提示
    */
   const state = {
     days: {}, selected: todayKey(),
     per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, perAward: DEFAULT_PER_AWARD,
     registryLoaded: false, storageOk: true,
+    enabled: true, linkNote: '',
   };
 
   const API = {
@@ -183,10 +194,11 @@
     buildReport, buildIssueTitle, buildIssueUrl,
     lastDays, todayKey, shortLabel, weekdayOf,
     DEFAULT_PER, DEFAULT_MAX_PER_DAY, SOURCE_ID, ISSUE_NEW, REPO,
+    WINDOW_DAYS, MAX_REPORT_DAYS, REGISTRY_PATH,
     state,
   };
 
-  /* node 侧（tests/words_spec.js）要 require 这个文件做对拍；
+  /* node 侧（如果有人要对拍）可以 require 这个文件；
      浏览器侧则把同一份 API 挂到 window 上，方便浏览器测试直接问。 */
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   if (typeof globalThis !== 'undefined') globalThis.WordsLanding = API;
@@ -257,13 +269,17 @@
           per: per,
           cap: (cap >= 0) ? cap : DEFAULT_MAX_PER_DAY,
           perAward: (perAward >= 1) ? perAward : DEFAULT_PER_AWARD,
+          // `enabled` 不是 true ⇒ 服务端 `parse_report` 会**整份拒收**这个源的 push 上报
+          // （「源 words 当前是停用的」）⇒ 页面不许再假装交上去就能算数。
+          enabled: src.enabled === true,
         };
       })
       .catch(err => {
         // 失败原因**不要整个吞掉**：线上注册表挂了会静默退回 100，事后无从查。
         console.warn('[words] 读注册表失败，退回默认口径（' + DEFAULT_PER +
           ' 个词 = 1 个额度）：', err);
-        return { per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, perAward: DEFAULT_PER_AWARD };
+        // 拉不到注册表 ⇒ 不知道源有没有被停用 ⇒ 照旧让她记（兜底口径生效）。
+        return { per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, perAward: DEFAULT_PER_AWARD, enabled: true };
       });
   }
 
@@ -300,11 +316,16 @@
 
   /** 额度、说明、夹取提示（**不动输入框** —— 免得跟正在输入的数字打架）。 */
   function renderMetrics() {
+    const raw = Number(state.days[state.selected]) || 0;
     const eff = effectiveOf(state.selected);
     const credit = creditsForDay(eff, state.per, state.cap);
     const line = $('#creditLine');
     if (eff > 0) {
-      line.textContent = selectedLabel() + ' ' + eff + ' 个 → 折算 ' + credit + ' 个额度';
+      let text = selectedLabel() + ' ' + eff + ' 个 → 折算 ' + credit + ' 个额度';
+      // 被夹过上限时把**原值**也写出来 —— 输入框里是原值，
+      // 光看额度行（夹后的数）会以为系统记错了。
+      if (raw > eff) text += '（原始 ' + raw + '）';
+      line.textContent = text;
       line.classList.remove('empty');
     } else {
       // 零的时候给一句人话，不是一个孤零零的 0
@@ -325,6 +346,27 @@
         shortLabel(c.day) + ' 那天记了 ' + c.raw + ' 个，超过单日上限 ' + state.cap +
         ' 个 —— 提交时按 ' + c.capped + ' 个报（服务端会把超上限的报告整份丢掉）。'
       ).join(' ');
+    }
+
+    // 源被停用 ⇒ 说清楚（服务端不收这一类上报，页面不能让她白交）
+    const dis = $('#disabledNote');
+    if (state.enabled) {
+      dis.hidden = true;
+      dis.textContent = '';
+    } else {
+      dis.hidden = false;
+      dis.textContent = '⚠️ 注册表里备考源不是启用状态（enabled 不为 true）—— ' +
+        '服务端不收这一类上报，现在交上去也不会算数。';
+    }
+
+    // 链接参数带来的提示（`?words=` 预填 / `?day=` 太老）
+    const link = $('#linkNote');
+    if (state.linkNote) {
+      link.hidden = false;
+      link.textContent = state.linkNote;
+    } else {
+      link.hidden = true;
+      link.textContent = '';
     }
 
     const store = $('#storeNote');
@@ -377,12 +419,19 @@
     const { days } = reportDays();
     const btn = $('#submitBtn');
     const has = Object.keys(days).length > 0;
-    if (has) {
+    if (has && state.enabled) {
       btn.href = buildIssueUrl(days);
       btn.classList.remove('off');
       btn.removeAttribute('aria-disabled');
       $('#submitHint').innerHTML = '点开是 GitHub 的新建 issue 页，标题和内容都填好了 —— ' +
         '在那个页面上点一下 <b>Submit</b> 才算交上去。';
+    } else if (!state.enabled) {
+      // 源被停用 ⇒ 服务端会整份拒收 ⇒ 页面不许给她一个「看起来能交」的按钮
+      btn.href = '#';
+      btn.classList.add('off');
+      btn.setAttribute('aria-disabled', 'true');
+      $('#submitHint').innerHTML = '备考源现在被停用了（注册表里 <code>enabled</code> 不是 true）—— ' +
+        '交上去服务端也不会收这一类上报。';
     } else {
       btn.href = '#';
       btn.classList.add('off');
@@ -390,6 +439,20 @@
       $('#submitHint').innerHTML = '还没有记下任何词 —— 先在上面填个数。';
     }
     $('#issueTitle').textContent = has ? buildIssueTitle(days) : '[report] words …';
+
+    // 报告里可能有**「最近 7 天」之外**的日子（存了 30 天，显示 7 天）——
+    // 那些天在页面上看不见，她却会一起交上去 ⇒ 必须说清楚。
+    const win = new Set(lastDays(WINDOW_DAYS));
+    const outside = Object.keys(days).filter(d => !win.has(d)).sort();
+    const extra = $('#extraDaysNote');
+    if (!outside.length) {
+      extra.hidden = true;
+      extra.textContent = '';
+    } else {
+      extra.hidden = false;
+      extra.textContent = '⚠️ 这份报告里有 ' + outside.length + ' 天不在「最近 7 天」里（' +
+        outside.map(shortLabel).join('、') + '）—— 它们也会一起交上去。';
+    }
   }
 
   function render() {
@@ -465,14 +528,37 @@
     return out;
   }
 
+  /** 往链接提示上追加一句（多句时用空格隔开）。 */
+  function addLinkNote(text) {
+    state.linkNote = state.linkNote ? (state.linkNote + ' ' + text) : text;
+  }
+
   function boot() {
     state.days = loadDays();
     const params = readParams();
-    if (isKey(params.day)) state.selected = params.day;
-    // `?words=150` —— 给以后「自动导入」那一层留的口子（手动记数时用不到）
+    if (isKey(params.day)) {
+      // 只能补记**存储窗口**（最近 MAX_REPORT_DAYS 天）里的日子 ——
+      // 更早的天记下来也会被 trimDays 丢掉（她以为记上了，其实没有）。
+      const keep = new Set(lastDays(MAX_REPORT_DAYS));
+      if (keep.has(params.day)) {
+        state.selected = params.day;
+      } else {
+        addLinkNote('那一天太久了（只能补记最近 ' + MAX_REPORT_DAYS + ' 天）—— 落在今天了。');
+      }
+    }
+    // `?words=150` —— 给以后「自动导入」那一层留的口子（手动记数时用不到）。
+    // **不许悄悄覆盖**她已经记好的数：当天已经有记录就只提示，不动手。
     if (params.words !== undefined && Number.isFinite(Number(params.words))) {
       const n = Math.max(0, Math.floor(Number(params.words)));
-      if (n > 0) state.days[state.selected] = n;
+      if (n > 0) {
+        const already = Number(state.days[state.selected]) || 0;
+        if (already > 0) {
+          addLinkNote('这一天已经记了 ' + already + ' 个 —— 链接里的 ' + n + ' 没有覆盖它。');
+        } else {
+          state.days[state.selected] = n;
+          addLinkNote('已按链接预填 ' + n + ' 个（可以改）。');
+        }
+      }
     }
     state.days = trimDays(state.days);
     saveDays();
@@ -484,6 +570,7 @@
       state.per = reg.per;
       state.cap = reg.cap;
       state.perAward = reg.perAward;
+      state.enabled = reg.enabled;
       render();
       // 注册表（真口径或兜底口径）**已经生效** ⇒ 这一行是「可以断言了」的信号。
       state.registryLoaded = true;

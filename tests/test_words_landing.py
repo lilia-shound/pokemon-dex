@@ -32,6 +32,7 @@ from scripts import sources as src
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCES_JSON = ROOT / "data" / "sources.json"
+SITE_REGISTRY = ROOT / "site" / "sources.json"
 WORDS_REGISTRY = ROOT / "site" / "words" / "sources.json"
 APP_JS = ROOT / "site" / "words" / "app.js"
 INDEX_HTML = ROOT / "site" / "words" / "index.html"
@@ -46,24 +47,46 @@ except Exception:  # pragma: no cover - 环境问题
     HAVE_PLAYWRIGHT = False
 
 
-class WordsRegistryCopyTest(unittest.TestCase):
-    """记数页读的那份注册表（`site/words/sources.json`）不许漂移。
+class WordsRegistryTest(unittest.TestCase):
+    """记数页读的那份注册表不许和服务端算账用的那份漂移。
 
-    页面是从**同源**的 `sources.json` 读 `per` 的（不是绝对 CDN 地址）⇒
-    它读到的必须和服务端算账用的那份是同一个口径。
-    副本一旦与 `data/sources.json` 不一致 ⇒ 页面显示的额度与服务端给的不一样 ⇒ 这里要拦住。
+    页面读的是**站根**那份（`site/sources.json`）—— 它是 `scripts/deploy.sh`
+    从 `data/sources.json` 自动同步出来的**部署产物** ⇒ 改 `data/sources.json`
+    的 `per`，重新部署就生效，**永远不会漂移**。
+
+    反过来：`site/words/` 下再放一份手工副本的话，部署脚本根本不管它 ⇒
+    副本一漂，页面显示的额度就和服务端给的对不上（这正是上一轮的 Critical）。
     """
 
-    def test_the_copy_matches_the_server_side_registry(self):
-        self.assertTrue(WORDS_REGISTRY.exists(), "site/words/sources.json 不存在")
+    def test_the_site_registry_matches_the_server_side_registry(self):
+        """`site/sources.json` 与 `data/sources.json` **整份**相等。"""
+        self.assertTrue(SITE_REGISTRY.exists(), "site/sources.json 不存在")
         server = json.loads(SOURCES_JSON.read_text(encoding="utf-8"))
-        page = json.loads(WORDS_REGISTRY.read_text(encoding="utf-8"))
-        self.assertEqual(page, server, "site/words/sources.json 与 data/sources.json 不一致")
+        site = json.loads(SITE_REGISTRY.read_text(encoding="utf-8"))
+        self.assertEqual(site, server, "site/sources.json 与 data/sources.json 不一致")
 
-    def test_the_copy_knows_the_words_source(self):
-        page = json.loads(WORDS_REGISTRY.read_text(encoding="utf-8"))
-        self.assertEqual(page["sources"]["words"]["per"], 100)
-        self.assertEqual(page["sources"]["words"]["enabled"], True)
+    def test_the_site_registry_knows_the_words_source(self):
+        """站根那份里也要有 words 源（页面就是从它读 per 的）。"""
+        site = json.loads(SITE_REGISTRY.read_text(encoding="utf-8"))
+        self.assertEqual(site["sources"]["words"]["per"], 100)
+        self.assertEqual(site["sources"]["words"]["enabled"], True)
+
+    def test_there_is_no_second_hand_copied_registry(self):
+        """`site/words/` 下不许再留一份手工副本（部署脚本永远不会更新它）。"""
+        self.assertFalse(
+            WORDS_REGISTRY.exists(),
+            "site/words/sources.json 还在 —— 那是一份永远同步不上的手工副本，"
+            "页面会读到它而不是 deploy.sh 同步的那份",
+        )
+
+    def test_the_page_reads_the_site_root_registry(self):
+        """页面读的是站根那份（`../sources.json`），不是同目录的副本。"""
+        app = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("const REGISTRY_PATH = '../sources.json';", app)
+        self.assertNotIn(
+            "const REGISTRY_PATH = 'sources.json';", app,
+            "页面读的是同目录那份手工副本 —— 它永远不会被 deploy.sh 更新",
+        )
 
 
 class WordsLandingBrowserTest(unittest.TestCase):
@@ -456,6 +479,90 @@ class WordsLandingBrowserTest(unittest.TestCase):
         # 提交按钮没有量时是禁用的
         self.assertEqual(self.page.get_attribute("#submitBtn", "aria-disabled"), "true")
 
+    # -- 上一轮评审提的小问题 ---------------------------------------------
+
+    def test_the_credit_line_shows_the_original_count_when_clamped(self):
+        """夹到单日上限时，额度行要写出**原值**。
+
+        输入框里是原值（9999），额度行是夹后的（500）—— 只看额度行会以为系统记错了。
+        """
+        self.registry_response = _registry(per=100, max_per_day=500)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("9999")
+        line = self.credit_text()
+        self.assertIn("500 个", line)
+        self.assertIn("原始 9999", line)
+
+    def test_a_words_link_does_not_overwrite_what_she_already_recorded(self):
+        """带 `?words=150` 的链接不许**悄悄改掉**当天手填的数。
+
+        这个口子本来是留给以后「自动导入」那一层的 ⇒ 预填可以，
+        覆盖别人已经记好的数不行（她以为记的是 80，结果被改成 150）。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("80")
+        # 同一个链接再打开一次（模拟「点了个带 ?words= 的链接」）
+        self.open_page(query="words=150")
+        self.wait_registry_applied()
+        self.assertEqual(self.page.input_value("#countInput"), "80")
+        self.assertIn("没有覆盖", self.page.inner_text("#linkNote"))
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {self.today_key(): 80})
+
+    def test_a_words_link_prefills_when_the_day_is_still_empty(self):
+        """当天还没记时，`?words=150` 把数预填进去，并说明「可以改」。"""
+        self.registry_response = _registry(per=100)
+        self.open_page(query="words=150")
+        self.wait_registry_applied()
+        self.assertEqual(self.page.input_value("#countInput"), "150")
+        self.assertIn("预填", self.page.inner_text("#linkNote"))
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {self.today_key(): 150})
+
+    def test_days_outside_the_week_window_are_called_out(self):
+        """存 30 天、只显示 7 天 ⇒ 报告里可能有**她看不见**的日子 ⇒ 必须提示。
+
+        存储窗口（30 天，服务端一次最多收 30 天）比显示窗口（7 天）大 ⇒
+        几天没提交就攒下了窗口外的量 ⇒ 那几天在页面上一个格子都没有，
+        却会被一起交上去 ⇒ 页面上得说清楚。
+        """
+        self.registry_response = _registry(per=100)
+        self.open_page()
+        self.wait_registry_applied()
+        today = self.today_key()
+        old = self.shift_key(today, -10)          # 10 天前 ⇒ 在 30 天里，不在 7 天里
+        # 塞进本机存储，再刷新一次（相当于「几天没提交，攒下了窗口外的量」）
+        self.page.evaluate(
+            "(v) => window.localStorage.setItem('pokemon-dex-words-v1', v)",
+            json.dumps({"v": 1, "days": {old: 60}}))
+        self.page.reload(wait_until="commit")
+        self.wait_registry_applied()
+        note = self.page.inner_text("#extraDaysNote")
+        self.assertIn("不在「最近 7 天」里", note)
+        self.assertIn(old[5:], note)               # 短标签（11-12）
+        # 而它确实也在报告里（看不见 ≠ 不交上去 ⇒ 所以必须提示）
+        body = json.loads(self.issue_query()["body"])
+        self.assertEqual(body.get("days"), {old: 60})
+
+    def test_a_disabled_source_is_not_offered_for_submission(self):
+        """注册表里 words 不是启用状态 ⇒ 服务端**整份拒收** ⇒ 页面不许装作能交。
+
+        服务端 `scripts/collect_reports.py` 的 `parse_report`：
+        源不是启用状态 ⇒ 报「源 words 当前是停用的」⇒ 交了也白交。
+        """
+        self.registry_response = _registry(per=100, enabled=False)
+        self.open_page()
+        self.wait_registry_applied()
+        self.fill("150")
+        self.assertIn("不是启用状态", self.page.inner_text("#disabledNote"))
+        self.assertIn("停用", self.page.inner_text("#submitHint"))
+        self.assertEqual(self.page.get_attribute("#submitBtn", "aria-disabled"), "true")
+        # 额度还是算得出来（口径没变），但提交按钮不让点
+        self.assertIn("1 个额度", self.credit_text())
+
     def test_the_page_sends_exactly_one_network_request(self):
         """只许发一个网络请求：读 sources.json 拿 per。
 
@@ -471,15 +578,21 @@ class WordsLandingBrowserTest(unittest.TestCase):
                          "除了 sources.json 之外还有别的请求：%r" % (self.all_requests,))
 
     def test_the_registry_is_fetched_from_a_relative_path(self):
-        """注册表走**相对路径**（同源），不是绝对 CDN 地址 —— 外链在她那边会挂。"""
+        """注册表走**相对路径**（同源），不是绝对 CDN 地址 —— 外链在她那边会挂。
+
+        而且必须是**站根**那份（`/sources.json`）—— 那份由 `scripts/deploy.sh`
+        从 `data/sources.json` 自动同步 ⇒ 口径永远不会漂移。
+        """
         self.registry_response = _registry(per=100)
         self.open_page()
         self.wait_registry_applied()
         self.assertEqual(len(self.registry_requests), 1)
         url = self.registry_requests[0]
-        self.assertTrue(url.startswith(self.origin + "/words/"),
+        self.assertTrue(url.startswith(self.origin + "/"),
                         "注册表不是从同源的相对路径取的：%s" % url)
         self.assertTrue(url.endswith("/sources.json"), url)
+        self.assertEqual(url, self.origin + "/sources.json",
+                         "页面读的不是站根那份（deploy.sh 同步的那份）")
 
     def test_the_page_works_without_any_query_parameter(self):
         """被直接打开（没有 ? 参数）也能用。"""
@@ -598,7 +711,8 @@ class WordsLandingBrowserTest(unittest.TestCase):
 # -- 小工具 -------------------------------------------------------------
 
 
-def _registry(per: int, max_per_day: int = 500, per_award: int = 2) -> dict:
+def _registry(per: int, max_per_day: int = 500, per_award: int = 2,
+              enabled: bool = True) -> dict:
     """给页面看的一份 sources.json（只放页面要用的那几个字段）。"""
     return {
         "version": 1,
@@ -613,7 +727,7 @@ def _registry(per: int, max_per_day: int = 500, per_award: int = 2) -> dict:
                 "unit": "个",
                 "per": per,
                 "mode": "push",
-                "enabled": True,
+                "enabled": enabled,
                 "maxPerDay": max_per_day,
             }
         },

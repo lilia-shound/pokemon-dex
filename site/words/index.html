@@ -41,6 +41,10 @@
     <p class="credit-line empty" id="creditLine">今天还没记</p>
     <p class="hint" id="perNote">100 个 = 1 个额度（按天算，零头不计）</p>
     <p class="hint" id="awardNote">攒满 2 个额度掉 1 只宝可梦（当天最多 1 只）</p>
+    <!-- 链接参数带来的提示（?words= 预填 / ?day= 太老；有才显示，默认藏着） -->
+    <p class="hint" id="linkNote" hidden></p>
+    <!-- 源被停用时的提示（注册表里 enabled 不为 true；默认藏着） -->
+    <p class="hint warn" id="disabledNote" hidden></p>
     <!-- 单日超过上限时的提示（有夹取才显示，默认藏着） -->
     <p class="hint warn" id="clampNote" hidden></p>
     <!-- 本机存储不可用时的提示（默认藏着） -->
@@ -62,6 +66,8 @@
   <!-- 提交 -->
   <a class="btn" id="submitBtn" href="#" target="_blank" rel="noopener noreferrer">去 GitHub 提交</a>
   <p class="hint center" id="submitHint">点开是 GitHub 的新建 issue 页，标题和内容都填好了 —— 在那个页面上点一下 <b>Submit</b> 才算交上去。</p>
+  <!-- 报告里含有「最近 7 天」之外的日期时的提示（有才显示，默认藏着） -->
+  <p class="hint warn center" id="extraDaysNote" hidden></p>
 
   <section class="card">
     <h2>点完 Submit 之后</h2>

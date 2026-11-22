@@ -145,14 +145,15 @@ class WordsSourceTest(unittest.TestCase):
         self.assertEqual(self.cfg["perAward"] * self.cfg["sources"]["weread"]["per"], 1800)
 
     def test_the_site_copy_of_the_registry_matches(self):
-        """线上那份（site/sources.json）是 data/sources.json 的副本 —— 两边要一致。
+        """线上那份（site/sources.json）是 data/sources.json 的**部署产物** —— 两边要**整份**相等。
 
         不一致的话：服务端按一份算、页面按另一份显示 ⇒ 数字对不上。
+        （`scripts/deploy.sh` 每次部署都会重新 `cp data/sources.json site/sources.json`，
+        仓库里这份只是同步好的快照 ⇒ 漂了就说明有人手改过其中一份。）
         """
         self.assertTrue(SITE_REGISTRY.exists(), "site/sources.json 不存在")
         site_cfg = json.loads(SITE_REGISTRY.read_text(encoding="utf-8"))
-        self.assertEqual(site_cfg["sources"]["words"], self.cfg["sources"]["words"])
-        self.assertEqual(site_cfg["perAward"], self.cfg["perAward"])
+        self.assertEqual(site_cfg, self.cfg, "site/sources.json 与 data/sources.json 不一致")
 
 
 class WordsReportTest(unittest.TestCase):
