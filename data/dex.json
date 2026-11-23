@@ -106,16 +106,33 @@
       "form": "0163",
       "chain": "咕咕",
       "evolutionStage": 0
+    },
+    {
+      "id": "0961",
+      "nameZh": "三海地鼠",
+      "shiny": false,
+      "at": "2026-11-23T16:22:27.947163+08:00",
+      "date": "2026-11-23",
+      "sources": [
+        "weread",
+        "pom"
+      ],
+      "form": "0961",
+      "chain": "海地鼠",
+      "evolutionStage": 1
     }
   ],
-  "streak": 3,
-  "lastAwardDate": "2026-11-22",
+  "streak": 4,
+  "lastAwardDate": "2026-11-23",
   "today": {
     "date": "2026-11-23",
-    "seconds": 0,
+    "seconds": 1800,
     "threshold": 1800,
-    "sources": {},
-    "credit": 0,
+    "sources": {
+      "pom": 25,
+      "weread": 1800
+    },
+    "credit": 3,
     "perAward": 2
   },
   "ledger": {
@@ -147,6 +164,10 @@
     "2026-11-22": {
       "pom": 25,
       "weread": 1753
+    },
+    "2026-11-23": {
+      "pom": 25,
+      "weread": 1800
     }
   },
   "chains": {
@@ -157,7 +178,11 @@
     "伊布": {
       "firstDate": "2026-11-21",
       "lastShinyDate": null
+    },
+    "海地鼠": {
+      "firstDate": "2026-11-23",
+      "lastShinyDate": null
     }
   },
-  "updatedAt": "2026-11-21T19:24:08.986564+08:00"
+  "updatedAt": "2026-11-23T16:22:27.947163+08:00"
 }
