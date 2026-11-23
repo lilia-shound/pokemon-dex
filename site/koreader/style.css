@@ -115,3 +115,14 @@ code{
 /* 独立打开时回图鉴的入口 */
 .backHome a{color:var(--accent);text-decoration:none}
 .backHome a:hover{text-decoration:underline}
+
+
+/* ---------- 补录 ---------- */
+#manualDay .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+#manualDay input{flex:1;min-width:110px;border:1px solid var(--line);border-radius:12px;
+                 padding:11px 12px;font-size:16px;background:var(--bg);color:var(--ink);
+                 font-family:inherit}
+#manualDay button{border:0;border-radius:12px;background:var(--accent);color:#fffdf8;
+                  padding:11px 20px;font-size:15px;font-weight:600;font-family:inherit;
+                  cursor:pointer}
+#manualDay button:active{transform:translateY(1px)}

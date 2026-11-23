@@ -294,6 +294,62 @@
     ).join(' ');
   }
 
+  /* ---------- 补录：手动加一天 ---------- */
+
+  /**
+   * 手动加一天（短链里没带的那天，或者补前天忘了报的那天）。
+   *
+   * ★ 手动加的天**也要过单日上限** —— `recompute()` 里的
+   *   `clampDays(state.days, cap)` 会把它夹住（不然能被刷额度）。
+   * ★ 之前是「没读出有效时长」那一屏（mainBox 藏着）的话，加完要把主区放出来。
+   */
+  function addManualDay() {
+    var dateEl = document.getElementById('manualDate');
+    var minEl = document.getElementById('manualMinutes');
+    var hint = document.getElementById('manualHint');
+    var day = ((dateEl && dateEl.value) || '').trim();
+    var minutes = parseInt((minEl && minEl.value) || '', 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      if (hint) hint.textContent = '先选一个日期。';
+      return false;
+    }
+    if (!(minutes >= 0) || isNaN(minutes)) {
+      if (hint) hint.textContent = '填一下那天的分钟数（没有就读 0）。';
+      return false;
+    }
+    state.days[day] = minutes;
+    if (hint) hint.textContent = '记下了 ' + day + ' —— ' + minutes + ' 分钟。';
+    if (minEl) minEl.value = '';
+    // 之前是「没读出有效时长」那一屏 ⇒ 现在有数据了，把主区放出来
+    if (!Object.keys(state.reportDays || {}).length) {
+      state.per = DEFAULT_PER;
+      state.cap = DEFAULT_MAX_PER_DAY;
+      var bad = document.getElementById('badBox');
+      var main = document.getElementById('mainBox');
+      if (bad) bad.hidden = true;
+      if (main) main.hidden = false;
+    }
+    recompute();
+    renderDays();
+    // 注册表还没到的时候，等真口径到了再算一遍
+    if (!state.registryLoaded) {
+      loadRegistry().then(function (reg) {
+        state.per = reg.per;
+        state.cap = reg.cap;
+        recompute();
+        renderDays();
+        state.registryLoaded = true;
+      });
+    }
+    return true;
+  }
+
+  /** 绑定手动补记的表单。 */
+  function bindManualDay() {
+    var btn = document.getElementById('manualAdd');
+    if (btn) btn.addEventListener('click', addManualDay);
+  }
+
   /** 渲染「没读出有效时长」那一屏 */
   function renderBad() {
     $('#badBox').hidden = false;
@@ -315,6 +371,7 @@
 
   /** 主流程：解线 → 算额度 → 渲染；然后去拉注册表（拉到了就按真口径重算） */
   function boot() {
+    bindManualDay();
     state.days = parseDays(readWire());
     const keys = Object.keys(state.days);
     if (!keys.length) {

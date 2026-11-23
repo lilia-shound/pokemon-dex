@@ -65,6 +65,18 @@
     </section>
 
   </div>
+
+  <!-- 补录：短链里没带的那天、或前天忘了报的那天，可以手动补上 -->
+  <section class="card" id="manualDay">
+    <h2>漏了哪一天？手动补上</h2>
+    <p class="hint">Kindle 上那天的阅读时长没报上来，或者扫码那次的链接不完整 —— 在这儿填一个天数也一样算。</p>
+    <div class="row">
+      <input id="manualDate" type="date" aria-label="日期">
+      <input id="manualMinutes" type="number" min="0" max="1440" step="5" inputmode="numeric" placeholder="分钟" aria-label="分钟">
+      <button id="manualAdd" type="button">加上</button>
+    </div>
+    <p class="hint" id="manualHint"></p>
+  </section>
 </main>
 
 <script src="app.js"></script>
