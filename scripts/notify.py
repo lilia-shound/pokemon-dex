@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import urllib.request
 
 STATE_PATH = "data/notify_state.json"
 # 「连读快断了」的提醒时刻（北京时间）
@@ -98,3 +99,160 @@ def should_warn_streak(streak, credit, per_award, now: datetime.datetime,
     if now.hour < WARN_HOUR:
         return False
     return True
+
+
+# ---------- 邮件正文 ----------
+
+SITE_URL = "https://lilia-shound.github.io/pokemon-dex/"
+IMG_BASE = SITE_URL + "img/"
+FROM_ADDRESS = "训练家图鉴 <onboarding@resend.dev>"
+RESEND_URL = "https://api.resend.com/emails"
+TOTAL_POKEMON = 1028
+
+# 邮件里用得到的一小段样式 —— 客户端大多会忽略 <style>，所以关键样式都写成内联。
+_MAIL_CSS = (
+    "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC',"
+    "'Microsoft YaHei',sans-serif;color:#2f2823;background:#f6f1e7;"
+    "padding:24px;border-radius:16px;"
+)
+_BADGE = ("display:inline-block;padding:4px 14px;border-radius:999px;"
+          "font-size:13px;font-weight:600;")
+
+
+def load_pokedex(path: str = "site/pokedex.json") -> dict:
+    """{编号: 条目} —— 拿不到就返回空 dict（邮件里少一行属性而已，不影响发信）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for item in (raw or {}).get("pokemon") or []:
+        pid = item.get("id")
+        if pid:
+            out[pid] = item
+    return out
+
+
+def _pokemon_card(entry: dict, pokedex: dict) -> str:
+    """一只宝可梦的邮件卡片。"""
+    pid = str(entry.get("id", ""))
+    info = pokedex.get(pid) or {}
+    name = entry.get("nameZh") or info.get("nameZh") or pid
+    shiny = bool(entry.get("shiny"))
+    art = info.get("artShiny") if shiny else info.get("art")
+    if not art:
+        art = (pid or "0000") + ("-shiny.webp" if shiny else ".webp")
+    types = " · ".join(info.get("types") or [])
+    day = entry.get("date", "")
+    badge = ""
+    if shiny:
+        badge = ('<span style="%sbackground:#c9a227;color:#fffdf8;">\u2728 \u95ea\u5149</span>'
+                 % _BADGE)
+    return (
+        '<div style="background:#fffdf8;border:1px solid #e9e0d0;border-radius:16px;'
+        'padding:16px;margin:12px 0;text-align:center;">'
+        '<img src="%s%s" alt="%s" width="180" style="display:block;margin:0 auto 8px;"/>'
+        '<div style="font-size:20px;font-weight:700;">%s</div>'
+        '<div style="font-size:13px;color:#9a8d80;margin-top:4px;">No.%s%s</div>'
+        '<div style="font-size:13px;color:#9a8d80;margin-top:2px;">%s</div>'
+        '<div style="margin-top:8px;">%s</div>'
+        '<div style="font-size:12px;color:#9a8d80;margin-top:8px;">收服于 %s</div>'
+        '</div>'
+        % (IMG_BASE, art, name, name, pid, (" · " + types) if types else "",
+           info.get("category", ""), badge, day)
+    )
+
+
+def build_award_email(entries: list, pokedex: dict, streak: int, total: int,
+                       source_text: str = "") -> tuple[str, str]:
+    """收服邮件：主题 + HTML。"""
+    entries = list(entries or [])
+    if not entries:
+        return ("", "")
+    names = [e.get("nameZh") or e.get("id") for e in entries]
+    if len(entries) == 1:
+        subject = "训练家图鉴 · 收服了 %s No.%s" % (names[0], entries[0].get("id", ""))
+    else:
+        subject = "训练家图鉴 · 收服了 %d 只宝可梦" % len(entries)
+    cards = "".join(_pokemon_card(e, pokedex or {}) for e in entries)
+    tail = ('<div style="font-size:12px;color:#9a8d80;margin-top:6px;">%s</div>'
+            % source_text) if source_text else ""
+    html = (
+        '<div style="%s">'
+        '<div style="font-size:18px;font-weight:700;">训练家图鉴</div>'
+        '<div style="font-size:13px;color:#9a8d80;margin:4px 0 12px;">'
+        '连读 %d 天 · 图鉴 %d/%d</div>'
+        '%s'
+        '<a href="%s" style="display:inline-block;background:#c8623a;color:#fffdf8;'
+        'padding:10px 22px;border-radius:999px;text-decoration:none;font-size:14px;'
+        'font-weight:600;">去看图鉴</a>'
+        '%s'
+        '</div>'
+        % (_MAIL_CSS, int(streak or 0), int(total or 0), TOTAL_POKEMON, cards,
+           SITE_URL, tail)
+    )
+    return (subject, html)
+
+
+def build_streak_email(missing: int, streak: int, per_award: int) -> tuple[str, str]:
+    """连读提醒：主题 + HTML。
+
+    语气要温和 —— 这个项目的规则是「未达标 = 没有惩罚」，别把它写成警报。
+    """
+    missing = max(1, int(missing or 1))
+    subject = "今天的连读还差 %d 个额度" % missing
+    html = (
+        '<div style="%s">'
+        '<div style="font-size:18px;font-weight:700;">今天的连读还差 %d 个额度</div>'
+        '<div style="font-size:14px;margin-top:10px;line-height:1.7;">'
+        '你今天还没凑够 %d 个额度，<b>%d 天连读</b>会在今晚归零。<br/>'
+        '再读 <b>%d 分钟</b>就够了 —— 或者来一轮番茄钟。<br/>'
+        '<span style="color:#9a8d80;font-size:13px;">'
+        '断了也没有惩罚，明天照样能重新开始。</span></div>'
+        '<a href="%s" style="display:inline-block;margin-top:14px;background:#c8623a;'
+        'color:#fffdf8;padding:10px 22px;border-radius:999px;text-decoration:none;'
+        'font-size:14px;font-weight:600;">去图鉴</a>'
+        '</div>'
+        % (_MAIL_CSS, missing, int(per_award or 2), int(streak or 0),
+           missing * WARN_MINUTES, SITE_URL)
+    )
+    return (subject, html)
+
+
+# ---------- 发送 ----------
+
+def send_email(subject: str, html: str, api_key: str | None = None,
+               to_addr: str | None = None, opener=None) -> bool:
+    """发一封邮件。**任何失败都只返回 False，不抛异常** —— 通知是旁路。
+
+    api_key / to_addr 不传时从环境变量 RESEND_API_KEY / RESEND_TO 取。
+    opener 是 urllib.request.urlopen 的替身（测试用）。
+    """
+    api_key = api_key if api_key is not None else os.environ.get("RESEND_API_KEY", "")
+    to_addr = to_addr if to_addr is not None else os.environ.get("RESEND_TO", "")
+    if not api_key or not to_addr:
+        print("[通知] 未配置 RESEND_API_KEY / RESEND_TO，跳过")
+        return False
+    payload = {
+        "from": FROM_ADDRESS,
+        "to": [to_addr],
+        "subject": subject,
+        "html": html,
+    }
+    req = urllib.request.Request(
+        RESEND_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + api_key},
+        method="POST",
+    )
+    try:
+        op = opener or urllib.request.urlopen
+        with op(req, timeout=20) as resp:
+            resp.read()
+        print("[通知] 已发送: " + subject)
+        return True
+    except Exception as exc:  # noqa: BLE001 —— 旁路不许把整个流程带崩
+        print("[通知] 失败: %s" % exc)
+        return False

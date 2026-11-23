@@ -115,5 +115,112 @@ class StateFileTest(unittest.TestCase):
             self.assertEqual(json.loads(raw)["streak"]["2026-11-23"], True)
 
 
+class EmailContentTest(unittest.TestCase):
+    """邮件正文：要有立绘、名字、闪光标、连读天数、连读提醒的安慰话。"""
+
+    POKEDEX = {
+        "0961": {"id": "0961", "nameZh": "三海地鼠", "types": ["水", "地面"],
+                 "art": "0961.webp", "artShiny": "0961-shiny.webp"},
+    }
+
+    def test_award_email_names_the_pokemon(self):
+        subject, html = notify.build_award_email(
+            [{"date": "2026-11-23", "id": "0961", "nameZh": "三海地鼠", "shiny": False}],
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟 + 番茄钟 25 分钟")
+        self.assertIn("三海地鼠", subject)
+        self.assertIn("三海地鼠", html)
+        self.assertIn("0961.webp", html)
+
+    def test_award_email_marks_shiny(self):
+        _, html = notify.build_award_email(
+            [{"date": "2026-11-23", "id": "0961", "nameZh": "三海地鼠", "shiny": True}],
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟")
+        self.assertIn("闪光", html)
+        self.assertIn("0961-shiny.webp", html)
+
+    def test_award_email_shows_the_award_day(self):
+        """补发的要标出是哪天的 —— 不能让人以为是今天收的。"""
+        _, html = notify.build_award_email(
+            [{"date": "2026-11-20", "id": "0961", "nameZh": "三海地鼠", "shiny": False}],
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟")
+        self.assertIn("2026-11-20", html)
+
+    def test_award_email_shows_progress(self):
+        _, html = notify.build_award_email(
+            [{"date": "2026-11-23", "id": "0961", "nameZh": "三海地鼠", "shiny": False}],
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟")
+        self.assertIn("9", html)
+        self.assertIn("1028", html)
+
+    def test_award_email_for_many_pokemon(self):
+        subject, html = notify.build_award_email(
+            [{"date": "2026-11-21", "id": "0471", "nameZh": "冰伊布", "shiny": False},
+             {"date": "2026-11-22", "id": "0163", "nameZh": "咕咕", "shiny": False}],
+            {}, streak=4, total=9, source_text="微信读书 30 分钟")
+        self.assertIn("2", subject)
+        self.assertIn("冰伊布", html)
+        self.assertIn("咕咕", html)
+
+    def test_streak_email_states_the_streak(self):
+        subject, html = notify.build_streak_email(missing=1, streak=4, per_award=2)
+        self.assertIn("连读", subject)
+        self.assertIn("4", html)
+        self.assertIn("1", html)
+
+    def test_streak_email_says_it_is_not_a_punishment(self):
+        """对齐「未达标 = 没有惩罚」的设计 —— 别吓她。"""
+        _, html = notify.build_streak_email(missing=1, streak=4, per_award=2)
+        self.assertIn("没有惩罚", html)
+
+    def test_streak_email_gives_a_readable_minutes_figure(self):
+        """官方 900 秒 = 1 额度，但官方漏计三成 ⇒ 文案写 20 分钟不是 15。"""
+        _, html = notify.build_streak_email(missing=1, streak=4, per_award=2)
+        self.assertIn("20 分钟", html)
+
+
+class SendMailTest(unittest.TestCase):
+    """发信：不配 key 就跳过；网络炸了不许抛异常。"""
+
+    def test_without_api_key_it_skips_quietly(self):
+        self.assertFalse(notify.send_email("t", "<p>h</p>", api_key="", to_addr="a@b.c"))
+
+    def test_without_recipient_it_skips_quietly(self):
+        self.assertFalse(notify.send_email("t", "<p>h</p>", api_key="re_x", to_addr=""))
+
+    def test_it_posts_to_resend(self):
+        """用 opener 假造一次发送，检查请求体。"""
+        captured = {}
+
+        class FakeResp:
+            def read(self):
+                return b'{"id":"abc"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_opener(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            captured["headers"] = req.headers
+            return FakeResp()
+
+        ok = notify.send_email("标题", "<p>正文</p>", api_key="re_x",
+                                to_addr="me@example.com", opener=fake_opener)
+        self.assertTrue(ok)
+        self.assertEqual(captured["url"], "https://api.resend.com/emails")
+        self.assertEqual(captured["body"]["subject"], "标题")
+        self.assertEqual(captured["body"]["to"], ["me@example.com"])
+        self.assertIn("re_x", str(captured["headers"]))
+
+    def test_a_network_error_does_not_raise(self):
+        def boom(req, timeout=None):
+            raise OSError("network down")
+        self.assertFalse(notify.send_email("t", "<p>h</p>", api_key="re_x",
+                                            to_addr="me@example.com", opener=boom))
+
+
 if __name__ == "__main__":
     unittest.main()
