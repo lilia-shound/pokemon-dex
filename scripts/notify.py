@@ -138,8 +138,14 @@ def load_pokedex(path: str = "site/pokedex.json") -> dict:
     return out
 
 
-def _pokemon_card(entry: dict, pokedex: dict) -> str:
-    """一只宝可梦的邮件卡片。"""
+def _pokemon_card(entry: dict, pokedex: dict, today: str = "") -> str:
+    """一只宝可梦的邮件卡片。
+
+    ★ **当天收服的不显示日期** —— QQ 邮箱会把「2026-11-23」这种格式**自动变成
+      蓝色下划线链接**（客户端自己的功能，HTML 拦不住）⇒ 看着像排版坏了。
+      日期只有「补发」那种情况才需要标 ⇒ 那时写成「补发 · 11 月 21 日」
+      （中文格式 QQ 一般不会自动加链）。
+    """
     pid = str(entry.get("id", ""))
     info = pokedex.get(pid) or {}
     name = entry.get("nameZh") or info.get("nameZh") or pid
@@ -153,6 +159,16 @@ def _pokemon_card(entry: dict, pokedex: dict) -> str:
     if shiny:
         badge = ('<span style="%sbackground:#c9a227;color:#fffdf8;">\u2728 \u95ea\u5149</span>'
                  % _BADGE)
+    # 日期行：只有「不是今天收的」才需要标出来
+    day_line = ""
+    if day and day != today:
+        try:
+            y, m, d = day.split("-")
+            day_line = ('<div style="font-size:12px;color:#9a8d80;margin-top:8px;">'
+                        '补发 · %s 月 %s 日</div>' % (int(m), int(d)))
+        except ValueError:
+            day_line = ('<div style="font-size:12px;color:#9a8d80;margin-top:8px;">'
+                        '补发 · %s</div>' % day)
     return (
         '<div style="background:#fffdf8;border:1px solid #e9e0d0;border-radius:16px;'
         'padding:16px;margin:12px 0;text-align:center;">'
@@ -161,16 +177,19 @@ def _pokemon_card(entry: dict, pokedex: dict) -> str:
         '<div style="font-size:13px;color:#9a8d80;margin-top:4px;">No.%s%s</div>'
         '<div style="font-size:13px;color:#9a8d80;margin-top:2px;">%s</div>'
         '<div style="margin-top:8px;">%s</div>'
-        '<div style="font-size:12px;color:#9a8d80;margin-top:8px;">收服于 %s</div>'
+        '%s'
         '</div>'
         % (IMG_BASE, art, name, name, pid, (" · " + types) if types else "",
-           info.get("category", ""), badge, day)
+           info.get("category", ""), badge, day_line)
     )
 
 
 def build_award_email(entries: list, pokedex: dict, streak: int, total: int,
-                       source_text: str = "") -> tuple[str, str]:
-    """收服邮件：主题 + HTML。"""
+                       source_text: str = "", today: str = "") -> tuple[str, str]:
+    """收服邮件：主题 + HTML。
+
+    today 传今天（YYYY-MM-DD）⇒ 当天收服的不显示日期行（QQ 会把日期自动加链）。
+    """
     entries = list(entries or [])
     if not entries:
         return ("", "")
@@ -179,7 +198,7 @@ def build_award_email(entries: list, pokedex: dict, streak: int, total: int,
         subject = "训练家图鉴 · 收服了 %s No.%s" % (names[0], entries[0].get("id", ""))
     else:
         subject = "训练家图鉴 · 收服了 %d 只宝可梦" % len(entries)
-    cards = "".join(_pokemon_card(e, pokedex or {}) for e in entries)
+    cards = "".join(_pokemon_card(e, pokedex or {}, today) for e in entries)
     tail = ('<div style="font-size:12px;color:#9a8d80;margin-top:6px;">%s</div>'
             % source_text) if source_text else ""
     html = (
@@ -304,6 +323,8 @@ def main(dex_path: str = "data/dex.json", state_path: str = STATE_PATH,
     state = load_state(state_path)
     sent = []
     skipped = []
+    # 今天是哪天（邮件里判断「当天收服」用）
+    today = (dex.get("today") or {}).get("date") or now.strftime("%Y-%m-%d")
 
     # ---- 收服了新宝可梦 ----
     pending = pending_awards(dex.get("collected") or [], state.get("awarded") or [])
@@ -314,6 +335,7 @@ def main(dex_path: str = "data/dex.json", state_path: str = STATE_PATH,
             streak=int(dex.get("streak") or 0),
             total=len(dex.get("collected") or []),
             source_text=_source_text(dex),
+            today=today,
         )
         if sender(subject, html):
             # 先发后记 —— 发失败就不记，下轮还会重发
@@ -323,7 +345,6 @@ def main(dex_path: str = "data/dex.json", state_path: str = STATE_PATH,
             skipped.append(subject)
 
     # ---- 连读快断了 ----
-    today = (dex.get("today") or {}).get("date") or now.strftime("%Y-%m-%d")
     per_award = int((dex.get("today") or {}).get("perAward") or 2)
     credit = int((dex.get("today") or {}).get("credit") or 0)
     warned = bool((state.get("streak") or {}).get(today))

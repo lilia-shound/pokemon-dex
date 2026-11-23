@@ -138,12 +138,24 @@ class EmailContentTest(unittest.TestCase):
         self.assertIn("闪光", html)
         self.assertIn("0961-shiny.webp", html)
 
-    def test_award_email_shows_the_award_day(self):
+    def test_award_email_shows_the_award_day_for_a_backfill(self):
         """补发的要标出是哪天的 —— 不能让人以为是今天收的。"""
         _, html = notify.build_award_email(
             [{"date": "2026-11-20", "id": "0961", "nameZh": "三海地鼠", "shiny": False}],
-            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟")
-        self.assertIn("2026-11-20", html)
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟",
+            today="2026-11-23")
+        self.assertIn("补发", html)
+        self.assertIn("11 月 20 日", html)
+
+    def test_award_email_hides_the_day_for_a_today_award(self):
+        """★ 当天收服的不显示日期 —— QQ 会把「2026-11-23」自动变成蓝色下划线链接，
+        看着像排版坏了（客户端行为，HTML 拦不住）⇒ 当天就不写日期。"""
+        _, html = notify.build_award_email(
+            [{"date": "2026-11-23", "id": "0961", "nameZh": "三海地鼠", "shiny": False}],
+            self.POKEDEX, streak=4, total=9, source_text="微信读书 30 分钟",
+            today="2026-11-23")
+        self.assertNotIn("2026-11-23", html)
+        self.assertNotIn("补发", html)
 
     def test_award_email_shows_progress(self):
         _, html = notify.build_award_email(
