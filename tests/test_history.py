@@ -140,6 +140,13 @@ class HistoryFileTest(unittest.TestCase):
             got = hs.load_history(os.path.join(d, "nope.json"))
             self.assertEqual(got["days"], {})
 
+    def test_the_deploy_script_syncs_the_history_file(self):
+        """图鉴页读的是站根那份 ⇒ 部署必须把它带上去。"""
+        p = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "deploy.sh"
+        text = p.read_text(encoding="utf-8")
+        self.assertTrue("data/history.json" in text, "deploy.sh 要同步历史数据")
+        self.assertTrue("site/history.json" in text, "deploy.sh 要同步到站根那份")
+
     def test_the_committed_history_file_is_valid(self):
         p = pathlib.Path(__file__).resolve().parent.parent / "data" / "history.json"
         self.assertTrue(p.exists(), "data/history.json 要入库（哪怕是空的）")

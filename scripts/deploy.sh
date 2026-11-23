@@ -23,6 +23,9 @@ cp data/dex.json site/dex.json
 # 源注册表也要跟着走 —— 读方（图鉴页 / 插件）拿它兜底「掉一只要读多久」，
 # S5 的多源进度也走它（workflow 里也 cp 同一份）
 cp data/sources.json site/sources.json
+# 最近 30 天的历史（S7c）—— 图鉴页的「最近 30 天」热力图和堆叠柱读它。
+# 没有这个文件时不要报错（第一次跑之前可能还没生成过）。
+[ -f data/history.json ] && cp data/history.json site/history.json || true
 # 番茄钟用的精简宝可梦清单（从 pokedex.json 生成，1.8MB → 104KB）
 python3 scripts/build_pokedex_lite.py
 touch site/.nojekyll
