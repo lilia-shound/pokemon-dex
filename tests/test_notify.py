@@ -214,6 +214,8 @@ class SendMailTest(unittest.TestCase):
         self.assertEqual(captured["body"]["subject"], "标题")
         self.assertEqual(captured["body"]["to"], ["me@example.com"])
         self.assertIn("re_x", str(captured["headers"]))
+        # ★ 必须带浏览器 UA —— 否则 Cloudflare 403（error code 1010）
+        self.assertIn("Mozilla/5.0", str(captured["headers"]))
 
     def test_a_network_error_does_not_raise(self):
         def boom(req, timeout=None):

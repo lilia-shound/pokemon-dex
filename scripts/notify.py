@@ -107,6 +107,10 @@ SITE_URL = "https://lilia-shound.github.io/pokemon-dex/"
 IMG_BASE = SITE_URL + "img/"
 FROM_ADDRESS = "训练家图鉴 <onboarding@resend.dev>"
 RESEND_URL = "https://api.resend.com/emails"
+# Resend 前面有 Cloudflare：urllib 默认 UA（`Python-urllib/x.y`）会被 403
+# （`error code: 1010` = 按浏览器签名封的）⇒ 必须带一个像浏览器的 UA。
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 TOTAL_POKEMON = 1028
 
 # 邮件里用得到的一小段样式 —— 客户端大多会忽略 <style>，所以关键样式都写成内联。
@@ -244,7 +248,12 @@ def send_email(subject: str, html: str, api_key: str | None = None,
         RESEND_URL,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer " + api_key},
+                 "Authorization": "Bearer " + api_key,
+                 # ★ 必须带浏览器样的 UA —— Resend 前面挂着 Cloudflare，
+                 #   urllib 默认 UA 是 `Python-urllib/3.11` ⇒ 直接 403
+                 #   （`error code: 1010` = 按浏览器签名封的）。2026-11-23 实测：
+                 #   不带 UA → 403；带上 → 200。
+                 "User-Agent": BROWSER_UA},
         method="POST",
     )
     try:
