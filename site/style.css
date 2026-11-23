@@ -252,6 +252,7 @@ img.broken{opacity:.1}
 .cbs{display:flex;flex-direction:column;justify-content:flex-end;width:100%;
      border-radius:3px 3px 0 0;overflow:hidden}
 .cbs i{display:block;width:100%}
+.cbs.zero{height:2px;background:var(--line);border-radius:1px}
 .cbarLegend{display:flex;gap:10px;font-size:11px;color:var(--dim);margin-top:8px;flex-wrap:wrap}
 .cbarLegend i{display:inline-block;width:10px;height:10px;border-radius:3px;
               margin-right:4px;vertical-align:-1px}

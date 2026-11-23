@@ -279,24 +279,32 @@ function renderHistory() {
   // —— 堆叠柱：Y 轴 = 额度（每源按自己的 per 折算后 floor 再相加）——
   const colors = { weread: '#c8623a', pom: '#e2a06a', koreader: '#7f9a8e', words: '#c9a227' };
   const srcs = registrySources();
+  // 第一遍：只算数字（每源折出几个额度）
   const rows = keys.map((k) => {
     const per = creditsBySource(historyDays[k] || {});
-    const parts = [];
     let sum = 0;
-    for (const s of srcs) {
-      const c = per[s.id] || 0;
-      if (c > 0) {
-        parts.push('<i style="height:' + (c * 13) + 'px;background:' +
-          (colors[s.id] || '#c8623a') + '"></i>');
-      }
-      sum += c;
-    }
-    return { key: k, total: sum, parts: parts.join('') };
+    for (const s of srcs) sum += per[s.id] || 0;
+    return { key: k, total: sum, per: per };
   });
+  // 一个额度多少像素（满格 = 120px）—— 外层和每段**用同一把尺子**，
+  // 否则会出现「外层缩放、内层固定高」⇒ 柱子只有该有的三分之一高。
   const max = Math.max(1, ...rows.map((r) => r.total));
-  bars.innerHTML = rows.map((r) =>
-    '<div class="cbcol" title="' + r.key + ' · ' + r.total + ' 个额度"><span class="cbs" style="height:' +
-    Math.max(2, Math.round((r.total / max) * 120)) + 'px">' + r.parts + '</span></div>').join('');
+  const unit = 120 / max;
+  // 第二遍：出 HTML
+  bars.innerHTML = rows.map((r) => {
+    const parts = srcs.map((s) => {
+      const c = r.per[s.id] || 0;
+      if (c <= 0) return '';
+      return '<i style="height:' + (c * unit).toFixed(1) + 'px;background:' +
+        (colors[s.id] || '#c8623a') + '"></i>';
+    }).join('');
+    return '<div class="cbcol" title="' + r.key + ' · ' + r.total + ' 个额度">' +
+      (r.total > 0
+        ? '<span class="cbs" style="height:' + (r.total * unit).toFixed(1) + 'px">' + parts + '</span>'
+        // 那天没读 ⇒ 留一道浅色底纹，让「30 天里哪几天有数据」一眼看得见
+        : '<span class="cbs zero"></span>') +
+      '</div>';
+  }).join('');
   const days = Object.keys(historyDays).length;
   if (card) card.hidden = false;
   if (total) total.textContent = days ? days + ' 天有记录' : '';
