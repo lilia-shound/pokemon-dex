@@ -317,15 +317,18 @@ cron (17 */3 * *, Asia/Shanghai)
 **关键回归断言**：`history.json` 写进去之后，`award.py` 的 `pending_days()` 返回值**必须不变**
 —— 这是 3.3.1 那个陷阱的守门测试。
 
-## 7. 交付拆成三次提交
+## 7. 交付拆成三条线
 
-一次提交只做一件事：
+**三条线互不依赖**，各自能独立跑通、独立部署：
 
-1. `feat: 邮件通知（Resend）` —— `scripts/notify.py` + `data/notify_state.json` + cron 提示词 + 文档
-2. `feat: 番茄钟与 KOReader 支持补录最近 7 天` —— 两个页面的日期格子 + 测试
-3. `feat: 图鉴页加最近 30 天历史（热力图 + 堆叠柱）` —— `scripts/history.py` + `data/history.json` + 前端 + 测试
+| 线 | 交付物 | 提交数 |
+|---|---|---|
+| **S7a 邮件通知** | `scripts/notify.py` + `data/notify_state.json` + cron 提示词 + 文档 | 4 |
+| **S7b 补录** | 番茄钟页 + KOReader 落地页的日期格子 + 测试 | 2 |
+| **S7c 历史** | `scripts/history.py` + `data/history.json` + 部署同步 + 图鉴页历史块 + 测试 | 3 |
 
-外加一条：**部署**（`scripts/deploy.sh` 要同步 `site/history.json`）。
+一次提交只做一件事（每条线内部再按任务分几次提交）。
+实施细节见 `docs/superpowers/plans/2026-11-23-pokemon-dex-hub-s7-daily-loop.md`。
 
 ## 8. 不做什么（YAGNI）
 
