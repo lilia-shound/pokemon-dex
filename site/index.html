@@ -39,6 +39,36 @@
   <div class="cpNote" id="cpNote"></div>
 </section>
 
+<!-- 最近 30 天：左边日历热力图（当天读了多少），右边每天一根柱子（额度，四源堆叠） -->
+<section class="historyPanel" id="historyCard" hidden>
+  <div class="cpHead">
+    <span class="cpTitle">最近 30 天</span>
+    <span class="cpTotal" id="historyTotal"></span>
+  </div>
+  <div class="historyRow">
+    <div class="heatWrap">
+      <div class="heat" id="heatMap"></div>
+      <div class="heatLegend">
+        <span>少</span>
+        <i class="h0"></i><i class="h1"></i><i class="h2"></i><i class="h3"></i><i class="h4"></i>
+        <span>多</span>
+        <span class="heatTip">颜色 = 当天微信读书的秒数 · 空白 = 那天没读</span>
+      </div>
+    </div>
+    <div class="barWrap">
+      <div class="cbar" id="creditBars"></div>
+      <div class="cbarLegend">
+        <span><i style="background:#c8623a"></i>微信读书</span>
+        <span><i style="background:#e2a06a"></i>番茄钟</span>
+        <span><i style="background:#7f9a8e"></i>KOReader</span>
+        <span><i style="background:#c9a227"></i>背单词</span>
+      </div>
+      <p class="cpNote">柱子高度是<b>额度</b> —— 跟上面的「今日额度」一个口径。</p>
+    </div>
+  </div>
+  <div class="cpNote" id="historyNote"></div>
+</section>
+
 <section class="today" id="today" hidden>
   <p class="todayLabel" id="todayLabel"></p>
   <div class="card" id="todayCard"></div>
@@ -78,6 +108,6 @@
 </div>
 
 <!-- 版本号：改了 app.js 就改这个数，浏览器/CDN 缓存旧版的问题就绕开了 -->
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

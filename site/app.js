@@ -1,6 +1,10 @@
 let POKEDEX = null;
 let DEX = { collected: [], streak: 0, today: {} };
 let SOURCES = null;   // 源注册表（sources.json）—— 额度的权威来源
+/** 最近 30 天的历史原始量：{ 'YYYY-MM-DD': {源 id: 原始量} } */
+let historyDays = {};
+/** 历史窗口的天数 —— 与服务器 ledgerDays / history 的保留天数一致 */
+const HISTORY_DAYS = 30;
 let FILTER = "all";
 const IMG = "img/";
 let POKEDEX_BY_ID = new Map();   // id → 图鉴记录（查形态用，别线性找）
@@ -155,10 +159,11 @@ async function fetchJSON(name, timeout = 30000, retries = 2) {
 
 async function load() {
   // 三个文件各自兜底：状态没到不影响图鉴墙，阈值没到只影响兜底文案
-  const [pd, dx, reg] = await Promise.all([
+  const [pd, dx, reg, hist] = await Promise.all([
     fetchJSON("pokedex.json").catch(() => null),
     fetchJSON("dex.json").catch(() => null),
     fetchJSON("sources.json").catch(() => null),
+    fetchJSON("history.json").catch(() => null),
   ]);
   if (!pd || !pd.pokemon) {
     setText("summary", "图鉴数据没加载上（网络问题）");
@@ -176,6 +181,7 @@ async function load() {
   for (const p of POKEDEX) POKEDEX_BY_NAME.set(String(p.nameZh), p);
   DEX = dx || { collected: [], streak: 0, today: {} };
   SOURCES = reg;
+  setHistoryDays((hist && hist.days) || {});
   // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
   //      ?owned=1 直接打开「已获得」视图（已收服的那几只，不用在 1028 格里翻）
   try {
@@ -188,9 +194,116 @@ async function load() {
     }
   } catch (e) { /* 忽略 */ }
   render();
+  renderHistory();
   if (!dx) {
     // 状态没加载上要说清楚 —— 不然「图鉴 0/1028」会让人以为全丢了
     setText("summary", "图鉴数据加载了，但状态没加载上（网络问题），刷新再试");
+  }
+}
+
+/* ---------- 最近 30 天历史 ---------- */
+
+/** 写进历史原始量。 */
+function setHistoryDays(days) { historyDays = days || {}; }
+
+/**
+ * 某天每个源折出来的额度（堆叠柱用）。
+ * ★ 折算走现有的 `creditForSource()` —— 它与服务端 `scripts/sources.py` 的
+ *   `credit_for_day` 逐字同构（评审用 3731 组跨语言对拍守着）。
+ * @param {Object<string, number>} dayMap {源 id: 原始量}
+ * @returns {Object<string, number>} {源 id: 额度}
+ */
+function creditsBySource(dayMap) {
+  const map = dayMap || {};
+  const out = {};
+  for (const s of registrySources()) {
+    out[s.id] = creditForSource(map[s.id] || 0, s.cfg);
+  }
+  return out;
+}
+
+/**
+ * 某天的总额度。
+ * @param {Object<string, number>} dayMap {源 id: 原始量}
+ * @returns {number}
+ */
+function creditForDay(dayMap) {
+  const map = dayMap || {};
+  let total = 0;
+  for (const s of registrySources()) {
+    total += creditForSource(map[s.id] || 0, s.cfg);
+  }
+  return total;
+}
+
+/** 最近 N 天的日期串（今天在前）。 */
+function lastDayKeys(n) {
+  // ★ **升序**（最早的在左、最晚的在右）—— 日历要这样扫，
+  //   倒序（今天在左上）看着别扭，而且跟给她看的示意图不一致。
+  const out = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const p = (x) => (x < 10 ? '0' + x : '' + x);
+    out.push(d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()));
+  }
+  return out;
+}
+
+/** 热力图那一格的颜色档（跟着额度刻度走：<1 / 1 / 2 / 3+ 个额度）。 */
+function heatLevel(seconds) {
+  const s = Number(seconds || 0);
+  if (s <= 0) return 0;
+  if (s < 900) return 1;
+  if (s < 1800) return 2;
+  if (s < 2700) return 3;
+  return 4;
+}
+
+/** 画热力图 + 堆叠柱。 */
+function renderHistory() {
+  const heat = document.getElementById('heatMap');
+  const bars = document.getElementById('creditBars');
+  const note = document.getElementById('historyNote');
+  const card = document.getElementById('historyCard');
+  const total = document.getElementById('historyTotal');
+  if (!heat || !bars) return;
+  const keys = lastDayKeys(HISTORY_DAYS);
+  // —— 热力图：颜色 = 当天微信读书的秒数 ——
+  heat.innerHTML = keys.map((k) => {
+    const sec = (historyDays[k] || {}).weread || 0;
+    const lv = heatLevel(sec);
+    return '<div class="hcell h' + lv + '" title="' + k + ' · ' + sec + ' 秒">' +
+      k.slice(5) + '</div>';
+  }).join('');
+  // —— 堆叠柱：Y 轴 = 额度（每源按自己的 per 折算后 floor 再相加）——
+  const colors = { weread: '#c8623a', pom: '#e2a06a', koreader: '#7f9a8e', words: '#c9a227' };
+  const srcs = registrySources();
+  const rows = keys.map((k) => {
+    const per = creditsBySource(historyDays[k] || {});
+    const parts = [];
+    let sum = 0;
+    for (const s of srcs) {
+      const c = per[s.id] || 0;
+      if (c > 0) {
+        parts.push('<i style="height:' + (c * 13) + 'px;background:' +
+          (colors[s.id] || '#c8623a') + '"></i>');
+      }
+      sum += c;
+    }
+    return { key: k, total: sum, parts: parts.join('') };
+  });
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  bars.innerHTML = rows.map((r) =>
+    '<div class="cbcol" title="' + r.key + ' · ' + r.total + ' 个额度"><span class="cbs" style="height:' +
+    Math.max(2, Math.round((r.total / max) * 120)) + 'px">' + r.parts + '</span></div>').join('');
+  const days = Object.keys(historyDays).length;
+  if (card) card.hidden = false;
+  if (total) total.textContent = days ? days + ' 天有记录' : '';
+  if (note) {
+    note.textContent = days
+      ? ('共 ' + days + ' 天的记录。空白格 = 那天没读；柱子高度是当天的额度。')
+      : '还没有历史数据。';
   }
 }
 
@@ -795,6 +908,11 @@ window.DexPage = {
   formLine,
   showView,
   currentView: () => currentView,
+  // —— S7c 最近 30 天 ——
+  historyDays: () => historyDays,
+  creditsBySource,
+  creditForDay,
+  renderHistory,
   // 名字 → 图鉴记录（进化链按名字查阶数用；调试/测试也要用）
   pokedexByName: () => POKEDEX_BY_NAME,
 };
