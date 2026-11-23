@@ -256,3 +256,87 @@ def send_email(subject: str, html: str, api_key: str | None = None,
     except Exception as exc:  # noqa: BLE001 —— 旁路不许把整个流程带崩
         print("[通知] 失败: %s" % exc)
         return False
+
+
+# ---------- 主流程 ----------
+
+def _load_dex(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _source_text(dex: dict) -> str:
+    """「这轮的投入：微信读书 30 分钟 + 番茄钟 25 分钟」—— 让她知道是哪些凑的。"""
+    today = dex.get("today") or {}
+    sources = today.get("sources") or {}
+    names = {"weread": "微信读书", "pom": "番茄钟", "koreader": "KOReader",
+             "words": "背单词"}
+    units = {"weread": "秒", "pom": "分钟", "koreader": "分钟", "words": "个"}
+    bits = []
+    for sid, amount in sorted(sources.items()):
+        if not amount:
+            continue
+        bits.append("%s %s %s" % (names.get(sid, sid), amount, units.get(sid, "")))
+    return " + ".join(bits)
+
+
+def main(dex_path: str = "data/dex.json", state_path: str = STATE_PATH,
+         now: datetime.datetime | None = None, sender=None) -> dict:
+    """跑一轮通知。返回 {sent: [...], skipped: [...], reason: str}。
+
+    sender 传进来的话用它发信（测试用）；不传就用 send_email。
+    """
+    sender = sender or send_email
+    now = now or shanghai_now()
+    dex = _load_dex(dex_path)
+    state = load_state(state_path)
+    sent = []
+    skipped = []
+
+    # ---- 收服了新宝可梦 ----
+    pending = pending_awards(dex.get("collected") or [], state.get("awarded") or [])
+    if pending:
+        pokedex = load_pokedex()
+        subject, html = build_award_email(
+            pending, pokedex,
+            streak=int(dex.get("streak") or 0),
+            total=len(dex.get("collected") or []),
+            source_text=_source_text(dex),
+        )
+        if sender(subject, html):
+            # 先发后记 —— 发失败就不记，下轮还会重发
+            state.setdefault("awarded", []).extend(award_key(e) for e in pending)
+            sent.append(subject)
+        else:
+            skipped.append(subject)
+
+    # ---- 连读快断了 ----
+    today = (dex.get("today") or {}).get("date") or now.strftime("%Y-%m-%d")
+    per_award = int((dex.get("today") or {}).get("perAward") or 2)
+    credit = int((dex.get("today") or {}).get("credit") or 0)
+    warned = bool((state.get("streak") or {}).get(today))
+    if should_warn_streak(int(dex.get("streak") or 0), credit, per_award, now, warned):
+        missing = max(1, per_award - credit)
+        subject, html = build_streak_email(missing, int(dex.get("streak") or 0), per_award)
+        if sender(subject, html):
+            state.setdefault("streak", {})[today] = True
+            sent.append(subject)
+        else:
+            skipped.append(subject)
+
+    if sent or skipped:
+        save_state(state, state_path)
+    reason = "无" if not (sent or skipped) else ("已发 %d 封" % len(sent))
+    return {"sent": sent, "skipped": skipped, "reason": reason}
+
+
+if __name__ == "__main__":
+    result = main()
+    for s in result["sent"]:
+        print("[通知] 已发送: " + s)
+    for s in result["skipped"]:
+        print("[通知] 发送失败（下一轮会重试）: " + s)
+    print("[通知] " + result["reason"])

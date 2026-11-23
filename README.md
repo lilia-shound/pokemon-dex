@@ -57,6 +57,19 @@ KOReader（Kindle / Android）
   cron 日志里看到 `[失败]` 就是取数出了问题（Key 失效 / 微信读书 skill 版本过期 / 网关抖动），
   该修的是取数，不是「今天没读够」。
 
+### 邮件通知
+
+掉宝可梦时给你发一封邮件；连读快断了（连读 ≥ 2 天、当天没达标、晚上 9 点还没读够）
+也会发一封。
+
+- 走 **Resend**（`RESEND_API_KEY` + `RESEND_TO`，配在 Mavis 的 secret 里，不进仓库）
+- 脚本是 `scripts/notify.py`，**旁路** —— 它只读 `data/dex.json`、只写 `data/notify_state.json`，
+  结算核心一行不改；发信失败也不会影响发奖
+- 幂等靠 `data/notify_state.json`：同一条宝可梦只通知一次，一天最多一封连读提醒
+- ★ **补发的宝可梦也会通知** —— `award.py` 会一次结清所有待发奖日，
+  所以判定看的是「有没有通知过」，不是「是不是今天」
+- 没配 key 时静默跳过（cron 汇报里会如实说一句）
+
 ## 玩法规则
 
 | 项 | 值 |

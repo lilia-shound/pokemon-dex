@@ -222,5 +222,124 @@ class SendMailTest(unittest.TestCase):
                                             to_addr="me@example.com", opener=boom))
 
 
+class MainFlowTest(unittest.TestCase):
+    """端到端：读 dex.json → 判定 → 发 → 记幂等。"""
+
+    def _dex(self, **kw):
+        base = {
+            "version": 2,
+            "collected": [],
+            "streak": 0,
+            "today": {"date": "2026-11-23", "seconds": 0, "threshold": 1800,
+                      "sources": {}, "credit": 0, "perAward": 2},
+        }
+        base.update(kw)
+        return base
+
+    def _write_dex(self, d, dex):
+        p = os.path.join(d, "dex.json")
+        pathlib.Path(p).write_text(json.dumps(dex, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_a_new_pokemon_triggers_one_email(self):
+        dex = self._dex(collected=[{"date": "2026-11-23", "id": "0961",
+                                    "nameZh": "三海地鼠", "shiny": False}])
+        d = tempfile.mkdtemp()
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        res = notify.main(dex_path=self._write_dex(d, dex),
+                          state_path=os.path.join(d, "state.json"),
+                          now=datetime.datetime(2026, 11, 23, 10, 0),
+                          sender=fake_sender)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("三海地鼠", sent[0])
+        self.assertEqual(res["sent"], sent)
+
+    def test_running_twice_does_not_send_twice(self):
+        """★ 幂等 —— 第二轮不该再发一遍。"""
+        dex = self._dex(collected=[{"date": "2026-11-23", "id": "0961",
+                                    "nameZh": "三海地鼠", "shiny": False}])
+        d = tempfile.mkdtemp()
+        dex_p = self._write_dex(d, dex)
+        st_p = os.path.join(d, "state.json")
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        notify.main(dex_path=dex_p, state_path=st_p,
+                    now=datetime.datetime(2026, 11, 23, 10, 0), sender=fake_sender)
+        notify.main(dex_path=dex_p, state_path=st_p,
+                    now=datetime.datetime(2026, 11, 23, 10, 30), sender=fake_sender)
+        self.assertEqual(len(sent), 1)
+
+    def test_streak_warning_is_sent_after_nine_pm(self):
+        dex = self._dex(streak=4)
+        d = tempfile.mkdtemp()
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        notify.main(dex_path=self._write_dex(d, dex),
+                    state_path=os.path.join(d, "state.json"),
+                    now=datetime.datetime(2026, 11, 23, 21, 30), sender=fake_sender)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("连读", sent[0])
+
+    def test_streak_warning_is_not_sent_in_the_morning(self):
+        dex = self._dex(streak=4)
+        d = tempfile.mkdtemp()
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        notify.main(dex_path=self._write_dex(d, dex),
+                    state_path=os.path.join(d, "state.json"),
+                    now=datetime.datetime(2026, 11, 23, 9, 0), sender=fake_sender)
+        self.assertEqual(sent, [])
+
+    def test_streak_warning_only_once_per_day(self):
+        dex = self._dex(streak=4)
+        d = tempfile.mkdtemp()
+        dex_p = self._write_dex(d, dex)
+        st_p = os.path.join(d, "state.json")
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        notify.main(dex_path=dex_p, state_path=st_p,
+                    now=datetime.datetime(2026, 11, 23, 21, 30), sender=fake_sender)
+        notify.main(dex_path=dex_p, state_path=st_p,
+                    now=datetime.datetime(2026, 11, 23, 22, 30), sender=fake_sender)
+        self.assertEqual(len(sent), 1)
+
+    def test_nothing_to_say_sends_nothing(self):
+        dex = self._dex()
+        d = tempfile.mkdtemp()
+        sent = []
+        def fake_sender(subject, html, **kw):
+            sent.append(subject)
+            return True
+        notify.main(dex_path=self._write_dex(d, dex),
+                    state_path=os.path.join(d, "state.json"),
+                    now=datetime.datetime(2026, 11, 23, 21, 30), sender=fake_sender)
+        self.assertEqual(sent, [])
+
+    def test_a_failed_send_does_not_mark_it_as_notified(self):
+        """发失败 ⇒ 下轮还要重发（宁可重发不要漏发）。"""
+        dex = self._dex(collected=[{"date": "2026-11-23", "id": "0961",
+                                    "nameZh": "三海地鼠", "shiny": False}])
+        d = tempfile.mkdtemp()
+        dex_p = self._write_dex(d, dex)
+        st_p = os.path.join(d, "state.json")
+        def failing(subject, html, **kw):
+            return False
+        notify.main(dex_path=dex_p, state_path=st_p,
+                    now=datetime.datetime(2026, 11, 23, 10, 0), sender=failing)
+        st = notify.load_state(st_p)
+        self.assertEqual(st["awarded"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
