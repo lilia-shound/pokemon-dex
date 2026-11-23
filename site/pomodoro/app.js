@@ -16,6 +16,8 @@ const REPO = 'lilia-shound/pokemon-dex';
 const SOURCE_ID = 'pom';
 const ISSUE_NEW = `https://github.com/${REPO}/issues/new`;
 const MAX_SYNC_DAYS = 30;
+/** 页面上能点选补录的天数（最近 7 天） */
+const PICK_DAYS = 7;
 /** 拉不到图时用的剪影（data URI，不外链） */
 const SILHOUETTE = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
@@ -454,6 +456,7 @@ function render() {
   const ti = $('#taskInput');
   $('#taskTxt').textContent = ti ? ti.value.trim() : '';
   renderSync();
+  renderDayStrip();
 }
 function renderTop() {
   const t = S().days[todayStr()] || { minutes: 0, poms: 0 };
@@ -503,6 +506,79 @@ function renderStats() {
     '摸鱼被抓：<b style="color:#ffb26b">' + (s.slacks || 0) + '</b> 次<br>' +
     '捡到宝可梦：<b style="color:#8b7bff">' + Object.keys(s.dex).length + '</b> 只' +
     '</div>';
+}
+
+/* ---------- 补录：改过去某一天的分钟数 ---------- */
+
+/** 最近 N 天的日期串（今天在前）。 */
+function pickDays(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    out.push(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+  }
+  return out;
+}
+
+/** 画那排日期格子 —— 已记过的显示分钟数。 */
+function renderDayStrip() {
+  const el = $('#dayStrip');
+  if (!el) return;
+  el.innerHTML = pickDays(PICK_DAYS).map(function (k) {
+    const v = (S().days[k] || {}).minutes || 0;
+    const w = ['日', '一', '二', '三', '四', '五', '六'][new Date(k).getDay()];
+    return '<button class="day' + (v > 0 ? ' has' : '') + '" data-day="' + k + '">' +
+      '<span class="d">' + k.slice(5) + '</span>' +
+      '<span class="w">' + w + '</span>' +
+      '<span class="v">' + (v > 0 ? v + ' 分' : '—') + '</span>' +
+      '</button>';
+  }).join('');
+  $$('#dayStrip .day').forEach(function (btn) {
+    btn.onclick = function () { openDayEditor(btn.getAttribute('data-day')); };
+  });
+}
+
+/** 展开某一天的编辑器。 */
+function openDayEditor(day) {
+  const ed = $('#dayEditor');
+  if (!ed) return;
+  ed.hidden = false;
+  ed.setAttribute('data-day', day);
+  $('#dayEditorTitle').textContent = day + ' 专注了多久？';
+  $('#dayMinutes').value = (S().days[day] || {}).minutes || '';
+  $('#dayHint').textContent = day === todayStr()
+    ? '就是今天 —— 这里填的会覆盖计时器记的数。'
+    : '补记过去的日子 —— 额度按天算，零头不跨天凑。';
+  $('#dayMinutes').focus();
+}
+
+/** 把这一天的分钟数写回 Store（唯一真值：S().days[day].minutes）。 */
+function saveDay() {
+  const ed = $('#dayEditor');
+  const day = ed && ed.getAttribute('data-day');
+  if (!day) return;
+  const input = $('#dayMinutes');
+  const n = Math.max(0, Math.min(1440, parseInt(input.value, 10) || 0));
+  const row = S().days[day] || (S().days[day] = { minutes: 0, poms: 0 });
+  row.minutes = n;
+  if (n === 0) row.poms = 0;
+  Store.write();
+  renderDayStrip();
+  renderSync();
+  ed.hidden = true;
+  toast(n > 0 ? ('记下了 ' + day + '：' + n + ' 分钟') : ('清掉了 ' + day + ' 的记录'));
+}
+
+/** 绑定日期格子的按钮。 */
+function bindDayEditor() {
+  const save = $('#daySave');
+  const close = $('#dayClose');
+  if (save) save.onclick = saveDay;
+  if (close) close.onclick = function () {
+    const ed = $('#dayEditor');
+    if (ed) ed.hidden = true;
+  };
 }
 
 /* ---------- 同步（Issue 投递箱） ---------- */
@@ -730,6 +806,7 @@ buildChips();
 buildSettings();
 bindTabs();
 bindMain();
+bindDayEditor();
 renderTop();
 renderDex();
 renderStats();

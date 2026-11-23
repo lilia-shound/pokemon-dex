@@ -191,3 +191,24 @@ select,input[type=number]{background:rgba(0,0,0,.28);border:1px solid rgba(255,2
 /* 独立打开时回图鉴的入口 */
 .backHome a{color:var(--accent);text-decoration:none}
 .backHome a:hover{text-decoration:underline}
+
+
+/* ---------- 补录：日期格子 ---------- */
+.days{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:10px}
+.day{border:1px solid rgba(255,255,255,.085);background:rgba(255,255,255,.045);
+     border-radius:12px;padding:8px 2px;display:flex;flex-direction:column;
+     align-items:center;gap:2px;cursor:pointer;font-family:inherit;color:#e9e9f2;
+     min-width:0;padding:8px 0}
+.day:hover{border-color:rgba(139,123,255,.75);background:rgba(139,123,255,.12)}
+.day.has{border-color:rgba(110,231,200,.55);background:rgba(110,231,200,.10)}
+.day .d{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.day .w{font-size:10px;opacity:.5}
+.day .v{font-size:10px;color:#6ee7c8}
+.day.has .v{color:#6ee7c8}
+.day:not(.has) .v{opacity:.35}
+.dayEditor{margin-top:12px;padding:12px;border:1px dashed rgba(255,255,255,.14);
+            border-radius:12px;background:rgba(255,255,255,.03)}
+.dayEditorHead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.num{flex:1;min-width:0;border:1px solid rgba(255,255,255,.14);border-radius:10px;
+     padding:9px 12px;font-size:16px;background:rgba(0,0,0,.22);color:#e9e9f2;
+     font-family:inherit}

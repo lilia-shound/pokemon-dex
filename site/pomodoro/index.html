@@ -60,6 +60,24 @@
         </div>
         <div class="hint" id="syncHint"></div>
       </div>
+
+      <!-- 补录：改过去某一天的分钟数（额度按天算，漏记一天那天就归零） -->
+      <div class="card" id="dayCard">
+        <h3>补记某一天</h3>
+        <div class="hint" style="margin:0 0 8px">点某一天，填那天的专注分钟数 —— 填完点上面的「同步到图鉴」一起交上去。</div>
+        <div class="days" id="dayStrip"></div>
+        <div class="dayEditor" id="dayEditor" hidden>
+          <div class="dayEditorHead">
+            <b id="dayEditorTitle"></b>
+            <button class="btn mini ghost" id="dayClose">收起</button>
+          </div>
+          <div class="row" style="gap:8px;margin-top:8px;justify-content:flex-start">
+            <input class="num" id="dayMinutes" type="number" min="0" max="1440" step="5" inputmode="numeric" placeholder="分钟">
+            <button class="btn mini" id="daySave">记下</button>
+          </div>
+          <div class="hint" id="dayHint"></div>
+        </div>
+      </div>
     </section>
 
     <!-- ================= 图鉴 ================= -->
