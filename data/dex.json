@@ -120,18 +120,31 @@
       "form": "0961",
       "chain": "海地鼠",
       "evolutionStage": 1
+    },
+    {
+      "id": "0838",
+      "nameZh": "大炭车",
+      "shiny": false,
+      "at": "2026-11-24T22:01:13.853857+08:00",
+      "date": "2026-11-24",
+      "sources": [
+        "weread"
+      ],
+      "form": "0838",
+      "chain": "小炭仔",
+      "evolutionStage": 1
     }
   ],
-  "streak": 4,
-  "lastAwardDate": "2026-11-23",
+  "streak": 5,
+  "lastAwardDate": "2026-11-24",
   "today": {
     "date": "2026-11-24",
-    "seconds": 997,
+    "seconds": 2072,
     "threshold": 1800,
     "sources": {
-      "weread": 997
+      "weread": 2072
     },
-    "credit": 1,
+    "credit": 2,
     "perAward": 2
   },
   "ledger": {
@@ -169,7 +182,7 @@
       "weread": 1800
     },
     "2026-11-24": {
-      "weread": 997
+      "weread": 2072
     }
   },
   "chains": {
@@ -183,6 +196,10 @@
     },
     "海地鼠": {
       "firstDate": "2026-11-23",
+      "lastShinyDate": null
+    },
+    "小炭仔": {
+      "firstDate": "2026-11-24",
       "lastShinyDate": null
     }
   },
