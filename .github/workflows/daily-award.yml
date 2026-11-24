@@ -1,9 +1,21 @@
-name: 每日宝可梦判定
+name: 每日宝可梦判定（备用执行器 · 手动）
 
 on:
-  schedule:
-    # UTC 每 3 小时跑一次（北京时间 8/11/14/17/20/23/2/5 点）
-    - cron: "17 */3 * * *"
+  # ★ **只有手动触发**（2026-11-24 改）。
+  #
+  #   原来这里还有 `schedule: - cron: "17 */3 * * *"` ⇒ 每 3 小时自动跑一次。
+  #   Actions 里没有 WEREAD_API_KEY，award 步骤会走守卫 `exit 0` 跳过，
+  #   但**下一步「同步状态并发布图鉴页」照样会跑**，于是：
+  #     - `cp data/pokedex.json site/pokedex.json`
+  #       把瘦身后的图鉴（419KB）**覆盖回完整版（1.8MB）**；
+  #     - `git push origin HEAD:main` ⇒ **它成了 main 的第二个写者**；
+  #     - `git subtree push --prefix site origin gh-pages`
+  #       跟 `scripts/deploy.sh` 的 orphan + force 重建方式冲突 ⇒ **必失败**。
+  #   结果：每 3 小时给姜来发一封 Actions 失败邮件，而且 main 被它悄悄写坏。
+  #
+  #   **真正的执行者是 Mavis cron**（task 463191742394721，`17 */3 * * *`）。
+  #   这个 workflow 只是「万一要手动跑一次」用的 ⇒ 定时触发已删，
+  #   发布也改走 `scripts/deploy.sh`（唯一的发布路径），不再自己推分支。
   workflow_dispatch:
 
 permissions:
@@ -34,28 +46,21 @@ jobs:
           if [ -z "$WEREAD_API_KEY" ]; then
             echo "未配置 WEREAD_API_KEY secret，跳过本轮。"
             echo "本仓库的结算由 Mavis 的 cron 任务执行；这个 workflow 只是备用执行器。"
-            echo "启用前必须先停掉 Mavis cron —— 两个写者会打架。"
-            echo "而且本 workflow 用 git subtree push 发布 gh-pages，与 scripts/deploy.sh 的"
-            echo "orphan + force 重建方式冲突，大概率在第一次发布就挂。"
-            echo "要启用：到 repo 的 Settings -> Secrets and variables -> Actions 添加 WEREAD_API_KEY。"
+            echo "要启用：到 repo 的 Settings -> Secrets and variables -> Actions 添加 WEREAD_API_KEY，"
+            echo "并且**先停掉 Mavis cron** —— 两个写者会打架。"
             exit 0
           fi
           python3 scripts/check_today.py || true
           python3 scripts/award.py
 
-      - name: 同步状态并发布图鉴页
+      - name: 发布（走唯一的发布脚本）
+        env:
+          # deploy.sh 用 GIT_ASKPASS 拿这个 token 推 main / gh-pages
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp data/dex.json site/dex.json
-          # 源注册表也要跟着走 —— 读方拿它兜底「掉一只要读多久」，S5 的多源进度也走它
-          cp data/sources.json site/sources.json
-          cp data/pokedex.json site/pokedex.json
-          git config user.name "Mavis"
-          git config user.email "mavis@local"
-          git add data/dex.json site/dex.json site/sources.json data/sources.json site/pokedex.json
-          if git diff --cached --quiet; then
-            echo "状态无变化，跳过发布"
-          else
-            git commit -m "chore: 每日发放 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            git push origin HEAD:main
-            git subtree push --prefix site origin gh-pages
-          fi
+          # ★ 用 scripts/deploy.sh，不要自己 `cp` + `git subtree push`：
+          #   - 它会重新生成瘦身后的 site/pokedex.json（build_site_pokedex.py），
+          #     不会把 419KB 的瘦身版覆盖回 1.8MB 的完整版；
+          #   - 它用 orphan + force 重建 gh-pages，和 Pages 的发布方式不冲突；
+          #   - 它自带推送重试。
+          bash scripts/deploy.sh

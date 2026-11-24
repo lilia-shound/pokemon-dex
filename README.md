@@ -48,10 +48,14 @@ KOReader（Kindle / Android）
 
 - `WEREAD_API_KEY` 配在 **Mavis cron 的环境里**，**不在** Actions secrets
   （本仓库的 Actions secrets 实测是 0 个）。
-- `.github/workflows/daily-award.yml` 只是**备用**执行器：只有你把 `WEREAD_API_KEY`
-  加进 Actions secrets 后它才会跑。**启用前必须先停掉 Mavis cron** —— 两个写者会打架；
-  而且这个 workflow 用 `git subtree push` 发布 gh-pages，与 `scripts/deploy.sh` 的
-  orphan + force 重建方式冲突，大概率在第一次发布就挂。
+- `.github/workflows/daily-award.yml` 只是**备用**执行器，而且**只在手动触发时跑**
+  （`workflow_dispatch`）。定时触发在 2026-11-24 删掉了 —— 它每 3 小时跑一次、
+  Actions 里又没有 `WEREAD_API_KEY`，于是：award 步骤跳过了，但**发布步骤照样跑**，
+  一边把瘦身后的图鉴覆盖回 1.8MB 完整版、一边往 main 推（成了第二个写者），
+  `git subtree push` 又跟 `scripts/deploy.sh` 冲突 ⇒ 每 3 小时失败一次，还给姜来发邮件。
+  现在它只保留手动触发，发布也改走 `scripts/deploy.sh`（唯一的发布路径）。
+  **要把它当真正的备用执行器用**：先把 `WEREAD_API_KEY` 加进 Actions secrets，
+  再**停掉 Mavis cron** —— 两个写者会打架。
 - **取数失败 ≠ 今天没读够**：monthly 与 weekly 两个周期都取数失败时，
   `scripts/award.py` 会 **exit 1** 并打印「[失败] 取数失败…」，不会安静地当成「未达标」。
   cron 日志里看到 `[失败]` 就是取数出了问题（Key 失效 / 微信读书 skill 版本过期 / 网关抖动），
