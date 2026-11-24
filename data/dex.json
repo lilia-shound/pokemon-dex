@@ -138,13 +138,11 @@
   "streak": 5,
   "lastAwardDate": "2026-11-24",
   "today": {
-    "date": "2026-11-24",
-    "seconds": 2072,
+    "date": "2026-11-25",
+    "seconds": 0,
     "threshold": 1800,
-    "sources": {
-      "weread": 2072
-    },
-    "credit": 2,
+    "sources": {},
+    "credit": 0,
     "perAward": 2
   },
   "ledger": {
@@ -182,7 +180,7 @@
       "weread": 1800
     },
     "2026-11-24": {
-      "weread": 2072
+      "weread": 2865
     }
   },
   "chains": {
