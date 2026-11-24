@@ -9,9 +9,10 @@ import sys
 import urllib.parse
 
 from playwright.sync_api import sync_playwright
+from tests import browser_path
 
 BASE = "http://127.0.0.1:8899/pomodoro/index.html"
-CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+CHROME = browser_path.chromium_path()   # 别写死版本号 —— 沙箱刷新会换 Playwright 版本
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 FAILS = []

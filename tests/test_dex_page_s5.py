@@ -31,6 +31,7 @@ import threading
 import unittest
 
 from scripts import sources as src
+from tests import browser_path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCES_JSON = ROOT / "data" / "sources.json"
@@ -39,7 +40,7 @@ STATE_JSON = ROOT / "data" / "dex.json"
 APP_JS = ROOT / "site" / "app.js"
 INDEX_HTML = ROOT / "site" / "index.html"
 STYLE_CSS = ROOT / "site" / "style.css"
-CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+CHROME = browser_path.chromium_path()   # 别写死版本号 —— 沙箱刷新会换 Playwright 版本
 
 try:  # playwright 可能没装 —— 不能让整套测试挂掉
     from playwright.sync_api import sync_playwright

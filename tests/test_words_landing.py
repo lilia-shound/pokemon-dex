@@ -29,6 +29,7 @@ import urllib.parse
 
 from scripts import collect_reports as cr
 from scripts import sources as src
+from tests import browser_path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCES_JSON = ROOT / "data" / "sources.json"
@@ -41,7 +42,7 @@ WORDS_DIR = ROOT / "site" / "words"
 MANIFEST = WORDS_DIR / "manifest.webmanifest"
 ICON = WORDS_DIR / "icon.svg"
 ICON_MASKABLE = WORDS_DIR / "icon-maskable.svg"
-CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+CHROME = browser_path.chromium_path()   # 别写死版本号 —— 沙箱刷新会换 Playwright 版本
 
 # 假装「已经是主屏图标打开的」：把 matchMedia 改成 display-mode: standalone 时命中。
 _STANDALONE_INIT_SCRIPT = """

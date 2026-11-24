@@ -24,11 +24,12 @@ import re
 import shutil
 import subprocess
 import unittest
+from tests import browser_path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugin" / "bcz-dex.user.js"
 RUNNER = ROOT / "tests" / "bcz_userscript_runner.js"
-CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+CHROME = browser_path.chromium_path()   # 别写死版本号 —— 沙箱刷新会换 Playwright 版本
 
 LANDING = "https://lilia-shound.github.io/pokemon-dex/words/"
 

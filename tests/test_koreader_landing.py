@@ -35,6 +35,7 @@ from scripts import sources as src
 # 落地页那侧的正则/实现就在 site/koreader/app.js 里 —— 这里不另抄一份，
 # 只把它当**被测对象**（下面的 node 脚本会去 require 它）。
 from tests import koreader_lua_bridge as bridge
+from tests import browser_path
 from tests.test_koreader_lua import encode_days, parse_days  # noqa: F401  （对拍用的 Python 侧参考实现）
 
 ROOT = bridge.ROOT
@@ -44,7 +45,7 @@ APP_JS = ROOT / "site" / "koreader" / "app.js"
 INDEX_HTML = ROOT / "site" / "koreader" / "index.html"
 STYLE_CSS = ROOT / "site" / "koreader" / "style.css"
 SPEC_JS = ROOT / "tests" / "koreader_landing_spec.js"
-CHROME = "/root/.cache/ms-playwright/chromium-1243/chrome-linux/chrome"
+CHROME = browser_path.chromium_path()   # 别写死版本号 —— 沙箱刷新会换 Playwright 版本
 
 # 干净的那条线（fixture 的第一行）—— 页面上就是它
 CLEAN_WIRE = "2026-11-21:25,2026-11-20:50"
