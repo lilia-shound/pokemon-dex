@@ -23,7 +23,7 @@ compatibility_date = "2026-11-25"
 # ★ id 要用 `wrangler kv namespace create INGEST_KV` 的输出填进来（下面那个是占位符）。
 [[kv_namespaces]]
 binding = "INGEST_KV"
-id = "REPLACE_ME_WITH_KV_NAMESPACE_ID"
+id = "43e6d8148b6a49c3999a5d8a7ee96738"
 
 [observability]
 enabled = true
