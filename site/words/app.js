@@ -380,9 +380,18 @@
     ui.hint(state.lastSubmit.msg);
   }
 
-  /** 她改了数 ⇒ 结果提示作废（状态说明回到前台）。 */
+  /**
+   * 结果提示作废（状态说明回到前台），**并把整页重画一遍**。
+   *
+   * ★ 必须重画，不能只清 state：只清 state 的话，页面上那句「已记录 ✓」
+   *   会一直挂到下一次重画为止 —— 她提交成功后点另一个日期，看到的还是
+   *   「已记录 ✓」，而那条提示其实已经过时了（她已经换到别的日子）。
+   *
+   * ★ 调用方**不用**再 render() —— 这里已经重画过了。
+   */
   function clearResult() {
-    if (state.lastSubmit) state.lastSubmit = null;
+    state.lastSubmit = null;
+    render();
   }
 
   /** 把上次没交上去的补发掉（页面打开时调一次）。 */
@@ -601,14 +610,20 @@
   function renderDay() {
     const input = $('#countInput');
     if (input) {
-      const recorded = state.days[state.selected];
-      if (recorded) {
-        input.value = String(recorded);
-      } else if (state.draft && state.draft.day === state.selected) {
-        // **预填**：今天还没记 ⇒ 把上次的数字填进来（她可以改）
-        input.value = String(state.draft.value);
-      } else {
-        input.value = '';
+      // ★ 她**正在输入**时别动输入框 ——
+      //   number 框里「1.」这种半截输入，value 是空的（不是「1.」），
+      //   重画会把它抹掉 ⇒ 她接着打的字就丢了。
+      const editing = (typeof document !== 'undefined') && document.activeElement === input;
+      if (!editing) {
+        const recorded = state.days[state.selected];
+        if (recorded) {
+          input.value = String(recorded);
+        } else if (state.draft && state.draft.day === state.selected) {
+          // **预填**：今天还没记 ⇒ 把上次的数字填进来（她可以改）
+          input.value = String(state.draft.value);
+        } else {
+          input.value = '';
+        }
       }
     }
     $('#dayTitle').textContent = selectedLabel() + '背了多少个词';
@@ -713,9 +728,9 @@
       btn.querySelector('.c').textContent = eff > 0 ? credit + ' 额度' : '没记';
       btn.onclick = () => {
         state.selected = k;
-        clearResult();          // 换了一天 ⇒ 上一次「已记录」那条提示作废
-        renderDay();
-        renderWeek();
+        // ★ 换了一天 ⇒ 上一次「已记录」那条提示作废；
+        //   clearResult() 会把整页重画一遍（提示行、额度、周合计都跟着更新）。
+        clearResult();
       };
       list.appendChild(btn);
     });
@@ -831,8 +846,13 @@
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
     state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
-    clearResult();                // 她改了数 ⇒ 上一次「已记录」那条提示作废
-    saveDays();
+    saveDays();                  // 先存住（重画在后面）
+    // ★ 只有**她自己动**输入框才作废结果提示。
+    //   失焦（byUser=false）**不许**重画整页：失焦往往就发生在她点别的格子
+    //   的那一刻（按下鼠标 → 失焦 → 松开鼠标）⇒ 那一次重画会把「最近 7 天」
+    //   那排格子换掉 ⇒ 她这一下点空了（格子已经不是刚才那个了）。
+    //   失焦时状态本来也没变（打字时的那次 'input' 事件已经重画过了）。
+    if (byUser) clearResult();     // 结果提示作废（它会把整页重画一遍）
   }
 
   /**
@@ -850,19 +870,16 @@
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
     state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
-    clearResult();                // 她改了数 ⇒ 上一次「已记录」那条提示作废
-    saveDays();
-    render();
+    saveDays();                  // 先存住（重画在后面）
+    clearResult();                // 结果提示作废（它会把整页重画一遍）
   }
 
   function bind() {
     const input = $('#countInput');
     input.addEventListener('input', () => {
+      // ★ readInput 里的 clearResult() 已经把整页重画了 ——
+      //   重画不动她正在输入的输入框（见 renderDay 里的说明）。
       readInput(true);
-      // 不重画输入框（免得正在输入的数字被抹掉），只更新其余部分
-      renderMetrics();
-      renderWeek();
-      renderSubmit();
     });
     input.addEventListener('blur', () => readInput(false));
     $$('#quick button').forEach(b => {

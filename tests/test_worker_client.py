@@ -11,21 +11,29 @@
   跑出来的结果交给 Python 断言。
   探针脚本（NODE_PROBE）就嵌在下面，跑的时候临时写进临时目录，**不进仓库**。
 
-★ 变异测试开关：环境变量 ``POM_APP_JS`` 可以指向 app.js 的另一份拷贝。
-  审查时把 app.js 改坏（删掉老办法分支 / 把队列顺序反过来 / 去掉补发调用 /
-  去掉 token 头 / 去掉连点守卫），用这个变量指过去，测试必须红。
+★ 变异测试开关：环境变量 ``POM_APP_JS`` / ``WORDS_APP_JS`` 可以指向 app.js 的
+  另一份拷贝；``WORDS_SITE_DIR`` 可以指向整个 site/ 的另一份拷贝（浏览器那部分
+  是从 site/ 里取文件的）。审查时把 app.js 改坏（删掉老办法分支 / 把队列顺序
+  反过来 / 去掉补发调用 / 去掉 token 头 / 去掉连点守卫 / 去掉调用处的 .catch /
+  把两种通道的提示语改成一样 / 每次都重建 DOM），用这些变量指过去，测试必须红。
 """
 
 from __future__ import annotations
 
+import datetime
+import http.server
 import json
 import os
 import pathlib
 import re
 import shutil
+import socketserver
 import subprocess
 import tempfile
+import threading
 import unittest
+
+from tests import browser_path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -36,8 +44,133 @@ POM_JS = pathlib.Path(os.environ.get("POM_APP_JS") or (POM_DIR / "app.js"))
 WORDS_DIR = ROOT / "site" / "words"
 WORDS_JS = pathlib.Path(os.environ.get("WORDS_APP_JS") or (WORDS_DIR / "app.js"))
 WORDS_HTML = WORDS_DIR / "index.html"
+# 变异测试用：把整个 site/ 换掉（浏览器那部分是从 site/ 里取文件的）
+WORDS_SITE_DIR = pathlib.Path(os.environ.get("WORDS_SITE_DIR") or (ROOT / "site"))
 
 NODE = shutil.which("node")
+
+# 浏览器（Playwright）—— 别写死版本号：沙箱刷新会换 Playwright 版本
+try:
+    CHROME = browser_path.chromium_path()
+except Exception:  # pragma: no cover - 环境问题
+    CHROME = ""
+
+try:  # playwright 可能没装 —— 不能让整套测试挂掉
+    from playwright.sync_api import sync_playwright
+
+    HAVE_PLAYWRIGHT = True
+except Exception:  # pragma: no cover - 环境问题
+    HAVE_PLAYWRIGHT = False
+
+
+# --------------------------------------------------------------------------
+# 源码切片的小工具
+# --------------------------------------------------------------------------
+
+def _skip_string(js: str, i: int) -> int:
+    """跳过一段字符串（'...' 或 "..."），返回结束位置。"""
+    quote = js[i]
+    i += 1
+    while i < len(js):
+        if js[i] == "\\":
+            i += 2
+            continue
+        if js[i] == quote:
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_template(js: str, i: int) -> int:
+    """跳过一段模板串（`...`），``${...}`` 里的嵌套花括号也算进去。"""
+    i += 1
+    while i < len(js):
+        if js[i] == "\\":
+            i += 2
+            continue
+        if js[i] == "`":
+            return i + 1
+        if js[i:i + 2] == "${":
+            depth = 1
+            i += 2
+            while i < len(js) and depth > 0:
+                c = js[i]
+                if c in "'\"":
+                    i = _skip_string(js, i)
+                    continue
+                if c == "`":
+                    i = _skip_template(js, i)
+                    continue
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                i += 1
+            continue
+        i += 1
+    return i
+
+
+def _function_body(js: str, header: str) -> str:
+    """抠出某个函数的**完整**函数体（花括号配平，跳过字符串与注释）。
+
+    ★ 为什么不用 `js[start:js.index("\\n}", start)]` 那种切法：
+      背单词页的 app.js 整个包在 IIFE 里 ⇒ 所有右花括号都**缩进**着 ⇒
+      `\\n}` 根本找不到 ⇒ 切片会一路切到**文件末尾** ⇒ 切片里什么都有 ⇒
+      「切片里有 .catch(」这种断言会被**别处**满足（错因满足：
+      注册表自己的 `.catch(err => {` 也在切片里）。
+
+    :param header: 函数头的特征串（例如 "function loadRegistry("）
+    :returns: 从函数头到配平的右花括号那一整段源码
+    """
+    start = js.index(header)
+    i = js.index("{", start)
+    depth = 0
+    n = len(js)
+    while i < n:
+        if js[i:i + 2] == "//":
+            nl = js.find("\n", i)
+            i = n if nl < 0 else nl
+            continue
+        if js[i:i + 2] == "/*":
+            end = js.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        c = js[i]
+        if c in "'\"":
+            i = _skip_string(js, i)
+            continue
+        if c == "`":
+            i = _skip_template(js, i)
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return js[start:i + 1]
+        i += 1
+    raise AssertionError("函数体没配平：%s" % header)
+
+
+def _make_server(directory: pathlib.Path):
+    """在 directory 上起一个静态服务器（端口 0 = 随机端口，免跟别的测试撞车）。"""
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def log_message(self, *args):  # 别把日志糊满终端
+            pass
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    httpd = Server(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
 
 
 # --------------------------------------------------------------------------
@@ -1440,8 +1573,7 @@ class WordsIngestContractTest(unittest.TestCase):
 
     def test_the_queue_can_put_a_report_back_at_the_head(self):
         """补发失败时要放回队首（unshift），不能只有 push。"""
-        start = self.js.index("function enqueueReport(")
-        body = self.js[start:self.js.index("\n}", start)]
+        body = _function_body(self.js, "function enqueueReport(")
         self.assertIn("unshift", body, "enqueueReport 要能把报告放回队首")
         self.assertIn("push", body, "enqueueReport 也要能把报告排到队尾")
 
@@ -1456,8 +1588,7 @@ class WordsIngestContractTest(unittest.TestCase):
     def test_the_page_has_an_in_flight_guard(self):
         """连点两次「交上去」⇒ 只发一个 POST。"""
         self.assertIn("let INGESTING", self.js, "要有一个「正在投递」的标志")
-        start = self.js.index("async function doSubmit(")
-        body = self.js[start:self.js.index("\n}", start)]
+        body = _function_body(self.js, "async function doSubmit(")
         self.assertIn("if (INGESTING)", body, "提交入口要判重")
         self.assertIn("INGESTING = true", body, "发投递之前要把标志置上")
         self.assertIn("INGESTING = false", body, "finally 里要把标志清掉")
@@ -1465,8 +1596,7 @@ class WordsIngestContractTest(unittest.TestCase):
 
     def test_the_old_way_branch_comes_before_the_post(self):
         """doSubmit 里「通道没开 ⇒ 走老办法」的判断必须在 postIngest **之前**。"""
-        start = self.js.index("async function doSubmit(")
-        body = self.js[start:self.js.index("\n}", start)]
+        body = _function_body(self.js, "async function doSubmit(")
         guard = body.find("!ingestAvailable()")
         post = body.find("postIngest(")
         self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
@@ -1475,10 +1605,28 @@ class WordsIngestContractTest(unittest.TestCase):
 
     def test_the_page_flushes_the_queue_after_loading_the_registry(self):
         """页面打开时要调 flushPending（配置到了就补发）。"""
-        start = self.js.index("function loadRegistry(")
-        body = self.js[start:self.js.index("\n}", start)]
+        body = _function_body(self.js, "function loadRegistry(")
         self.assertIn("flushPending()", body, "sources.json 到了之后要补发待发队列")
-        self.assertIn(".catch(", body, "补发是异步的 ⇒ 调用处必须挂 .catch")
+        # ★ 精确匹配「flushPending() 后面紧跟 .catch(」——
+        #   只查「切片里有 .catch(」会被**注册表自己的** `.catch(err => {` 满足
+        #   （错因满足：把 flushPending().catch(...) 换成 flushPending(); 测试照样绿）。
+        self.assertRegex(
+            body,
+            r"flushPending\(\)\s*\.catch\(",
+            "补发是异步的 ⇒ 调用处必须挂 .catch（flushPending() 后面要**紧跟** .catch(）",
+        )
+
+    def test_the_submit_call_site_catches_the_promise(self):
+        """★ doSubmit() 是异步的 ⇒ 调用处必须挂 .catch（漏了控制台会红）。
+
+        没有这条断言的话，把 `doSubmit().catch(...)` 换成 `doSubmit();` 测试照样绿。
+        """
+        body = _function_body(self.js, "function bind(")
+        self.assertRegex(
+            body,
+            r"doSubmit\(\)\s*\.catch\(",
+            "提交按钮的点击处理里，doSubmit() 后面要**紧跟** .catch(",
+        )
 
     @unittest.skipUnless(NODE, "这台机没有 node")
     def test_the_page_script_is_valid_javascript(self):
@@ -1489,6 +1637,280 @@ class WordsIngestContractTest(unittest.TestCase):
         self.assertEqual(
             proc.returncode, 0, "app.js 语法有问题：\n%s" % proc.stderr[-2000:]
         )
+
+
+class WordsSubmitHintBrowserTest(unittest.TestCase):
+    """真实浏览器（Playwright）里，**提交提示行**（#submitHint）的行为断言。
+
+    测三件零覆盖的事：
+
+    1. **提示语按通道开关分** —— 通道关着点提交要说「已打开提交页…」（老办法），
+       通道开着点提交要说「已记录」⇒ 两种状态下的文案**必须不同**。
+    2. **内容没变就不重写 DOM** —— 重画时提示节点不许被重建
+       （重建会把「按下鼠标到松开」那一下点空）。
+    3. **结果提示不 lingering** —— 提交成功后换一天，那句「已记录 ✓」不许一直挂着。
+
+    ★ 为什么不能只在 node 里测：这一页的 app.js 是 IIFE，node 探针顶不掉 DOM ⇒
+      「点一下到底写出哪句话」「那个节点有没有被换掉」只能在真浏览器里看。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not HAVE_PLAYWRIGHT:
+            raise unittest.SkipTest("没装 playwright，跳过提交提示行的浏览器测试")
+        if not CHROME:
+            raise unittest.SkipTest("找不到 chromium，跳过提交提示行的浏览器测试")
+        cls.httpd = _make_server(WORDS_SITE_DIR)
+        cls.origin = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls.base = cls.origin + "/words/index.html"
+        cls._pw = sync_playwright().start()
+        cls.browser = cls._pw.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.browser.close()
+        finally:
+            cls._pw.stop()
+            cls.httpd.shutdown()
+            cls.httpd.server_close()
+
+    def setUp(self):
+        self.page_errors = []
+        self.registry_response = None
+        self.ingest_requests = []
+        self.page = self._new_page()
+
+    def tearDown(self):
+        try:
+            self.page.close()
+        except Exception:
+            pass
+
+    # -- 辅助 -----------------------------------------------------------
+
+    def _new_page(self):
+        """开一个标签页：拦下注册表与投递请求，并把 window.open 顶掉。
+
+        ★ window.open 顶掉的原因：老办法会 `window.open(github 的链接)` ⇒
+          真开一个标签页去连外网（沙箱里连不上，还会挂在那儿）。
+          这里只**记下**那个 URL（「点主按钮确实会开新页」那条用例留给后面统一处理）。
+        """
+        page = self.browser.new_page(viewport={"width": 390, "height": 844})
+        page.on("pageerror", lambda e: self.page_errors.append(str(e)))
+        page.add_init_script("""
+          window.__opened = [];
+          window.open = function (u) { window.__opened.push(String(u)); return null; };
+        """)
+
+        def handle_registry(route):
+            if self.registry_response is None:
+                route.abort()
+            else:
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps(self.registry_response))
+
+        def handle_ingest(route):
+            self.ingest_requests.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "id": "mock-1"}))
+
+        page.route("**/sources.json", handle_registry)
+        page.route("**/ingest-mock", handle_ingest)
+        return page
+
+    def _registry(self, channel: bool) -> dict:
+        """给页面看的一份 sources.json。
+
+        channel=True  ⇒ 免登录通道**开着**（ingest 段有地址）
+        channel=False ⇒ 通道**关着**（ingest 段空着 —— 部署前的常态）
+        """
+        reg = {
+            "version": 1,
+            "perAward": 2,
+            "sources": {"words": {"per": 100, "maxPerDay": 500, "enabled": True}},
+            "ingest": {"url": "", "token": "", "enabled": False},
+        }
+        if channel:
+            reg["ingest"] = {
+                "url": self.origin + "/ingest-mock",
+                "token": "tok-mock",
+                "enabled": True,
+            }
+        return reg
+
+    def _open(self, page, channel: bool):
+        """打开页面并等**注册表真的生效**（口径与通道配置都换上去了）。"""
+        self.registry_response = self._registry(channel)
+        page.goto(self.base, wait_until="commit")
+        page.wait_for_function(
+            "() => !!(window.WordsLanding && WordsLanding.state.registryLoaded)",
+            timeout=30000,
+        )
+
+    def _fill(self, page, value: str):
+        """往输入框里填个数（并等它真的填上了）。"""
+        page.fill("#countInput", value)
+        page.wait_for_function(
+            "(v) => document.querySelector('#countInput').value === v",
+            arg=value, timeout=10000,
+        )
+
+    def _hint(self, page) -> str:
+        return page.inner_text("#submitHint")
+
+    def _shift_key(self, page, days: int) -> str:
+        """把日期键挪几天（-1 = 昨天）—— 用页面自己算的「今天」。"""
+        today = page.evaluate("() => WordsLanding.todayKey()")
+        y, m, d = (int(x) for x in today.split("-"))
+        return (datetime.date(y, m, d) + datetime.timedelta(days=days)).isoformat()
+
+    def _wait_hint(self, page, predicate: str, arg=None, timeout: int = 10000):
+        """等提示行满足某个条件。
+
+        ★ 等不到**不抛异常** —— 让后面的断言去报**实际文案**：
+          超时错误只会说「等超时了」，断言失败会直接说「她看到的是哪句话」。
+        """
+        try:
+            page.wait_for_function(predicate, arg=arg, timeout=timeout)
+        except Exception:
+            pass
+
+    def _submit_once(self, channel: bool) -> str:
+        """在指定通道状态下点一次「交上去」，返回提示行最后的文案。"""
+        page = self._new_page()
+        try:
+            self._open(page, channel)
+            self._fill(page, "150")
+            before = self._hint(page)
+            page.click("#submitBtn")
+            # 等提示行**变了**（变了才算点出了结果）
+            self._wait_hint(
+                page,
+                "(b) => (document.querySelector('#submitHint').textContent || '') !== b",
+                arg=before,
+            )
+            return self._hint(page)
+        finally:
+            page.close()
+
+    # -- 用例 -----------------------------------------------------------
+
+    def test_the_submit_hint_differs_between_the_two_channels(self):
+        """★ 通道关着 ⇒「已打开提交页…」；通道开着 ⇒「已记录」—— 文案必须不同。
+
+        为什么：这是**两条完全不同的路**（老办法 vs 直投）⇒
+        她看到的话必须不一样 —— 否则她不知道到底交没交上去。
+        """
+        off_text = self._submit_once(False)
+        on_text = self._submit_once(True)
+        self.assertIn(
+            "已打开提交页", off_text,
+            "通道关着 ⇒ 要说「已打开提交页」（老办法还要再点一下 Submit）",
+        )
+        self.assertIn("已记录", on_text, "通道开着 ⇒ 要说「已记录」")
+        self.assertNotEqual(
+            off_text, on_text,
+            "两种通道状态下的提示文案必须不同（现在两句话一样：%r）" % (on_text,),
+        )
+
+    def test_the_hint_node_is_not_rebuilt_when_the_page_redraws(self):
+        """★ 重画时提示行**不许被重建** —— 重建会把「按下鼠标到松开」那一下点空。
+
+        测法：给提示节点打一个标记，再触发三次**内容没变**的重画 ⇒
+        - 节点上的标记还在 ⇒ 那个节点没被换掉；
+        - 里面那个子元素还是**同一个对象** ⇒ 那段内容没被重写
+          （重写会把子元素换掉 —— 换掉的话，她「按下鼠标到松开」之间
+          点到的就不是刚才那个元素了）。
+
+        ★ 子元素用「比身份」而不是「打标记」来测：往子元素上加属性会改掉
+          `innerHTML` ⇒ 页面那句「内容没变就别重写」的判断就永远不成立 ⇒
+          测出来的是「内容变了所以重写」，不是「内容没变却重写了」。
+        """
+        page = self._new_page()
+        try:
+            # 老办法那句提示里有 <b> 子元素（「点一下 <b>Submit</b>」）
+            self._open(page, channel=False)
+            self._fill(page, "150")
+            marked = page.evaluate("""
+              (() => {
+                const el = document.querySelector('#submitHint');
+                el.dataset.mark = 'x';
+                // 存下子元素的**引用**（只存引用，不动它的内容）
+                window.__hintChild = el.querySelector('b');
+                return { hasChild: !!window.__hintChild };
+              })()
+            """)
+            self.assertTrue(marked.get("hasChild"), "提示里没有子元素了 —— 这条用例测不到「内容没被重写」")
+            # 三次重画：换一天、+20、再换一天（提示那句话都不变）
+            today = self._shift_key(page, 0)
+            yesterday = self._shift_key(page, -1)
+            page.click('.dcell[data-day="%s"]' % yesterday)
+            page.click('#quick button[data-add="20"]')
+            page.click('.dcell[data-day="%s"]' % today)
+            after = page.evaluate("""
+              (() => {
+                const el = document.querySelector('#submitHint');
+                const b = el.querySelector('b');
+                return {
+                  nodeMark: el.dataset.mark || null,
+                  hasChild: !!b,
+                  sameChild: (!!b && b === window.__hintChild),
+                };
+              })()
+            """)
+        finally:
+            page.close()
+        self.assertEqual(after["nodeMark"], "x", "提示节点被重建了（标记没了）")
+        self.assertTrue(after["hasChild"], "提示里的子元素不见了")
+        self.assertTrue(
+            after["sameChild"],
+            "提示内容被重写了（里面的子元素被换掉了）—— 内容没变就不该重写",
+        )
+
+    def test_the_result_hint_does_not_linger_after_switching_day(self):
+        """提交成功后点另一个日期 ⇒「已记录 ✓」不许一直挂着。
+
+        （只清 state 不重画的话，那句话会一直挂到下一次重画为止。）
+        """
+        page = self._new_page()
+        try:
+            self._open(page, channel=True)
+            self._fill(page, "150")
+            page.click("#submitBtn")
+            self._wait_hint(
+                page,
+                "() => (document.querySelector('#submitHint').textContent || '').indexOf('已记录') >= 0",
+            )
+            yesterday = self._shift_key(page, -1)
+            page.click('.dcell[data-day="%s"]' % yesterday)
+            # 等那张卡片变成「选中」的样子 ⇒ 重画已经完成
+            page.wait_for_function(
+                """(k) => {
+                  const el = document.querySelector('.dcell[data-day="' + k + '"]');
+                  return !!el && el.classList.contains('on');
+                }""",
+                arg=yesterday, timeout=10000,
+            )
+            hint = self._hint(page)
+        finally:
+            page.close()
+        self.assertNotIn(
+            "已记录", hint,
+            "换了一天之后「已记录 ✓」还挂着 —— 那是**过时**的提示（她已经换到别的日子）",
+        )
+
+    def test_the_page_has_no_uncaught_error(self):
+        """改完重画逻辑之后，页面不许有未捕获的异常。"""
+        self._open(self.page, channel=True)
+        self._fill(self.page, "150")
+        self.page.click("#submitBtn")
+        self._wait_hint(
+            self.page,
+            "() => (document.querySelector('#submitHint').textContent || '').indexOf('已记录') >= 0",
+        )
+        self.page.click('#quick button[data-add="20"]')
+        self.assertEqual(self.page_errors, [])
 
 
 if __name__ == "__main__":
