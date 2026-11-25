@@ -338,11 +338,12 @@
    * 把一份报告排进待发队列。
    * @param {Object} report 要排队的报告
    * @param {boolean} toFront true = 塞回队首（补发失败时用，保持「最老在前」）
+   * @returns {boolean} **存住没有**（存不住时调用方不许说「已存着」）
    */
   function enqueueReport(report, toFront) {
     const list = pendingQueue();
     if (toFront) list.unshift(report); else list.push(report);
-    savePending(list);
+    return savePending(list);
   }
   /** 取出队首（没有就 null）。 */
   function shiftPending() {
@@ -459,6 +460,12 @@
     let sent = 0;
     let dropped = 0;
     let report = shiftPending();
+    // ★ 存储读不了（隐私模式 / 无痕）⇒ 待发队列根本用不了 ⇒
+    //   **必须说出来**（不许假装一切正常 —— 她会以为「报告还在，下次就补上了」）。
+    if (!STORAGE_OK) {
+      setResult('这台设备的浏览器不让存东西 —— 待发队列用不了，这次没能补发。');
+      return;
+    }
     while (report) {
       try {
         await postIngest(report);
@@ -514,9 +521,12 @@
       await postIngest(report);
       setResult('已记录 ✓');
     } catch (err) {
-      enqueueReport(report);
-      setResult('暂时交不上去（' + (err && err.message ? err.message : '未知原因') +
-        '）—— 已存着，下次打开自动补发。');
+      // ★ 存不进去的时候**不许说「已存着」** —— 那份报告是真的没了，
+      //   她却会以为下次打开就会补上 ⇒ 只能请她走老办法。
+      const saved = enqueueReport(report);
+      setResult('暂时交不上去（' + (err && err.message ? err.message : '未知原因') + '）—— ' +
+        (saved ? '已存着，下次打开自动补发。'
+               : '没存住（这台设备的浏览器不让存），请用下面的「用 GitHub 提交（老办法）」交上去。'));
     } finally {
       // ★ 成功、失败、异常都要清 —— 不清的话她再也点不动「交上去」了。
       INGESTING = false;

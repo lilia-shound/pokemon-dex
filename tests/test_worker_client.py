@@ -365,6 +365,7 @@ function syncApi(deps) {
     [
       'var window = deps.window;', 'var PENDING_KEY = deps.PENDING_KEY;', 'var INGESTING = false;',
       'var syncDays = deps.syncDays;', 'var toast = deps.toast;',
+      'var setResult = deps.setResult;',
       'var ingestAvailable = deps.ingestAvailable;', 'var S = deps.S;', 'var Store = deps.Store;',
       'var renderSync = deps.renderSync;', 'var buildIssueUrl = deps.buildIssueUrl;',
       'var buildReport = deps.buildReport;', 'var postIngest = deps.postIngest;',
@@ -376,6 +377,7 @@ function syncApi(deps) {
     PENDING_KEY: PENDING_KEY,
     syncDays: deps.syncDays,
     toast: deps.toast,
+    setResult: deps.setResult || deps.toast,
     ingestAvailable: deps.ingestAvailable,
     S: deps.S,
     Store: deps.Store,
@@ -733,7 +735,44 @@ async function main() {
     results: poisonResults,
   };
 
-  /* ---- 19. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  /* ---- 19. ★ 存储写不进去时，别再谎称「已存着」 ---- */
+  const stNoWrite = fakeStorage();
+  stNoWrite.throwSet = true;
+  const noWriteQueue = queueApi(stNoWrite);
+  const noWriteSaved = noWriteQueue.enqueueReport({ id: 'X' });
+  const noWriteToasts = [];
+  const syncNoWrite = syncApi({
+    storage: stNoWrite,                       // ★ 这台设备的浏览器不让存
+    syncDays: () => ({ '2026-11-25': 50 }),
+    toast: (m) => noWriteToasts.push(m),
+    ingestAvailable: () => true,
+    S: () => ({}),
+    Store: { write: () => {} },
+    renderSync: () => {},
+    buildIssueUrl: () => 'https://github.com/lilia-shound/pokemon-dex/issues/new?title=x',
+    buildReport: () => REPORT,
+    postIngest: () => Promise.reject(new Error('网络抽风')),
+  });
+  syncNoWrite.doSync();
+  await tick();
+  obs.storageRefused = {
+    enqueueReturned: noWriteSaved,
+    toasts: noWriteToasts.slice(),
+  };
+
+  /* ---- 20. ★ 存储读不了时，补发要说真话 ---- */
+  const stNoRead = fakeStorage({});
+  stNoRead.throwGet = true;
+  const noReadResults = [];
+  const flushNoRead = makeFlushApi(stNoRead, {
+    ingestAvailable: () => true,
+    postIngest: () => Promise.resolve({ ok: true }),
+    setResult: (m) => noReadResults.push(m),
+  });
+  await flushNoRead.flushPending();
+  obs.storageUnreadable = { results: noReadResults.slice() };
+
+  /* ---- 21. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
   const stTemp = fakeStorage({});
   stTemp.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
   const tempPosts = [];
@@ -1122,7 +1161,30 @@ async function main() {
     hints: hints.slice(),
   };
 
-  /* ---- 23. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  /* ---- 23. ★ 存储写不进去时，别再谎称「已存着」 ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  api.state.ingest = INGEST;
+  storage.throwSet = true;                 // ★ 这台设备的浏览器不让存
+  fetchImpl = function () { return Promise.reject(new Error('网络抽风')); };
+  await api.doSubmit();
+  obs.storageRefused = {
+    enqueueReturned: api.enqueueReport({ id: 'X' }),
+    hints: hints.slice(),
+    queue: api.pendingQueue(),
+  };
+  storage.throwSet = false;
+
+  /* ---- 24. ★ 存储读不了时，补发要说真话 ---- */
+  reset();
+  api.state.ingest = INGEST;
+  storage.throwGet = true;
+  fetchImpl = function () { return Promise.resolve(okResponse({ ok: true })); };
+  await api.flushPending();
+  obs.storageUnreadable = { hints: hints.slice() };
+  storage.throwGet = false;
+
+  /* ---- 25. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
   reset();
   api.state.ingest = INGEST;                 // 通道开着
   storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
@@ -1274,6 +1336,41 @@ class PomodoroIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("已丢弃" in t for t in poison.get("results") or []),
             "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("results"),),
+        )
+
+    # ---------------- 存储写不进去时不许说谎 ----------------
+
+    def test_the_enqueue_tells_the_caller_whether_it_saved(self):
+        """★ enqueueReport 要**说真话**：存不住就返回 false。
+
+        （调用方要靠它决定怎么说话 —— 说「已存着」而其实没存住，那份报告就真没了。）
+        """
+        obs = self.obs.get("storageRefused") or {}
+        self.assertIs(
+            obs.get("enqueueReturned"), False,
+            "存不进去时 enqueueReport 必须返回 false",
+        )
+
+    def test_the_hint_does_not_claim_it_saved_when_the_storage_refuses(self):
+        """★ 报告没存住时，提示**不许**说「已存着」。"""
+        obs = self.obs.get("storageRefused") or {}
+        texts = obs.get("toasts") or []
+        self.assertTrue(
+            any("没存住" in t for t in texts),
+            "存不住时要说「没存住」（现在的提示：%r）" % (texts,),
+        )
+        self.assertFalse(
+            any("已存着" in t for t in texts),
+            "存不住时**不许**说「已存着」（那份报告真的没了）：%r" % (texts,),
+        )
+
+    def test_the_flush_says_the_storage_is_unusable(self):
+        """★ 存储读不了 ⇒ 待发队列用不了 ⇒ 必须说出来（不许假装一切正常）。"""
+        obs = self.obs.get("storageUnreadable") or {}
+        texts = obs.get("results") or []
+        self.assertTrue(
+            any("队列" in t for t in texts),
+            "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
     def test_a_temporarily_failed_report_keeps_the_queue(self):
@@ -1644,6 +1741,41 @@ class WordsIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("已丢弃" in t for t in poison.get("hints") or []),
             "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("hints"),),
+        )
+
+    # ---------------- 存储写不进去时不许说谎 ----------------
+
+    def test_the_enqueue_tells_the_caller_whether_it_saved(self):
+        """★ enqueueReport 要**说真话**：存不住就返回 false。
+
+        （调用方要靠它决定怎么说话 —— 说「已存着」而其实没存住，那份报告就真没了。）
+        """
+        obs = self.obs.get("storageRefused") or {}
+        self.assertIs(
+            obs.get("enqueueReturned"), False,
+            "存不进去时 enqueueReport 必须返回 false",
+        )
+
+    def test_the_hint_does_not_claim_it_saved_when_the_storage_refuses(self):
+        """★ 报告没存住时，提示**不许**说「已存着」。"""
+        obs = self.obs.get("storageRefused") or {}
+        texts = obs.get("hints") or []
+        self.assertTrue(
+            any("没存住" in t for t in texts),
+            "存不住时要说「没存住」（现在的提示：%r）" % (texts,),
+        )
+        self.assertFalse(
+            any("已存着" in t for t in texts),
+            "存不住时**不许**说「已存着」（那份报告真的没了）：%r" % (texts,),
+        )
+
+    def test_the_flush_says_the_storage_is_unusable(self):
+        """★ 存储读不了 ⇒ 待发队列用不了 ⇒ 必须说出来（不许假装一切正常）。"""
+        obs = self.obs.get("storageUnreadable") or {}
+        texts = obs.get("hints") or []
+        self.assertTrue(
+            any("队列" in t for t in texts),
+            "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
     def test_a_temporarily_failed_report_keeps_the_queue(self):
@@ -2617,7 +2749,30 @@ async function main() {
     hints: hints.slice(),
   };
 
-  /* ---- 24. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  /* ---- 24. ★ 存储写不进去时，别再谎称「已存着」 ---- */
+  reset();
+  withDays(DAYS);
+  api.state.ingest = INGEST;
+  storage.throwSet = true;                 // ★ 这台设备的浏览器不让存
+  fetchImpl = function () { return Promise.reject(new Error('网络抽风')); };
+  await api.doSubmit();
+  obs.storageRefused = {
+    enqueueReturned: api.enqueueReport({ id: 'X' }),
+    hints: hints.slice(),
+    queue: api.pendingQueue(),
+  };
+  storage.throwSet = false;
+
+  /* ---- 25. ★ 存储读不了时，补发要说真话 ---- */
+  reset();
+  api.state.ingest = INGEST;
+  storage.throwGet = true;
+  fetchImpl = function () { return Promise.resolve(okResponse({ ok: true })); };
+  await api.flushPending();
+  obs.storageUnreadable = { hints: hints.slice() };
+  storage.throwGet = false;
+
+  /* ---- 26. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
   reset();
   api.state.ingest = INGEST;                 // 通道开着
   storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
@@ -2802,6 +2957,41 @@ class KoreaderIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("已丢弃" in t for t in poison.get("hints") or []),
             "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("hints"),),
+        )
+
+    # ---------------- 存储写不进去时不许说谎 ----------------
+
+    def test_the_enqueue_tells_the_caller_whether_it_saved(self):
+        """★ enqueueReport 要**说真话**：存不住就返回 false。
+
+        （调用方要靠它决定怎么说话 —— 说「已存着」而其实没存住，那份报告就真没了。）
+        """
+        obs = self.obs.get("storageRefused") or {}
+        self.assertIs(
+            obs.get("enqueueReturned"), False,
+            "存不进去时 enqueueReport 必须返回 false",
+        )
+
+    def test_the_hint_does_not_claim_it_saved_when_the_storage_refuses(self):
+        """★ 报告没存住时，提示**不许**说「已存着」。"""
+        obs = self.obs.get("storageRefused") or {}
+        texts = obs.get("hints") or []
+        self.assertTrue(
+            any("没存住" in t for t in texts),
+            "存不住时要说「没存住」（现在的提示：%r）" % (texts,),
+        )
+        self.assertFalse(
+            any("已存着" in t for t in texts),
+            "存不住时**不许**说「已存着」（那份报告真的没了）：%r" % (texts,),
+        )
+
+    def test_the_flush_says_the_storage_is_unusable(self):
+        """★ 存储读不了 ⇒ 待发队列用不了 ⇒ 必须说出来（不许假装一切正常）。"""
+        obs = self.obs.get("storageUnreadable") or {}
+        texts = obs.get("hints") or []
+        self.assertTrue(
+            any("队列" in t for t in texts),
+            "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
     def test_a_temporarily_failed_report_keeps_the_queue(self):
