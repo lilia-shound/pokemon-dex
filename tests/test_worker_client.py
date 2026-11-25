@@ -2388,12 +2388,21 @@ class WordsIngestContractTest(unittest.TestCase):
 
         （通道现在是关着的 ⇒ 「点「交上去」直接送到训练家图鉴的服务端」
         与实际行为**相反** ⇒ 她读到的第一句就是错的。）
+
+        ★ 文件从 **site 副本**读（``WORDS_SITE_DIR``），不是 ``WORDS_HTML`` ——
+          ``WORDS_HTML`` 指的是**真仓库里**那份文件 ⇒ 变异测试把副本改坏了，
+          这条用例读的仍是好文件 ⇒ **假绿**（验不到东西）。
         """
-        html = WORDS_HTML.read_text(encoding="utf-8")
+        html = (WORDS_SITE_DIR / "words" / "index.html").read_text(encoding="utf-8")
         self.assertIn("通道开着", html, "静态说明要把两条路**并列**说清楚")
         self.assertIn("通道没开", html, "静态说明要把两条路**并列**说清楚")
         self.assertNotIn(
             "这条报告会送到训练家图鉴的服务端（不用登录 GitHub）；",
+            html,
+            "静态说明不许断言「直接送服务端」是默认且唯一的路",
+        )
+        self.assertNotIn(
+            "点「交上去」直接送到训练家图鉴的服务端（不用登录 GitHub）；",
             html,
             "静态说明不许断言「直接送服务端」是默认且唯一的路",
         )
@@ -3787,12 +3796,21 @@ class KoreaderIngestContractTest(unittest.TestCase):
 
         （通道现在是关着的 ⇒ 「点「交上去」直接送到训练家图鉴的服务端」
         与实际行为**相反** ⇒ 她读到的第一句就是错的。）
+
+        ★ 文件从 **site 副本**读（``KO_SITE_DIR``），不是 ``KO_HTML`` ——
+          ``KO_HTML`` 指的是**真仓库里**那份文件 ⇒ 变异测试把副本改坏了，
+          这条用例读的仍是好文件 ⇒ **假绿**（验不到东西）。
         """
-        html = KO_HTML.read_text(encoding="utf-8")
+        html = (KO_SITE_DIR / "koreader" / "index.html").read_text(encoding="utf-8")
         self.assertIn("通道开着", html, "静态说明要把两条路**并列**说清楚")
         self.assertIn("通道没开", html, "静态说明要把两条路**并列**说清楚")
         self.assertNotIn(
             "点「交上去」直接送到训练家图鉴的服务端（不用登录 GitHub）；",
+            html,
+            "静态说明不许断言「直接送服务端」是默认且唯一的路",
+        )
+        self.assertNotIn(
+            "这条报告会送到训练家图鉴的服务端（不用登录 GitHub）；",
             html,
             "静态说明不许断言「直接送服务端」是默认且唯一的路",
         )
