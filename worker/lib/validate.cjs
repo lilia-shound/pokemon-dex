@@ -15,6 +15,10 @@
  *   6. 每个 value 是非负整数，且 ≤ 该源的单日上限
  *
  * **任何一条不过就整份拒收**（不部分采纳）—— 一条坏数据不该只污染一半。
+ *
+ * ★ 白名单查的是**自有属性**（hasOwnProperty）——
+ *   直接 `table[body.source]` 会命中 `Object.prototype`
+ *   （`constructor` / `__proto__` / `toString` …）⇒ 限幅层空转。
  */
 
 const REPORT_VERSION = 1;
@@ -42,7 +46,7 @@ function isDate(s) {
  *   （北京时间）判错一天。
  */
 function todayCst(nowMs) {
-  const ms = (typeof nowMs === 'number' && isFinite(nowMs)) ? nowMs : Date.now();
+  const ms = (typeof nowMs === 'number' && Number.isFinite(nowMs)) ? nowMs : Date.now();
   return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
@@ -63,10 +67,14 @@ function validateReport(body, rules, today) {
   if (typeof body.source !== 'string' || !body.source) {
     return { ok: false, error: 'source 不是源 id：' + JSON.stringify(body.source) };
   }
-  const cap = (rules || {})[body.source];
-  if (cap === undefined) {
+  // ★ 白名单必须查**自有属性**：直接 table[body.source] 会命中 Object.prototype
+  //   （constructor / __proto__ / toString …）⇒ 拿到的 cap 是函数，
+  //   「量比上限大」那个比较变成和 NaN 比（恒 false）⇒ 单日上限同时失效。
+  const table = rules || {};
+  if (!Object.prototype.hasOwnProperty.call(table, body.source)) {
     return { ok: false, error: '不认识这个源：' + body.source };
   }
+  const cap = table[body.source];
   const days = body.days;
   if (!days || typeof days !== 'object' || Array.isArray(days)) {
     return { ok: false, error: 'days 不是对象：' + JSON.stringify(days) };
