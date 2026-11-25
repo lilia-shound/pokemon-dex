@@ -1,0 +1,29 @@
+# 训练家图鉴 · 免登录投递接收端（Cloudflare Worker）部署配置
+#
+# ★ 这个文件里**不写任何密钥**：
+#   INGEST_TOKEN（客户端用，公开）与 ADMIN_TOKEN（cron 用）都走 `wrangler secret put`，
+#   存在 Cloudflare 的 secret 里，不进仓库、不进 git。
+#
+# ── 部署步骤（需要 CLOUDFLARE_API_TOKEN 环境变量）──
+#   export CLOUDFLARE_API_TOKEN='<姜来给的 token>'
+#   cd worker
+#   npx wrangler kv namespace create INGEST_KV     # 把输出的 id 填到下面 kv_namespaces.id
+#   printf '%s' "$INGEST_TOKEN" | npx wrangler secret put INGEST_TOKEN
+#   printf '%s' "$ADMIN_TOKEN"  | npx wrangler secret put ADMIN_TOKEN
+#   npx wrangler deploy                           # 打印 https://pokemon-dex-ingest.<子域>.workers.dev
+#
+# ★ 部署完要把 `https://…/ingest`（**带路径**）填进 `data/sources.json` 的 `ingest.url`，
+#   再把 `ingest.enabled` 改成 true ⇒ 三个子页才会走直传；不改的话它们照旧走 GitHub 老办法。
+
+name = "pokemon-dex-ingest"
+main = "index.js"
+compatibility_date = "2026-11-25"
+
+# 队列存储：放还没被 cron 拉走的报告。
+# ★ id 要用 `wrangler kv namespace create INGEST_KV` 的输出填进来（下面那个是占位符）。
+[[kv_namespaces]]
+binding = "INGEST_KV"
+id = "REPLACE_ME_WITH_KV_NAMESPACE_ID"
+
+[observability]
+enabled = true
