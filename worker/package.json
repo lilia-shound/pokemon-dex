@@ -1,0 +1,6 @@
+{
+  "name": "pokemon-dex-ingest-worker",
+  "private": true,
+  "type": "module",
+  "description": "训练家图鉴的免登录投递接收端（Cloudflare Worker）"
+}
