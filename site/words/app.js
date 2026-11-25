@@ -53,7 +53,7 @@
    */
   const PENDING_KEY = 'pendingIngest.words';
   /** 单次投递的超时（毫秒） */
-  const INGEST_TIMEOUT_MS = 15000;
+  const INGEST_TIMEOUT_MS = 30000;   // ★ 30 秒：实测从国内打这个接收端，**首包**（新边缘 IP / 冷启动）要 7~45 秒
   /**
    * 投递进行中（连点两次「交上去」时用它挡住第二次）。
    *

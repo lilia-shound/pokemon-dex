@@ -506,5 +506,62 @@ class PullRetryTest(unittest.TestCase):
         self.assertEqual(len(calls), 1, "凭证不对时不该重试")
 
 
+class AckRetryTest(unittest.TestCase):
+    """★ ack 也要重试 —— 这条链路会抖。
+
+    ★ ack 失败的后果不严重（条目还在队列里 ⇒ 下轮重拉 ⇒ 并账取 max ⇒ 不会多算），
+      但会让队列**一直有残留** ⇒ 每轮都白拉一遍。
+      ack 天然幂等 ⇒ 重试安全。
+    """
+
+    def setUp(self):
+        self._orig_ack = cw.ack_items
+        self._orig_sleep = cw.time.sleep
+        cw.time.sleep = lambda _s: None
+
+    def tearDown(self):
+        cw.ack_items = self._orig_ack
+        cw.time.sleep = self._orig_sleep
+
+    def test_a_transient_failure_is_retried(self):
+        calls = []
+
+        def flaky(url, admin_token, ids, timeout=0):
+            calls.append(list(ids))
+            if len(calls) == 1:
+                raise RuntimeError("ack 失败：HTTP 0 TLS EOF")
+            return len(ids)
+
+        cw.ack_items = flaky
+        n = cw._ack_with_retry("https://x.example", "tok", ["q:1", "q:2"])
+        self.assertEqual(n, 2)
+        self.assertEqual(len(calls), 2, "第一次失败后应该再试一次")
+        self.assertEqual(calls[0], ["q:1", "q:2"], "重试时交的还是同一批 id")
+
+    def test_it_gives_up_after_the_attempts_are_used_up(self):
+        calls = []
+
+        def always_fail(url, admin_token, ids, timeout=0):
+            calls.append(list(ids))
+            raise RuntimeError("ack 失败：HTTP 0 TLS EOF")
+
+        cw.ack_items = always_fail
+        with self.assertRaises(RuntimeError):
+            cw._ack_with_retry("https://x.example", "tok", ["q:1"])
+        self.assertEqual(len(calls), cw.ACK_ATTEMPTS)
+
+    def test_a_wrong_token_is_not_retried(self):
+        calls = []
+
+        def unauthorized(url, admin_token, ids, timeout=0):
+            calls.append(list(ids))
+            raise RuntimeError("ack 失败：HTTP 401 凭证不对")
+
+        cw.ack_items = unauthorized
+        with self.assertRaises(RuntimeError):
+            cw._ack_with_retry("https://x.example", "tok", ["q:1"])
+        self.assertEqual(len(calls), 1, "凭证不对时不该重试")
+
+
 if __name__ == "__main__":
     unittest.main()

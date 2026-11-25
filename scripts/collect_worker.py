@@ -44,15 +44,18 @@ DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
 SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
 
 # 拉队列与 ack 的超时（秒）。★ 必须设 —— cron 不该被一个不响应的 Worker 挂住。
-# ★ 60 而不是 30：这条链路在国内（沙箱 → Cloudflare 边缘）实测冷启动要 4~15 秒
-#   （Pages 函数冷启动 + KV list）⇒ 30 秒太紧，会间歇性把整轮拉取拖超时。
-TIMEOUT = 60
+# ★ 120 而不是 30/60：**实测从国内打这个接收端，首包（新的 Cloudflare 边缘 IP / 冷启动）
+#   要 7~45 秒**（同一个 IP 上的后续请求只要 1~4 秒）⇒ 30 秒会间歇性把整轮拉取拖超时，
+#   60 秒也偶发不够（实测有一次 47.9 秒才返回）。cron 一轮才跑一次，120 秒完全够用。
+TIMEOUT = 120
 
 # 拉队列的重试次数与间隔（秒）。
 # ★ 实测这条链路会抖（TLS 掐断、冷启动慢）⇒ 一次失败就放弃，
 #   意味着这一轮的报告要等 3 小时后的下一轮才被拉走。
 PULL_ATTEMPTS = 2
 PULL_RETRY_PAUSE = 3
+# ack 的重试次数（ack 天然幂等 ⇒ 重试安全）
+ACK_ATTEMPTS = 3
 
 # Cloudflare 前面会按「浏览器签名」封掉 urllib 的默认 UA（`Python-urllib/x.y`）
 # ⇒ 报 `HTTP 403 error code: 1010`。
@@ -146,6 +149,29 @@ def _pull_with_retry(url: str, admin_token: str) -> list[dict]:
     raise last_exc  # type: ignore[misc]
 
 
+def _ack_with_retry(url: str, admin_token: str, ids) -> int:
+    """ack 队列条目，失败重试一次。
+
+    ★ 为什么要重试：这条链路会抖（TLS 被掐、首包慢）。
+      ack 失败的后果不严重（条目还在队列里 ⇒ 下轮会重拉 ⇒ 并账取 max ⇒ 不会多算），
+      但它会让队列**一直有残留** ⇒ 每轮都白拉一遍。
+      ack 天然幂等（删了就是删了）⇒ 重试安全。
+    """
+    last_exc = None
+    for attempt in range(ACK_ATTEMPTS):
+        try:
+            return ack_items(url, admin_token, ids, timeout=TIMEOUT)
+        except RuntimeError as exc:
+            last_exc = exc
+            if "HTTP 401" in str(exc):
+                raise
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt + 1 < ACK_ATTEMPTS:
+            time.sleep(PULL_RETRY_PAUSE)
+    raise last_exc  # type: ignore[misc]
+
+
 def process_items(items, cfg: dict, today: str, ledger: dict):
     """把一批队列条目处理掉，返回 `(新账本, 结果列表)`。
 
@@ -232,8 +258,8 @@ def main(argv: list[str] | None = None) -> int:
         # 非法条目也要 ack 掉（别让每轮都拉同一批垃圾）
         if not args.dry_run:
             try:
-                removed = ack_items(url, admin_token, [r["id"] for r in results],
-                                    timeout=TIMEOUT)
+                removed = _ack_with_retry(url, admin_token,
+                                          [r["id"] for r in results])
                 print("[投递] 已 ack %s 条" % removed)
             except Exception as exc:  # noqa: BLE001
                 print("[投递] ack 失败：%s" % exc, file=sys.stderr)
@@ -251,8 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         print("账本已更新：%s 天" % len(new_ledger))
 
     try:
-        removed = ack_items(url, admin_token, [r["id"] for r in results],
-                            timeout=TIMEOUT)
+        removed = _ack_with_retry(url, admin_token, [r["id"] for r in results])
         print("[投递] 已 ack %s 条" % removed)
     except Exception as exc:  # noqa: BLE001
         # ack 失败不要紧：条目还在队列里，下轮会重拉 ⇒ 并账取 max ⇒ 幂等不多算。

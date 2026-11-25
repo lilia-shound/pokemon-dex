@@ -29,7 +29,7 @@ const SILHOUETTE = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
 /** 待发队列的 localStorage 键 —— 交不上去的先存这儿，下次打开页面自动补发。 */
 const PENDING_KEY = 'pendingIngest';
 /** 单次投递的超时（毫秒） */
-const INGEST_TIMEOUT_MS = 15000;
+const INGEST_TIMEOUT_MS = 30000;   // ★ 30 秒：实测从国内打这个接收端，**首包**（新边缘 IP / 冷启动）要 7~45 秒
 /** 免登录通道的配置（从 sources.json 顶层读，见 loadList） */
 let INGEST = null;
 /**
