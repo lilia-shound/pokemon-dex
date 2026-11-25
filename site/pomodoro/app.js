@@ -32,6 +32,12 @@ const PENDING_KEY = 'pendingIngest';
 const INGEST_TIMEOUT_MS = 15000;
 /** 免登录通道的配置（从 sources.json 顶层读，见 loadList） */
 let INGEST = null;
+/**
+ * 投递进行中（连点两次「同步」时用它挡住第二次）。
+ * workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
+ * 两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
+ */
+let INGESTING = false;
 
 /** 全局宝可梦清单（来自 pokedex-lite.json） */
 let POKEMON = [];
@@ -624,6 +630,8 @@ function pendingQueue() {
 /** 写待发队列（只留最近 50 条）。 */
 function savePending(list) {
   try {
+    // ★ 超限时**静默丢掉最老的那条** —— 这是规格里定的取舍，不改行为。
+    //   丢的是最老的报告（最可能已经过期），保的是最近的 50 条。
     window.localStorage.setItem(PENDING_KEY, JSON.stringify((list || []).slice(-50)));
   } catch (e) { /* 存不住就算了 —— 顶多这次没交上 */ }
 }
@@ -727,28 +735,33 @@ function renderSync() {
   if (sub) sub.textContent = dayCount ? dayCount + ' 天' : '';
   const hint = $('#syncHint');
   if (hint) {
-    let html;
+    // ★ 名字跟上面那个（box 的 html）不一样 —— 同名会互相遮蔽，读代码时容易看错。
+    let hintHtml;
     if (!dayCount) {
-      html = '还没有攒下分钟数 —— 完成一轮专注再来。';
+      hintHtml = '还没有攒下分钟数 —— 完成一轮专注再来。';
     } else {
       // ★ 老办法的链接**照样留着**（workers.dev 在国内可能抽风，这是兜底）
       const oldWay = '<a id="syncOldWay" href="' + esc(buildIssueUrl()) +
         '" target="_blank" rel="noopener noreferrer">用 GitHub 提交（老办法）</a>';
-      html = ingestAvailable()
+      hintHtml = ingestAvailable()
         ? '点「同步到图鉴」直接交上去（不用登录 GitHub）。连不上？' + oldWay
         : '点同步会打开 GitHub 的新建 issue 页面，<b style="opacity:.9">在那个页面上点一下 Submit</b> 才算交上去。也可以直接' + oldWay;
     }
     // ★ 内容没变就别重写 —— render() 每 200ms 调一次 renderSync()，
     //   每次重建这个 <a> 会把「按下鼠标」到「松开鼠标」之间那个元素换掉 ⇒ 点击会丢。
-    if (html !== lastSyncHintHTML) {
-      hint.innerHTML = html;
-      lastSyncHintHTML = html;
+    if (hintHtml !== lastSyncHintHTML) {
+      hint.innerHTML = hintHtml;
+      lastSyncHintHTML = hintHtml;
     }
   }
 }
 function doSync() {
   const days = syncDays();
   if (!Object.keys(days).length) { toast('还没有能交上去的分钟数'); return; }
+  // ★ 连点两次「同步」⇒ 只发一个 POST。
+  //   workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
+  //   两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
+  if (INGESTING) { toast('正在交上去，稍等一下'); return; }
   // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
   //   直接开 GitHub 的新建 issue 页。少了这个分支，部署窗口里她点同步只会报错。
   if (!ingestAvailable()) {
@@ -761,6 +774,7 @@ function doSync() {
     return;
   }
   const report = buildReport();
+  INGESTING = true;
   postIngest(report).then(function () {
     S().lastSyncAt = Date.now();
     S().syncedDays = Object.keys(days);
@@ -772,6 +786,9 @@ function doSync() {
     renderSync();
     toast('暂时交不上去（' + (err && err.message ? err.message : '未知原因') +
       '）—— 已存着，下次打开自动补发', 4200);
+  }).finally(function () {
+    // ★ 成功、失败、异常都要清 —— 不清的话她再也点不动同步了。
+    INGESTING = false;
   });
 }
 
