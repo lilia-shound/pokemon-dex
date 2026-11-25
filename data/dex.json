@@ -133,16 +133,31 @@
       "form": "0838",
       "chain": "小炭仔",
       "evolutionStage": 1
+    },
+    {
+      "id": "0361",
+      "nameZh": "雪童子",
+      "shiny": false,
+      "at": "2026-11-25T15:17:57.835984+08:00",
+      "date": "2026-11-25",
+      "sources": [
+        "weread"
+      ],
+      "form": "0361",
+      "chain": "雪童子",
+      "evolutionStage": 0
     }
   ],
-  "streak": 5,
-  "lastAwardDate": "2026-11-24",
+  "streak": 6,
+  "lastAwardDate": "2026-11-25",
   "today": {
     "date": "2026-11-25",
-    "seconds": 0,
+    "seconds": 5403,
     "threshold": 1800,
-    "sources": {},
-    "credit": 0,
+    "sources": {
+      "weread": 5403
+    },
+    "credit": 6,
     "perAward": 2
   },
   "ledger": {
@@ -181,6 +196,9 @@
     },
     "2026-11-24": {
       "weread": 2865
+    },
+    "2026-11-25": {
+      "weread": 5403
     }
   },
   "chains": {
@@ -199,7 +217,11 @@
     "小炭仔": {
       "firstDate": "2026-11-24",
       "lastShinyDate": null
+    },
+    "雪童子": {
+      "firstDate": "2026-11-25",
+      "lastShinyDate": null
     }
   },
-  "updatedAt": "2026-11-23T16:22:27.947163+08:00"
+  "updatedAt": "2026-11-25T15:17:57.835984+08:00"
 }
