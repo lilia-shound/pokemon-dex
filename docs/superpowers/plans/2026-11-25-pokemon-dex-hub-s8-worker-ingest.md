@@ -727,9 +727,11 @@ class WorkerRulesTest(unittest.TestCase):
         cfg = json.loads(REGISTRY.read_text(encoding="utf-8"))
         sources = cfg.get("sources") or {}
         rules = _rules()
-        self.assertEqual(sorted(rules.keys()), sorted(rules.keys()))
+        # 白名单 = 注册表里所有 push 源（不多不少）
+        push_sources = sorted(sid for sid, s in sources.items() if s.get("mode") == "push")
+        self.assertEqual(sorted(rules.keys()), push_sources,
+                         "限幅表的白名单与注册表里的 push 源对不上")
         for sid, cap in rules.items():
-            self.assertIn(sid, sources, "限幅表里的源 %s 不在注册表里" % sid)
             self.assertEqual(sources[sid].get("maxPerDay"), cap,
                              "源 %s 的限幅漂了：Worker 说 %s，注册表说 %s"
                              % (sid, cap, sources[sid].get("maxPerDay")))
@@ -956,8 +958,10 @@ class ProcessItemsTest(unittest.TestCase):
         cfg = _cfg()
         items = [{"id": "q:bad", "body": {"v": 1, "source": "weread", "days": {"2026-11-21": 37}}}]
         ledger, results = cw.process_items(items, cfg, "2026-11-25", {})
+        self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["action"], "rejected")
-        self.assertIn("rejected", results[0]["reason"] + results[0].get("reason", "") or "rejected")
+        self.assertEqual(results[0]["id"], "q:bad")
+        self.assertTrue(results[0]["reason"], "拒收必须写清原因")
         self.assertEqual(ledger, {})
 
     def test_a_broken_item_does_not_kill_the_batch(self):
