@@ -162,7 +162,7 @@ Worker 必须：
 **ingest token 在公开的 JS 里 ⇒ 这条通道天生「任何人可写」。**
 防刷靠**限幅**，不靠保密：
 
-**Worker 侧硬校验**（`worker/lib/validate.js`）：
+**Worker 侧硬校验**（`worker/lib/validate.cjs`）：
 
 1. `v` 必须 == 1
 2. `source` 必须在 `{pom, koreader, words}` 里
@@ -175,7 +175,7 @@ Worker 必须：
 同源同日取 max、`maxPerDay` 夹上限、`perAward=2` ⇒ **一天最多掉 1 只宝可梦**。
 被人刷，最多让她的图鉴走得快一点，不会多掉宝可梦、不会把账本搞乱。
 
-**单日上限表**放在 `worker/lib/rules.json`（源 id → maxPerDay），
+**单日上限表**放在 `worker/lib/rules.cjs`（源 id → maxPerDay），
 **必须与 `data/sources.json` 的 `sources.<id>.maxPerDay` 一致** ⇒ 有测试盯着（照 KOReader 插件那个常量的老套路）。
 
 ## 6. 配置放哪：`data/sources.json` 顶层 `ingest` 段
@@ -299,24 +299,24 @@ Worker 若用 UTC 就会在每天 0:00~8:00（北京时间）判错一天 ⇒ **
 
 | 测试 | 文件 | 守住什么 |
 |---|---|---|
-| Worker 校验逻辑（node） | `tests/worker_validate_spec.js` | `worker/lib/validate.js` 的每条规则 |
-| Worker 入口与 node 单测**共用**同一份校验代码 | `worker/lib/validate.js`（CommonJS） | 不是两份实现 |
+| Worker 校验逻辑（node） | `tests/worker_validate_spec.js` | `worker/lib/validate.cjs` 的每条规则 |
+| Worker 入口与 node 单测**共用**同一份校验代码 | `worker/lib/validate.cjs`（CommonJS） | 不是两份实现 |
 | Python 侧收集器 | `tests/test_worker_collect.py` | 复用 `parse_report`、合并取 max、ack 幂等、**拉不到就跳过不阻塞** |
 | 跨语言对拍 | `tests/test_worker_differential.py` | 同一批用例跑 Worker 的 JS 与服务端的 Python，**两边结论一致** |
-| 限幅表不漂移 | `tests/test_worker_rules.py` | `worker/lib/rules.json` vs `data/sources.json` 的 `maxPerDay` |
+| 限幅表不漂移 | `tests/test_worker_rules.py` | `worker/lib/rules.cjs` vs `data/sources.json` 的 `maxPerDay` |
 | 时区口径 | `tests/test_worker_rules.py` | Worker 的「今天」= UTC+8，与服务端 `parse_report` 的北京时间口径逐字一致 |
 | 客户端契约 | `tests/test_worker_client.py` | 三个页面生成的 body 形状 == `parse_report` 接受的形状；都调 `postIngest`；老办法入口还在 |
 | 回归 | 全部 | **现有 661 个测试仍全绿**（结算核心没动） |
 | 观感断言 | 真机闭环 | 她在手机上点同步 → 页面显示「已记录」→ 从 Worker 拉到 → 账本进账 → 图鉴页多一只 |
 
-**跨语言对拍的做法**（照已有的 3731 组对拍套路）：node 跑一遍 `worker/lib/validate.js`，
+**跨语言对拍的做法**（照已有的 3731 组对拍套路）：node 跑一遍 `worker/lib/validate.cjs`，
 把每条用例的判定输出成 JSON；Python 读同一份 JSON 断言一致。
 
 ## 11. 交付拆成四条线
 
 | 线 | 内容 | 依赖 |
 |---|---|---|
-| A | `worker/` 目录（`index.js`、`lib/validate.js`、`lib/rules.json`、`wrangler.toml`）+ 部署 | 姜来给 `CLOUDFLARE_API_TOKEN` |
+| A | `worker/` 目录（`index.js`、`lib/validate.cjs`、`lib/rules.cjs`、`wrangler.toml`）+ 部署 | 姜来给 `CLOUDFLARE_API_TOKEN` |
 | B | `scripts/collect_worker.py` + `data/sources.json` 的 `ingest` 段 + Mavis secret + cron 提示词 | A |
 | C | 三个页面的 `postIngest` + 待发队列 + 老办法入口 | B（要知道 URL） |
 | D | 测试（node 单测、Python 单测、跨语言对拍、限幅表、契约） | 跟着 A/B/C 一起 |
