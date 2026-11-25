@@ -41,7 +41,10 @@ async function call(req, env) {
   const resp = await handleRequest(new Request('https://w.example/ingest', { method: 'OPTIONS' }), ENV);
   assert.strictEqual(resp.status, 204);
   assert.strictEqual(resp.headers.get('Access-Control-Allow-Origin'), '*');
-  assert.ok((resp.headers.get('Access-Control-Allow-Headers') || '').indexOf('X-Dex-Token') >= 0);
+  const allow = resp.headers.get('Access-Control-Allow-Headers') || '';
+  assert.ok(allow.indexOf('X-Dex-Token') >= 0);
+  // ★ X-Dex-Admin 也要在 —— 少了这个头，浏览器预检直接失败 ⇒ 客户端连都连不上。
+  assert.ok(allow.indexOf('X-Dex-Admin') >= 0);
 }
 
 // ── ingest：凭证不对 ─────────────────────────────────────
@@ -142,6 +145,11 @@ const REPORT = { v: 1, source: 'pom', days: { '2026-11-21': 37 } };
 }
 
 // ── 队列满了要拒收（429），且不许静默丢数据 ──────────────
+// ★ 这是**软上限**（尽力而为，不是硬保证）：KV 没有原子操作、list() 又是最终一致的
+//   ⇒ 并发写入时可能短暂超出一条（实测：队列 198 条时 5 个并发 ingest 全部 200 ⇒ 203 条）。
+//   ★ 想要硬保证得上 Durable Object / 计数键 CAS —— 超出本任务范围，不做。
+//   ⇒ 这里只验「单条请求看到满队列时」的行为：拒收（429）且**一条都不进**
+//   （上限检查在真正写入之前）。
 {
   const env = { ...ENV, INGEST_KV: fakeKV() };
   for (let i = 0; i < 200; i++) env.INGEST_KV.map.set('q:seed-' + i, '{}');   // MAX_QUEUE = 200
@@ -197,6 +205,118 @@ const REPORT = { v: 1, source: 'pom', days: { '2026-11-21': 37 } };
   const env = { ...ENV, INGEST_KV: fakeKV() };
   const r = await call(new Request('https://w.example/pull/', { headers: { 'X-Dex-Admin': 'tok-admin' } }), env);
   assert.strictEqual(r.status, 200);
+}
+
+// ══════════════════════════════════════════════════════════
+// 审查发现（修复轮 1）—— 补的是「代码里写了但没人验」的地方
+// ══════════════════════════════════════════════════════════
+
+// ── 顶层兜底：未捕获的异常 ⇒ 500，**而且必须带 CORS 头** ──
+//   （不带 CORS 头的 500 会被浏览器整个吞掉 ⇒ 前端只看到「网络错误」）
+{
+  const kv = fakeKV();
+  kv.list = async () => null;                 // 返回形状不对 ⇒ 取 keys 时抛 TypeError
+  const env = { ...ENV, INGEST_KV: kv };
+  const r = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  assert.strictEqual(r.status, 500);
+  assert.strictEqual(r.data.ok, false);
+  assert.strictEqual(r.data.error, '服务端错误');
+  assert.strictEqual(r.headers.get('Access-Control-Allow-Origin'), '*');   // ★ 兜底也得带 CORS 头
+}
+
+// ── KV 没绑 ⇒ 503（而不是崩成没 CORS 头的默认 500）────────
+{
+  const env = { ...ENV };                     // 没有 INGEST_KV
+  const r = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(r.data.ok, false);
+  assert.strictEqual(r.headers.get('Access-Control-Allow-Origin'), '*');
+}
+
+// ── KV 的 list 抛错 ⇒ 503（文案说清是哪个动作失败）────────
+{
+  const kv = fakeKV();
+  kv.list = async () => { throw new Error('KV 炸了'); };
+  const env = { ...ENV, INGEST_KV: kv };
+  const r = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(r.data.error, '队列列表读取失败');
+  assert.strictEqual(r.headers.get('Access-Control-Allow-Origin'), '*');
+}
+
+// ── KV 的 get 抛错 ⇒ 503（pull 侧）────────────────────────
+{
+  const kv = fakeKV();
+  const env = { ...ENV, INGEST_KV: kv };
+  await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);   // 先塞一条
+  kv.get = async () => { throw new Error('KV 炸了'); };
+  const r = await call(new Request('https://w.example/pull', { headers: { 'X-Dex-Admin': 'tok-admin' } }), env);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(r.data.error, '队列条目读取失败');
+}
+
+// ── KV 的 get 抛错 ⇒ 503（ack 侧）─────────────────────────
+{
+  const kv = fakeKV();
+  const env = { ...ENV, INGEST_KV: kv };
+  const ins = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  kv.get = async () => { throw new Error('KV 炸了'); };
+  const r = await call(post('/ack', { ids: [ins.data.id] }, { 'X-Dex-Admin': 'tok-admin' }), env);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(r.data.error, '队列条目读取失败');
+}
+
+// ── KV 的 delete 抛错 ⇒ 503（ack 侧）──────────────────────
+{
+  const kv = fakeKV();
+  const env = { ...ENV, INGEST_KV: kv };
+  const ins = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  kv.delete = async () => { throw new Error('KV 炸了'); };
+  const r = await call(post('/ack', { ids: [ins.data.id] }, { 'X-Dex-Admin': 'tok-admin' }), env);
+  assert.strictEqual(r.status, 503);
+  assert.strictEqual(r.data.error, '队列条目删除失败');
+}
+
+// ── /ack 的 body 是 JSON 字面量 null ⇒ 400（不是崩）────────
+{
+  const env = { ...ENV, INGEST_KV: fakeKV() };
+  const r = await call(post('/ack', null, { 'X-Dex-Admin': 'tok-admin' }), env);   // body = "null"
+  assert.strictEqual(r.status, 400);
+  assert.strictEqual(r.data.ok, false);
+  assert.strictEqual(r.headers.get('Access-Control-Allow-Origin'), '*');
+}
+
+// ── /ack 的 body 不是 JSON 对象 ⇒ 400（数组、数字都算）────
+{
+  const env = { ...ENV, INGEST_KV: fakeKV() };
+  const r1 = await call(post('/ack', [1, 2], { 'X-Dex-Admin': 'tok-admin' }), env);
+  assert.strictEqual(r1.status, 400);
+  const r2 = await call(post('/ack', 42, { 'X-Dex-Admin': 'tok-admin' }), env);
+  assert.strictEqual(r2.status, 400);
+}
+
+// ── removed 数的是「真删掉的」，不是「请求删了几条」──────────
+{
+  const env = { ...ENV, INGEST_KV: fakeKV() };
+  const ins = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-ingest' }), env);
+  const r = await call(
+    post('/ack', { ids: [ins.data.id, 'q:根本不存在的条目'] }, { 'X-Dex-Admin': 'tok-admin' }),
+    env,
+  );
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.data.removed, 1);          // 只数真删掉的那一条
+  assert.strictEqual(env.INGEST_KV.map.size, 0);
+}
+
+// ── 两个 token 不能互绕（ingest 的头不能当 admin 用，反之亦然）──
+{
+  const env = { ...ENV, INGEST_KV: fakeKV() };
+  const pull = await call(new Request('https://w.example/pull', { headers: { 'X-Dex-Admin': 'tok-ingest' } }), env);
+  assert.strictEqual(pull.status, 401);           // 拿 ingest token 当 admin ⇒ 拒
+  const ack = await call(post('/ack', { ids: [] }, { 'X-Dex-Admin': 'tok-ingest' }), env);
+  assert.strictEqual(ack.status, 401);
+  const ing = await call(post('/ingest', REPORT, { 'X-Dex-Token': 'tok-admin' }), env);
+  assert.strictEqual(ing.status, 401);            // 拿 admin token 当 ingest ⇒ 拒
 }
 
 console.log('Worker 入口：全部通过');
