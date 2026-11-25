@@ -353,8 +353,13 @@ class WordsLandingBrowserTest(unittest.TestCase):
         return self.page.inner_text("#weekCredit")
 
     def issue_query(self) -> dict:
-        """提交按钮那个链接里的 title / body。"""
-        url = self.page.get_attribute("#submitBtn", "href")
+        """**老办法**那个链接里的 title / body。
+
+        ★ 主按钮 `#submitBtn` 现在是 `<button>`（点一下直接交，不再跳 GitHub）⇒
+          预填好的 issue 链接搬到了老办法那个链接 `#oldWayBtn` 上。
+          这里跟着换过来 —— 断言的还是「页面生成的那份 issue URL」。
+        """
+        url = self.page.get_attribute("#oldWayBtn", "href")
         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         return {"url": url, "title": q.get("title", [""])[0], "body": q.get("body", [""])[0]}
 

@@ -32,6 +32,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 POM_DIR = ROOT / "site" / "pomodoro"
 POM_JS = pathlib.Path(os.environ.get("POM_APP_JS") or (POM_DIR / "app.js"))
 
+# 背单词页（site/words/）
+WORDS_DIR = ROOT / "site" / "words"
+WORDS_JS = pathlib.Path(os.environ.get("WORDS_APP_JS") or (WORDS_DIR / "app.js"))
+WORDS_HTML = WORDS_DIR / "index.html"
+
 NODE = shutil.which("node")
 
 
@@ -511,13 +516,331 @@ main().catch(function (e) {
 """
 
 
-def run_probe(app_js: pathlib.Path) -> dict:
+# --------------------------------------------------------------------------
+# 背单词页（site/words/）的探针。
+#
+# ★ 这一页的 app.js 是 **IIFE** —— 番茄钟页那种「在 node 里抠函数重跑」的路子
+#   在这儿不合适（抠出来的是**重拼的函数**，不是页面上真在跑的那几个）。
+#   ⇒ 改成**直接 require 页面那份 app.js**：
+#   跑的就是页面真正在跑的那几个函数（state 也是页面上那个 state）。
+#   页面里的 DOM 由 `ui.hint` / `ui.render` 两个口子顶掉，
+#   网络由 global.fetch 顶掉，本机存储由 global.window.localStorage 顶掉。
+# --------------------------------------------------------------------------
+WORDS_NODE_PROBE = r"""
+'use strict';
+const path = require('path');
+
+const APP = process.env.APP_JS_PATH || path.join(__dirname, 'app.js');
+
+/* ---------- 假件 ---------- */
+function fakeStorage(seed) {
+  const data = {};
+  if (seed) for (const k of Object.keys(seed)) data[k] = seed[k];
+  const st = {
+    getItem(k) {
+      if (st.throwGet) throw new Error('隐私模式：localStorage 读不了');
+      return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
+    },
+    setItem(k, v) {
+      if (st.throwSet) throw new Error('配额满了');
+      data[k] = String(v);
+    },
+    removeItem(k) { delete data[k]; },
+    _data: data,
+    throwGet: false,
+    throwSet: false,
+  };
+  return st;
+}
+
+let storage = fakeStorage();
+const opened = [];
+global.window = {
+  get localStorage() { return storage; },
+  open: function (url) { opened.push(url); },
+};
+
+const api = require(APP);
+const PENDING_KEY = api.PENDING_KEY;
+const REPORT = { v: 1, source: 'words', days: { '2026-11-25': 150 } };
+const INGEST = { url: 'https://worker.example/ingest', token: 'tok-abc', enabled: true };
+
+/* 提示 / 重画：页面里是 DOM，这里换成收集器 */
+const hints = [];
+let renders = 0;
+api.ui.hint = function (t) { hints.push(String(t)); };
+api.ui.render = function () { renders += 1; };
+
+/* 网络：页面里是 fetch，这里换成假件 */
+const fetchCalls = [];
+let fetchImpl = null;
+global.fetch = function (url, opts) {
+  fetchCalls.push({ url: String(url), options: opts || {} });
+  return fetchImpl(url, opts);
+};
+
+function okResponse(payload) {
+  return Promise.resolve({
+    ok: true, status: 200,
+    text: function () { return Promise.resolve(JSON.stringify(payload || { ok: true })); },
+  });
+}
+
+function reset(over) {
+  storage = fakeStorage();
+  opened.length = 0;
+  hints.length = 0;
+  renders = 0;
+  fetchCalls.length = 0;
+  fetchImpl = null;
+  api.state.days = {};
+  api.state.draft = null;
+  api.state.ingest = null;
+  api.state.lastSubmit = null;
+  api.state.cap = 500;
+  api.state.per = 100;
+  api.state.enabled = true;
+  if (over) over();
+}
+
+function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+
+async function main() {
+  const obs = {};
+
+  /* ---- 1. 入队：最老在前 ---- */
+  reset();
+  api.enqueueReport({ id: 'A' });
+  api.enqueueReport({ id: 'B' });
+  obs.queueAfterAB = api.pendingQueue();
+
+  /* ---- 2. shiftPending 取队首，取完少一条 ---- */
+  obs.shifted = api.shiftPending();
+  obs.queueAfterShift = api.pendingQueue();
+
+  /* ---- 3. toFront 放回队首 ---- */
+  api.enqueueReport({ id: 'C' }, true);
+  obs.queueAfterToFront = api.pendingQueue();
+
+  /* ---- 4. 超过 50 条只留最近 50 条 ---- */
+  reset();
+  for (let i = 1; i <= 60; i += 1) api.enqueueReport({ n: i });
+  const over = api.pendingQueue();
+  obs.overLimit = {
+    len: over.length,
+    first: over.length ? over[0].n : null,
+    last: over.length ? over[over.length - 1].n : null,
+  };
+
+  /* ---- 5. 坏 JSON 当空队列（不许抛） ---- */
+  reset();
+  storage.setItem(PENDING_KEY, '这不是 JSON');
+  try { obs.badJsonQueue = api.pendingQueue(); }
+  catch (e) { obs.badJsonQueue = { threw: String(e && e.message) }; }
+
+  /* ---- 6. 隐私模式：localStorage 抛异常也不许炸 ---- */
+  reset();
+  storage.throwGet = true;
+  try { obs.throwGetQueue = api.pendingQueue(); }
+  catch (e) { obs.throwGetQueue = { threw: String(e && e.message) }; }
+  storage.throwGet = false;
+  storage.throwSet = true;
+  try { api.enqueueReport({ id: 'X' }); obs.throwSetThrew = null; }
+  catch (e) { obs.throwSetThrew = String(e && e.message); }
+
+  /* ---- 7. ★ 队列键按源分开：别页（番茄钟）的队列不许被碰到 ---- */
+  reset();
+  storage.setItem('pendingIngest', JSON.stringify([{ id: 'POM' }]));
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'WORDS' }]));
+  obs.isolated = {
+    key: PENDING_KEY,
+    own: api.pendingQueue(),
+    other: JSON.parse(storage._data['pendingIngest']),
+  };
+  api.enqueueReport({ id: 'WORDS2' });
+  obs.isolated.otherAfter = JSON.parse(storage._data['pendingIngest']);
+  obs.isolated.ownAfter = api.pendingQueue();
+
+  /* ---- 8. postIngest：方法、token 头、请求体 ---- */
+  reset();
+  api.state.ingest = INGEST;
+  let seen = null;
+  fetchImpl = function (url, opts) {
+    seen = { url: String(url), options: opts || {} };
+    return okResponse({ ok: true, id: 'abc123' });
+  };
+  obs.postResult = await api.postIngest(REPORT);
+  obs.postFetch = {
+    url: seen.url,
+    method: seen.options.method,
+    token: (seen.options.headers || {})['X-Dex-Token'],
+    contentType: (seen.options.headers || {})['Content-Type'],
+    body: JSON.parse(seen.options.body),
+  };
+
+  /* ---- 9. postIngest：服务端说不行 ⇒ 要抛 ---- */
+  fetchImpl = function () {
+    return Promise.resolve({
+      ok: false, status: 429,
+      text: function () { return Promise.resolve(JSON.stringify({ ok: false, error: '队列满了' })); },
+    });
+  };
+  try { await api.postIngest(REPORT); obs.postError = null; }
+  catch (e) { obs.postError = String(e && e.message); }
+
+  /* ---- 10. 通道没开 ⇒ 走老办法（开 GitHub 页，一个 POST 都不许发） ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  fetchImpl = function () { throw new Error('通道没开时不该发请求'); };
+  await api.doSubmit();
+  obs.oldWay = {
+    opened: opened.slice(),
+    postCalls: fetchCalls.length,
+    hints: hints.slice(),
+  };
+
+  /* ---- 11. 通道开着 ⇒ 发一个 POST ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  api.state.ingest = INGEST;
+  const posts = [];
+  fetchImpl = function (url, opts) {
+    posts.push(JSON.parse(opts.body));
+    return okResponse({ ok: true, id: 'abc123' });
+  };
+  await api.doSubmit();
+  obs.newWay = {
+    postCalls: posts.length,
+    report: posts[0] || null,
+    hints: hints.slice(),
+    queue: api.pendingQueue(),
+    ingesting: api.isIngesting(),
+  };
+
+  /* ---- 12. ★ 投递要发夹过单日上限的那些天 ---- */
+  reset();
+  api.state.days = { '2026-11-25': 9999 };
+  api.state.cap = 500;
+  api.state.ingest = INGEST;
+  const postsClamped = [];
+  fetchImpl = function (url, opts) {
+    postsClamped.push(JSON.parse(opts.body));
+    return okResponse({ ok: true });
+  };
+  await api.doSubmit();
+  obs.clamped = { report: postsClamped[0] || null, raw: api.state.days };
+
+  /* ---- 13. 投递失败 ⇒ 报告入队 ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  api.state.ingest = INGEST;
+  fetchImpl = function () { return Promise.reject(new Error('网络抽风')); };
+  await api.doSubmit();
+  obs.newWayFail = {
+    postCalls: fetchCalls.length,
+    queue: api.pendingQueue(),
+    hints: hints.slice(),
+    ingesting: api.isIngesting(),
+  };
+
+  /* ---- 14. 连点两次 ⇒ 只发一个 POST ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  api.state.ingest = INGEST;
+  let release = null;
+  const gate = new Promise(function (res) { release = res; });
+  fetchImpl = function () { return gate; };
+  api.doSubmit();
+  api.doSubmit();
+  obs.doubleClick = {
+    postCalls: fetchCalls.length,
+    ingesting: api.isIngesting(),
+    hints: hints.slice(),
+  };
+  release({ ok: true, status: 200, text: function () { return Promise.resolve(JSON.stringify({ ok: true })); } });
+  await tick();
+  await tick();
+  obs.doubleClickAfter = { ingesting: api.isIngesting(), queue: api.pendingQueue() };
+
+  /* ---- 15. flushPending：补发失败要放回队首 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
+  fetchImpl = function () { return Promise.reject(new Error('服务端满了')); };
+  await api.flushPending();
+  obs.flushFail = { postCalls: fetchCalls.length, queue: api.pendingQueue() };
+
+  /* ---- 16. flushPending：通道没开 ⇒ 什么都不做 ---- */
+  reset();
+  api.state.ingest = null;                   // 通道关着
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }]));
+  fetchImpl = function () { return okResponse({ ok: true }); };
+  await api.flushPending();
+  obs.flushOff = { postCalls: fetchCalls.length, queue: api.pendingQueue() };
+
+  /* ---- 17. flushPending：成功 ⇒ 补发掉并清空队列 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
+  fetchImpl = function () { return okResponse({ ok: true }); };
+  await api.flushPending();
+  obs.flushOk = { postCalls: fetchCalls.length, queue: api.pendingQueue(), hints: hints.slice() };
+
+  /* ---- 18. 页面打开（sources.json 到了）⇒ 读顶层 ingest 段 + 自动补发 ---- */
+  reset();
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'OLD' }]));
+  const registry = {
+    version: 1,
+    perAward: 2,
+    sources: { words: { per: 100, maxPerDay: 500, enabled: true } },
+    ingest: { url: 'https://worker.example/ingest', token: 'tok-abc', enabled: true },
+  };
+  fetchImpl = function (url) {
+    if (String(url).indexOf('sources.json') >= 0) {
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve(registry); } });
+    }
+    return okResponse({ ok: true });
+  };
+  await api.loadRegistry();
+  await tick();
+  await tick();
+  obs.registry = {
+    ingestUrl: (api.state.ingest || {}).url || null,
+    ingestEnabled: (api.state.ingest || {}).enabled === true,
+    per: api.state.per,
+    cap: api.state.cap,
+    queue: api.pendingQueue(),
+    urls: fetchCalls.map(function (f) { return f.url; }),
+  };
+
+  /* ---- 19. 注册表拉不到 ⇒ 通道当没开（退回老办法），别炸 ---- */
+  reset();
+  api.state.ingest = INGEST;          // 先假设通道是开着的
+  fetchImpl = function () { return Promise.reject(new Error('网络断了')); };
+  const reg = await api.loadRegistry();
+  obs.registryFail = {
+    ingest: api.state.ingest,
+    per: reg ? reg.per : null,
+    enabled: reg ? reg.enabled : null,
+  };
+
+  process.stdout.write(JSON.stringify(obs));
+}
+
+main().catch(function (e) {
+    process.stderr.write('背单词页探针跑挂了：' + String((e && e.stack) || e) + '\n');
+    process.exitCode = 1;
+});
+"""
+
+
+def run_probe(app_js: pathlib.Path, script: str = NODE_PROBE) -> dict:
     """在 node 里真跑一遍 app.js 的那几段逻辑，返回观测结果。"""
     if not NODE:
         raise unittest.SkipTest("这台机没有 node，跑不了行为探针")
     with tempfile.TemporaryDirectory() as td:
         probe = pathlib.Path(td) / "probe.js"
-        probe.write_text(NODE_PROBE, encoding="utf-8")
+        probe.write_text(script, encoding="utf-8")
         env = dict(os.environ)
         env["APP_JS_PATH"] = str(app_js)
         proc = subprocess.run(
@@ -786,6 +1109,382 @@ class PomodoroIngestContractTest(unittest.TestCase):
         """app.js 得是能跑的脚本（不能改坏成模块或半截代码）。"""
         proc = subprocess.run(
             [NODE, "--check", str(POM_JS)], capture_output=True, text=True
+        )
+        self.assertEqual(
+            proc.returncode, 0, "app.js 语法有问题：\n%s" % proc.stderr[-2000:]
+        )
+
+
+class WordsIngestBehaviorTest(unittest.TestCase):
+    """背单词页的投递通道：**真跑一遍** app.js 的原函数，看行为对不对。
+
+    ★ 这一页的 app.js 是 IIFE ⇒ 探针**直接 require 页面那份文件**，
+      跑的就是页面真正在跑的那几个函数（不是抠出来重拼的）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.obs = run_probe(WORDS_JS, WORDS_NODE_PROBE)
+
+    # ---------------- 队列 ----------------
+
+    def test_the_queue_keeps_the_oldest_first(self):
+        """先入 A 再入 B ⇒ 队列是 [A, B]（最老在前）。"""
+        self.assertEqual(
+            self.obs.get("queueAfterAB"),
+            [{"id": "A"}, {"id": "B"}],
+            "队列必须是最老在前：先进去的排前面",
+        )
+
+    def test_shift_pending_takes_the_head(self):
+        """shiftPending 取的是队首，取完队列少一条。"""
+        self.assertEqual(self.obs.get("shifted"), {"id": "A"}, "shiftPending 要取队首")
+        self.assertEqual(
+            self.obs.get("queueAfterShift"),
+            [{"id": "B"}],
+            "取走队首之后队列要少一条",
+        )
+
+    def test_enqueue_to_front_puts_the_report_back_at_the_head(self):
+        """补发失败时放回队首（不是队尾）。"""
+        self.assertEqual(
+            self.obs.get("queueAfterToFront"),
+            [{"id": "C"}, {"id": "B"}],
+            "toFront 的报告要放回队首 —— 放队尾会让老报告越攒越晚才交上去",
+        )
+
+    def test_the_queue_keeps_only_the_latest_50(self):
+        """超过 50 条 ⇒ 只留最近 50 条（slice(-50)）。"""
+        over = self.obs.get("overLimit") or {}
+        self.assertEqual(over.get("len"), 50, "队列上限是 50 条")
+        self.assertEqual(over.get("first"), 11, "留的应该是**最近** 50 条（第 11~60 条）")
+        self.assertEqual(over.get("last"), 60, "最后一条是最新的那条")
+
+    def test_broken_localstorage_data_is_treated_as_an_empty_queue(self):
+        """localStorage 里是坏 JSON ⇒ 当空队列，不许抛。"""
+        self.assertEqual(
+            self.obs.get("badJsonQueue"),
+            [],
+            "坏数据要当空队列处理（不能炸、也不能把坏数据原样发出去）",
+        )
+
+    def test_private_mode_localstorage_does_not_crash_the_page(self):
+        """隐私模式下 localStorage 抛异常 ⇒ 读队列当空、写队列吞掉。"""
+        self.assertEqual(
+            self.obs.get("throwGetQueue"),
+            [],
+            "读不到 localStorage 时要当空队列",
+        )
+        self.assertIsNone(
+            self.obs.get("throwSetThrew"),
+            "localStorage 写不进去时不能把异常抛出去",
+        )
+
+    def test_the_queue_key_is_separated_per_source(self):
+        """★ 三个子页同源 ⇒ 共用同一份 localStorage ⇒ 队列键必须按源分开。
+
+        番茄钟页用的是 `pendingIngest`；本页必须是 `pendingIngest.words`。
+        不分开的话，两个页面的条目混在一个数组里 ⇒ 超 50 条时
+        `slice(-50)` 会**静默丢掉别页最老的那条报告**。
+        """
+        iso = self.obs.get("isolated") or {}
+        self.assertEqual(
+            iso.get("key"),
+            "pendingIngest.words",
+            "背单词页的队列键必须是 pendingIngest.words（不许跟番茄钟页共用）",
+        )
+        self.assertEqual(
+            iso.get("own"),
+            [{"id": "WORDS"}],
+            "本页只该看得到自己那个队列",
+        )
+        self.assertEqual(
+            iso.get("other"),
+            [{"id": "POM"}],
+            "番茄钟页的队列原封不动",
+        )
+        self.assertEqual(
+            iso.get("otherAfter"),
+            [{"id": "POM"}],
+            "本页入队**不许**动别页的队列（否则会挤掉别页的报告）",
+        )
+        self.assertEqual(
+            iso.get("ownAfter"),
+            [{"id": "WORDS"}, {"id": "WORDS2"}],
+            "本页的条目只进本页的队列",
+        )
+
+    # ---------------- 补发 ----------------
+
+    def test_flush_puts_a_failed_report_back_at_the_head(self):
+        """补发失败 ⇒ 放回队首（不是队尾）。"""
+        flush = self.obs.get("flushFail") or {}
+        self.assertEqual(flush.get("postCalls"), 1, "补发失败后要停手（别把队列里的全试一遍）")
+        self.assertEqual(
+            flush.get("queue"),
+            [{"id": "X"}, {"id": "Y"}],
+            "补发失败的那条要放回**队首**",
+        )
+
+    def test_flush_does_nothing_when_the_channel_is_off(self):
+        """通道没开 ⇒ 不补发（队列原封不动）。"""
+        flush = self.obs.get("flushOff") or {}
+        self.assertEqual(flush.get("postCalls"), 0, "通道没开时不该发任何请求")
+        self.assertEqual(flush.get("queue"), [{"id": "X"}], "通道没开时队列要原封不动")
+
+    def test_flush_sends_the_whole_queue_when_the_channel_works(self):
+        """通道开着 ⇒ 补发掉整个队列，并告诉她补了几条。"""
+        flush = self.obs.get("flushOk") or {}
+        self.assertEqual(flush.get("postCalls"), 2, "队列里有两条 ⇒ 补发两次")
+        self.assertEqual(flush.get("queue"), [], "补发成功的要出队")
+        self.assertTrue(
+            any("补发了 2 条" in t for t in flush.get("hints") or []),
+            "补发完要告诉她补了几条（现在的提示：%r）" % (flush.get("hints"),),
+        )
+
+    # ---------------- 投递本身 ----------------
+
+    def test_the_post_carries_the_ingest_token_header(self):
+        """投递要带 token 头、方法是 POST、请求体就是那份报告。"""
+        post = self.obs.get("postFetch") or {}
+        self.assertEqual(post.get("method"), "POST", "投递要用 POST")
+        self.assertEqual(
+            post.get("token"),
+            "tok-abc",
+            "投递必须带 X-Dex-Token 头（没这个头服务端会拒）",
+        )
+        self.assertEqual(post.get("contentType"), "application/json", "请求头要声明 JSON")
+        self.assertEqual(
+            post.get("body"),
+            {"v": 1, "source": "words", "days": {"2026-11-25": 150}},
+            "请求体就是那份报告",
+        )
+
+    def test_a_rejected_post_raises(self):
+        """服务端拒收（队列满了）⇒ postIngest 要抛，调用方才知道要排队。"""
+        self.assertEqual(self.obs.get("postError"), "队列满了", "服务端拒收时要把错误抛出来")
+
+    # ---------------- 点「交上去」 ----------------
+
+    def test_the_old_way_is_used_when_the_channel_is_off(self):
+        """通道没开 ⇒ 打开 GitHub 的新建 issue 页，**一个 POST 都不许发**。"""
+        old = self.obs.get("oldWay") or {}
+        self.assertEqual(
+            len(old.get("opened") or []),
+            1,
+            "通道没开时要点开 GitHub 的新建 issue 页（老办法）",
+        )
+        self.assertTrue(
+            (old.get("opened") or [""])[0].startswith(
+                "https://github.com/lilia-shound/pokemon-dex/issues/new?"),
+            "老办法要开的是 GitHub 的新建 issue 页：%r" % (old.get("opened"),),
+        )
+        self.assertEqual(old.get("postCalls"), 0, "通道没开时不许发投递请求")
+        self.assertTrue(old.get("hints"), "老办法要点一下提示（告诉她还要再点一下 Submit）")
+
+    def test_the_new_way_posts_once_when_the_channel_is_on(self):
+        """通道开着 ⇒ 发一个 POST，成功就报「已记录」。"""
+        new = self.obs.get("newWay") or {}
+        self.assertEqual(new.get("postCalls"), 1, "点一次「交上去」只该发一个 POST")
+        self.assertEqual(
+            new.get("report"),
+            {"v": 1, "source": "words", "days": {"2026-11-25": 150}},
+            "投递的要是那份报告",
+        )
+        self.assertEqual(new.get("queue"), [], "成功了就不该留队列")
+        self.assertFalse(new.get("ingesting"), "投递完要把「正在投递」的标志清掉")
+        self.assertTrue(
+            any("已记录" in t for t in new.get("hints") or []),
+            "成功要原地提示「已记录」（现在的提示：%r）" % (new.get("hints"),),
+        )
+
+    def test_the_report_carries_the_clamped_days(self):
+        """★ 投递要发**夹过单日上限**的那些天（不是 state.days 里的原值）。"""
+        clamped = self.obs.get("clamped") or {}
+        self.assertEqual(
+            (clamped.get("report") or {}).get("days"),
+            {"2026-11-25": 500},
+            "超过单日上限（500）的那天要按 500 报 —— 服务端会把超上限的整份丢掉",
+        )
+        self.assertEqual(
+            clamped.get("raw"),
+            {"2026-11-25": 9999},
+            "页面上的原值不动（夹取只作用在发出去的那份报告上）",
+        )
+
+    def test_a_failed_post_queues_the_report(self):
+        """投递失败 ⇒ 报告入队（等下次补发）。"""
+        fail = self.obs.get("newWayFail") or {}
+        self.assertEqual(fail.get("postCalls"), 1, "失败前确实发了一次")
+        self.assertEqual(
+            fail.get("queue"),
+            [{"v": 1, "source": "words", "days": {"2026-11-25": 150}}],
+            "投递失败的报告要存进待发队列",
+        )
+        self.assertFalse(fail.get("ingesting"), "失败之后也要把「正在投递」的标志清掉")
+        self.assertTrue(
+            any("已存着" in t for t in fail.get("hints") or []),
+            "失败要告诉她「已存着，下次自动补发」（现在的提示：%r）" % (fail.get("hints"),),
+        )
+
+    def test_clicking_submit_twice_sends_only_one_post(self):
+        """连点两次 ⇒ 只发一个 POST（workers.dev 在国内慢，很容易点第二下）。"""
+        double = self.obs.get("doubleClick") or {}
+        self.assertEqual(
+            double.get("postCalls"),
+            1,
+            "连点两次「交上去」只能发一个 POST —— 两个都失败的话同一份报告会入队两次",
+        )
+        self.assertTrue(double.get("ingesting"), "投递期间应该有个「正在投递」的标志")
+        self.assertTrue(
+            any("稍等" in t for t in double.get("hints") or []),
+            "重复点击要给她一句提示（现在的提示：%r）" % (double.get("hints"),),
+        )
+        after = self.obs.get("doubleClickAfter") or {}
+        self.assertFalse(after.get("ingesting"), "投递结束后要清掉标志，否则她再也点不动")
+        self.assertEqual(after.get("queue"), [], "投递成功就不该留队列")
+
+    # ---------------- 页面打开 ----------------
+
+    def test_the_page_reads_the_ingest_config_from_the_registry(self):
+        """ingest 配置从**已经拉过的那份** sources.json 顶层读 ⇒ 不新增网络请求。"""
+        reg = self.obs.get("registry") or {}
+        self.assertEqual(
+            reg.get("ingestUrl"),
+            "https://worker.example/ingest",
+            "ingest 配置要从 sources.json 顶层读（不新增网络请求）",
+        )
+        self.assertTrue(reg.get("ingestEnabled"), "ingest 段要照原样读进来")
+        self.assertEqual(reg.get("per"), 100, "口径还是从同一份注册表读")
+        self.assertEqual(reg.get("cap"), 500, "单日上限还是从同一份注册表读")
+
+    def test_the_page_flushes_the_queue_when_the_registry_arrives(self):
+        """页面打开（sources.json 到了）⇒ 自动补发待发队列。"""
+        reg = self.obs.get("registry") or {}
+        self.assertEqual(reg.get("queue"), [], "页面打开时要把上次没交上去的补发掉")
+        self.assertIn(
+            "https://worker.example/ingest",
+            reg.get("urls") or [],
+            "补发要打到通道地址上",
+        )
+        self.assertEqual(
+            len([u for u in (reg.get("urls") or []) if "sources.json" in u]),
+            1,
+            "注册表只许拉一次（ingest 配置从**同一份**里读）",
+        )
+
+    def test_a_broken_registry_leaves_the_channel_off(self):
+        """注册表拉不到 ⇒ 通道当没开（退回老办法），别炸。"""
+        fail = self.obs.get("registryFail") or {}
+        self.assertIsNone(fail.get("ingest"), "拉不到注册表 ⇒ 没有通道配置 ⇒ 走老办法")
+        self.assertEqual(fail.get("per"), 100, "拉不到注册表 ⇒ 退回兜底口径")
+        self.assertTrue(fail.get("enabled"), "拉不到注册表 ⇒ 不知道源停没停 ⇒ 照旧让她记")
+
+
+class WordsIngestContractTest(unittest.TestCase):
+    """背单词页：源码层面的契约断言（行为由 WordsIngestBehaviorTest 真跑一遍）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = WORDS_JS.read_text(encoding="utf-8")
+        cls.html = WORDS_HTML.read_text(encoding="utf-8")
+
+    def test_the_page_posts_to_the_ingest_endpoint(self):
+        self.assertIn("postIngest", self.js, "要有 postIngest")
+        self.assertIn("X-Dex-Token", self.js, "要带 ingest token 头")
+        self.assertIn("method: 'POST'", self.js, "要用 POST")
+
+    def test_the_page_reads_the_ingest_config_from_the_registry(self):
+        """ingest 配置来自**已经拉过的** sources.json ⇒ 不许新增网络请求。"""
+        self.assertTrue(
+            re.search(r"d\.ingest|\['ingest'\]", self.js) is not None,
+            "要从 sources.json 顶层读 ingest 段",
+        )
+        # 页面本来就有 1 个请求（sources.json），加了投递之后最多 2 个
+        # —— **不许再多来一个注册表请求**
+        self.assertLessEqual(
+            len(re.findall(r"fetch\(", self.js)),
+            2,
+            "背单词页的网络请求不该变多（只有 sources.json 一个 + 投递那一个）",
+        )
+
+    def test_the_page_keeps_the_github_way_as_a_fallback(self):
+        """老办法不许删 —— workers.dev 在国内可能抽风。"""
+        self.assertIn("buildIssueUrl", self.js, "老办法的 URL 构造要留着")
+        self.assertIn("oldWayBtn", self.html, "页面里要有老办法链接")
+        self.assertIn("ingestAvailable", self.js, "通道没开时要能退回老办法")
+
+    def test_the_submit_button_is_a_button_not_a_link(self):
+        """主按钮改成 <button>（它不再跳去 GitHub）。"""
+        self.assertRegex(self.html, r'<button[^>]*id="submitBtn"')
+        self.assertNotRegex(self.html, r'<a[^>]*id="submitBtn"')
+
+    def test_the_page_queues_failed_reports(self):
+        """交不上去要存下来，下次打开自动补发。"""
+        self.assertIn("pendingIngest", self.js, "要有待发队列")
+        self.assertIn("flushPending", self.js, "页面打开时要补发")
+        self.assertIn("localStorage", self.js, "待发队列要落 localStorage")
+
+    def test_the_pending_queue_key_is_separated_per_source(self):
+        """★ 三个子页同源 ⇒ 共用一份 localStorage ⇒ 队列键必须按源分开。"""
+        self.assertIn(
+            "pendingIngest.words",
+            self.js,
+            "背单词页的队列键必须是 pendingIngest.words（番茄钟页是 pendingIngest）",
+        )
+        self.assertNotRegex(
+            self.js,
+            r"PENDING_KEY\s*=\s*'pendingIngest'",
+            "不许跟番茄钟页共用 pendingIngest —— 两个页面的条目会混在一个数组里",
+        )
+
+    def test_the_queue_can_put_a_report_back_at_the_head(self):
+        """补发失败时要放回队首（unshift），不能只有 push。"""
+        start = self.js.index("function enqueueReport(")
+        body = self.js[start:self.js.index("\n}", start)]
+        self.assertIn("unshift", body, "enqueueReport 要能把报告放回队首")
+        self.assertIn("push", body, "enqueueReport 也要能把报告排到队尾")
+
+    def test_the_queue_keeps_the_newest_50(self):
+        """队列上限：只留最近 50 条（slice(-50)），不是最老 50 条。"""
+        self.assertIn(
+            "slice(-50)",
+            self.js,
+            "待发队列超限时只留**最近** 50 条（slice(-50)）",
+        )
+
+    def test_the_page_has_an_in_flight_guard(self):
+        """连点两次「交上去」⇒ 只发一个 POST。"""
+        self.assertIn("let INGESTING", self.js, "要有一个「正在投递」的标志")
+        start = self.js.index("async function doSubmit(")
+        body = self.js[start:self.js.index("\n}", start)]
+        self.assertIn("if (INGESTING)", body, "提交入口要判重")
+        self.assertIn("INGESTING = true", body, "发投递之前要把标志置上")
+        self.assertIn("INGESTING = false", body, "finally 里要把标志清掉")
+        self.assertIn("finally", body, "标志必须在 finally 里清（成功/失败/异常都要清）")
+
+    def test_the_old_way_branch_comes_before_the_post(self):
+        """doSubmit 里「通道没开 ⇒ 走老办法」的判断必须在 postIngest **之前**。"""
+        start = self.js.index("async function doSubmit(")
+        body = self.js[start:self.js.index("\n}", start)]
+        guard = body.find("!ingestAvailable()")
+        post = body.find("postIngest(")
+        self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
+        self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
+        self.assertIn("window.open(buildIssueUrl(", body, "老办法要真的打开 GitHub 页面")
+
+    def test_the_page_flushes_the_queue_after_loading_the_registry(self):
+        """页面打开时要调 flushPending（配置到了就补发）。"""
+        start = self.js.index("function loadRegistry(")
+        body = self.js[start:self.js.index("\n}", start)]
+        self.assertIn("flushPending()", body, "sources.json 到了之后要补发待发队列")
+        self.assertIn(".catch(", body, "补发是异步的 ⇒ 调用处必须挂 .catch")
+
+    @unittest.skipUnless(NODE, "这台机没有 node")
+    def test_the_page_script_is_valid_javascript(self):
+        """app.js 得是能跑的脚本（不能改坏成模块或半截代码）。"""
+        proc = subprocess.run(
+            [NODE, "--check", str(WORDS_JS)], capture_output=True, text=True
         )
         self.assertEqual(
             proc.returncode, 0, "app.js 语法有问题：\n%s" % proc.stderr[-2000:]

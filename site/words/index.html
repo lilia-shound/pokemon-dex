@@ -76,18 +76,24 @@
   </section>
 
   <!-- 提交 -->
-  <a class="btn" id="submitBtn" href="#" target="_blank" rel="noopener noreferrer">去 GitHub 提交</a>
-  <p class="hint center" id="submitHint">点开是 GitHub 的新建 issue 页，标题和内容都填好了 —— 在那个页面上点一下 <b>Submit</b> 才算交上去。</p>
+  <!-- 主按钮改成 <button>：它不再跳去 GitHub，而是「点一下就交上去」。
+       .btn 是类选择器 ⇒ 样式不变；border/font-family/cursor 是 <button> 的 UA 默认值，
+       在行里补上，免得按钮跟原来那个链接看起来不一样。 -->
+  <button class="btn" id="submitBtn" type="button"
+          style="border:0;font-family:inherit;cursor:pointer">交上去</button>
+  <p class="hint center" id="submitHint">点「交上去」直接交（不用登录 GitHub）。</p>
+  <!-- 老办法：**永远留着** —— 通道没开、或 workers.dev 抽风时，用它顶一下 -->
+  <p class="hint center"><a id="oldWayBtn" href="#" target="_blank" rel="noopener noreferrer">用 GitHub 提交（老办法）</a></p>
   <!-- 报告里含有「最近 7 天」之外的日期时的提示（有才显示，默认藏着） -->
   <p class="hint warn center" id="extraDaysNote" hidden></p>
 
   <section class="card">
-    <h2>点完 Submit 之后</h2>
+    <h2>交上去之后</h2>
     <ol class="steps">
-      <li>这条 issue 提到 <b>lilia-shound/pokemon-dex</b> 这个仓库，标题长这样：<code id="issueTitle">[report] words …</code>。</li>
+      <li>这条报告会送到训练家图鉴的服务端（不用登录 GitHub）；用老办法的话，它会变成 <b>lilia-shound/pokemon-dex</b> 这个仓库的 issue，标题长这样：<code id="issueTitle">[report] words …</code>。</li>
       <li>服务端的定时任务读它 → 校验（源、日期、数值）→ 并进逐日账本（同源同一天取最大值，重复交不吃亏）。</li>
       <li>当天额度凑够了，就从还没收服的池子里掉一只宝可梦，进你的图鉴。</li>
-      <li>抽卡权只在服务端 —— 这一页只报「我背了多少个词」，不发任何写请求。</li>
+      <li>抽卡权只在服务端 —— 这一页只报「我背了多少个词」，不会自己去改你的图鉴。</li>
     </ol>
   </section>
 

@@ -1,12 +1,15 @@
 /* ============================================================
    备考（背单词）记数页
    —— 手机上打开就能记：输入今天背了多少个词 → 折算成额度
-      → 一键打开**预填好的** GitHub 新建 issue 页（人点 Submit）。
-   —— **这一页不发任何写请求** —— 抽卡权只在服务端，这里只报数。
+      → 点一下**直接交**给图鉴服务（免登录投递通道，不用再点 GitHub 的 Submit）。
+      交不上去的先存在本机，下次打开自动补发；
+      通道没开时**退回老办法**（打开预填好的 GitHub 新建 issue 页，人点 Submit）。
+   —— 这一页**只报数**：抽卡权在服务端，它自己不动图鉴。
    —— 额度按**天**向下取整：floor(150/100) + floor(50/100) = 1 + 0 = 1，
       **不是** floor(200/100) = 2（零头不跨天凑）。
       与服务端 scripts/sources.py 的 credit_for_day 口径一致 ✓。
-   —— 零外链：字体/图标全用系统自带；唯一的网络请求是**同源**的 sources.json。
+   —— 零外链：字体/图标全用系统自带；
+      除投递那个 POST 外，唯一的网络请求是**同源**的 sources.json。
    ============================================================ */
 'use strict';
 
@@ -38,6 +41,26 @@
    * 页面显示的额度会和服务端算账用的口径对不上。
    */
   const REGISTRY_PATH = '../sources.json';
+
+  /* ---------- 免登录投递通道 · 常量 ---------- */
+  /**
+   * 待发队列的 localStorage 键 —— **必须按源分开**。
+   *
+   * 三个子页（番茄钟 / 背单词 / KOReader）**同源 ⇒ 共用同一份 localStorage**。
+   * 若本页也用 'pendingIngest'（番茄钟页那个键），两个页面的条目会混在一个数组里 ⇒
+   * 队列超 50 条时 slice(-50) 会**静默丢掉别页最老的那条报告**。
+   * ⇒ 本页用 'pendingIngest.words'；KOReader 页用 'pendingIngest.koreader'。
+   */
+  const PENDING_KEY = 'pendingIngest.words';
+  /** 单次投递的超时（毫秒） */
+  const INGEST_TIMEOUT_MS = 15000;
+  /**
+   * 投递进行中（连点两次「交上去」时用它挡住第二次）。
+   *
+   * workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
+   * 两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
+   */
+  let INGESTING = false;
 
   /* ---------- 纯逻辑（浏览器与 node 都跑得起来） ---------- */
 
@@ -237,6 +260,8 @@
    *  - `draft` —— **预填**：{day, value, from}（今天还没记时，把上次的数字填进输入框）
    *     ⚠️ 预填**只影响输入框的初值**：它不进 `days` ⇒ 额度/周合计仍按实际已记的天算
    *     （不然「还没提交」的日子会提前达标）。
+   *  - `ingest` —— 免登录通道的配置（从 sources.json **顶层**读；没有就是 null ⇒ 走老办法）
+   *  - `lastSubmit` —— 提交结果提示（{msg}）：有它就别让「当前状态」的说明盖掉它
    */
   const state = {
     days: {}, selected: todayKey(),
@@ -244,7 +269,192 @@
     registryLoaded: false, storageOk: true,
     enabled: true, linkNote: '',
     draft: null,
+    ingest: null,        // 免登录通道的配置（从 sources.json 顶层读）
+    lastSubmit: null,    // 提交结果提示（{msg}）
   };
+
+  /* ---------- 免登录投递通道（纯逻辑：浏览器与 node 都跑得起来） ---------- */
+
+  /**
+   * 页面侧的两个口子 —— node 探针里可以替换。
+   *
+   * 这一页是 IIFE，浏览器里才有 DOM；而投递这套逻辑**必须能真跑一遍**才算测过
+   * （只做子串匹配等于没测）⇒ 把「写提示」和「重画页面」收成两个可替换的函数：
+   * 页面里是默认实现，node 里换成收集器 / 空函数。
+   */
+  const ui = {
+    /** 写一行**纯文本**提示（结果提示用这个 —— 服务器来的错误消息不能当 HTML 插） */
+    hint: function (text) {
+      if (typeof document === 'undefined') return;
+      const el = document.querySelector('#submitHint');
+      if (el) el.textContent = String(text == null ? '' : text);
+    },
+    /** 状态变了要重画（页面里是 render()） */
+    render: function () {
+      if (typeof document === 'undefined') return;
+      render();
+    },
+  };
+
+  /** 读待发队列（坏数据当空队列）。 */
+  function pendingQueue() {
+    try {
+      const raw = window.localStorage.getItem(PENDING_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  /** 写待发队列（只留最近 50 条）。 */
+  function savePending(list) {
+    try {
+      // ★ 超限时**静默丢掉最老的那条** —— 这是规格里定的取舍，不改行为。
+      //   丢的是最老的报告（最可能已经过期），保的是最近的 50 条。
+      window.localStorage.setItem(PENDING_KEY, JSON.stringify((list || []).slice(-50)));
+    } catch (e) { /* 存不住就算了 —— 顶多这次没交上 */ }
+  }
+  /**
+   * 把一份报告排进待发队列。
+   * @param {Object} report 要排队的报告
+   * @param {boolean} toFront true = 塞回队首（补发失败时用，保持「最老在前」）
+   */
+  function enqueueReport(report, toFront) {
+    const list = pendingQueue();
+    if (toFront) list.unshift(report); else list.push(report);
+    savePending(list);
+  }
+  /** 取出队首（没有就 null）。 */
+  function shiftPending() {
+    const list = pendingQueue();
+    if (!list.length) return null;
+    const head = list.shift();
+    savePending(list);
+    return head;
+  }
+
+  /**
+   * 把一份报告 POST 到免登录通道。
+   * 成功返回服务端的回包；失败**抛异常**（调用方负责提示与排队）。
+   */
+  async function postIngest(report) {
+    if (!ingestAvailable()) {
+      throw new Error('免登录通道没开');
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(function () { ctrl.abort(); }, INGEST_TIMEOUT_MS);
+    let resp = null;
+    try {
+      resp = await fetch(state.ingest.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Dex-Token': state.ingest.token || '' },
+        body: JSON.stringify(report),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const text = await resp.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (!resp.ok || !data || data.ok !== true) {
+      throw new Error((data && data.error) ? data.error : ('HTTP ' + resp.status));
+    }
+    return data;
+  }
+
+  /** 免登录通道现在能不能用？（配置在、开着、有地址） */
+  function ingestAvailable() {
+    return !!(state.ingest && state.ingest.enabled === true && state.ingest.url);
+  }
+
+  /**
+   * 写一条**结果提示**（已记录 / 交不上去 / 补发了 N 条）。
+   *
+   * 这一页没有 toast() ⇒ 提示只能写进 #submitHint；
+   * 而 #submitHint 也放「当前状态」的说明（没记数 / 源被停用 / 怎么交）⇒
+   * 两个内容会互相盖掉。⇒ 结果提示记在 state.lastSubmit 里：
+   * renderSubmit() 优先显示它，她改了数就把它清掉（状态说明回到前台）。
+   */
+  function setResult(text) {
+    state.lastSubmit = { msg: String(text == null ? '' : text) };
+    ui.hint(state.lastSubmit.msg);
+  }
+
+  /** 她改了数 ⇒ 结果提示作废（状态说明回到前台）。 */
+  function clearResult() {
+    if (state.lastSubmit) state.lastSubmit = null;
+  }
+
+  /** 把上次没交上去的补发掉（页面打开时调一次）。 */
+  async function flushPending() {
+    if (!ingestAvailable()) return;      // 通道没开 ⇒ 没有可补的（也别把它越攒越多）
+    let sent = 0;
+    let report = shiftPending();
+    while (report) {
+      try {
+        await postIngest(report);
+        sent++;
+      } catch (e) {
+        // 还是交不上去 ⇒ **放回队首**（不是队尾！）—— 队列是「最老在前」的，
+        // 放回队尾会把它排到最后，越攒越晚才交上去。
+        enqueueReport(report, true);
+        break;
+      }
+      report = shiftPending();
+    }
+    if (sent) setResult('补发了 ' + sent + ' 条');
+  }
+
+  /**
+   * 提交：点一下就交上去。
+   *
+   * 三条路：
+   *   1. 通道开着 ⇒ 直接 POST 上去；交不上就**存进待发队列**，下次打开补发。
+   *   2. 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
+   *      打开 GitHub 的新建 issue 页（少了这个分支，部署窗口里她点提交只会报错）。
+   *   3. 连点两次 ⇒ 只发一个 POST（见 INGESTING）。
+   */
+  async function doSubmit() {
+    // ★ 连点两次「交上去」⇒ 只发一个 POST。
+    //   workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
+    //   两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
+    if (INGESTING) { setResult('正在交上去，稍等一下'); return; }
+    // 她点了「交上去」⇒ 预填的数就此变成今天的记录
+    if (state.draft && !(Number(state.days[state.draft.day]) > 0)) {
+      const n = Math.max(0, Math.floor(Number(state.draft.value) || 0));
+      if (n > 0) state.days[state.draft.day] = n;
+      state.days = trimDays(state.days);
+      state.draft = null;
+      saveDays();
+      ui.render();
+    }
+    // ★ 报告要发**夹过单日上限**的那些天（用 reportDays()，别用 state.days）
+    const { days } = reportDays();
+    if (!Object.keys(days).length) {
+      setResult('还没有记下任何词 —— 先在上面填个数。');
+      return;
+    }
+    // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
+    //   直接开 GitHub 的新建 issue 页。少了这个分支，部署窗口里她点提交只会报错。
+    if (!ingestAvailable()) {
+      window.open(buildIssueUrl(days), '_blank', 'noopener');
+      setResult('已打开提交页 —— 在 GitHub 那个页面上点一下 Submit');
+      return;
+    }
+    const report = buildReport(days);
+    INGESTING = true;
+    try {
+      await postIngest(report);
+      setResult('已记录 ✓');
+    } catch (err) {
+      enqueueReport(report);
+      setResult('暂时交不上去（' + (err && err.message ? err.message : '未知原因') +
+        '）—— 已存着，下次打开自动补发。');
+    } finally {
+      // ★ 成功、失败、异常都要清 —— 不清的话她再也点不动「交上去」了。
+      INGESTING = false;
+    }
+  }
 
   const API = {
     creditsForDay, creditsForDays, clampDays, latestDay, previousRecordedDay,
@@ -252,7 +462,13 @@
     lastDays, todayKey, shortLabel, weekdayOf, isStandalone,
     DEFAULT_PER, DEFAULT_MAX_PER_DAY, SOURCE_ID, ISSUE_NEW, REPO,
     WINDOW_DAYS, MAX_REPORT_DAYS, REGISTRY_PATH,
-    state,
+    /* 免登录投递通道 —— 一并挂出来，node 探针要能真跑这几段 */
+    PENDING_KEY, INGEST_TIMEOUT_MS,
+    pendingQueue, savePending, enqueueReport, shiftPending,
+    postIngest, ingestAvailable, flushPending, doSubmit,
+    isIngesting: function () { return INGESTING; },
+    loadRegistry,
+    ui, state,
   };
 
   /* node 侧（如果有人要对拍）可以 require 这个文件；
@@ -322,6 +538,12 @@
         if (!(per >= 1)) throw new Error('per 不对：' + src.per);
         const cap = Number(src.maxPerDay);
         const perAward = Number(d.perAward);
+        // 免登录通道的配置 —— **同一份 sources.json 的顶层**，不再多发一个请求
+        state.ingest = (d && d.ingest && typeof d.ingest === 'object') ? d.ingest : null;
+        // 配置到了 ⇒ 把上次没交上去的补发掉
+        // ★ 这里必须挂 .catch —— flushPending 是异步的，漏了会在控制台留一条
+        //   "Unhandled promise rejection"，页面看着像坏了（浏览器的 console 错误）。
+        flushPending().catch(() => { /* 补发失败就下次再说 */ });
         return {
           per: per,
           cap: (cap >= 0) ? cap : DEFAULT_MAX_PER_DAY,
@@ -335,6 +557,8 @@
         // 失败原因**不要整个吞掉**：线上注册表挂了会静默退回 100，事后无从查。
         console.warn('[words] 读注册表失败，退回默认口径（' + DEFAULT_PER +
           ' 个词 = 1 个额度）：', err);
+        // 拉不到注册表 ⇒ 不知道通道开没开 ⇒ **退回老办法**（老办法不需要配置）
+        state.ingest = null;
         // 拉不到注册表 ⇒ 不知道源有没有被停用 ⇒ 照旧让她记（兜底口径生效）。
         return { per: DEFAULT_PER, cap: DEFAULT_MAX_PER_DAY, perAward: DEFAULT_PER_AWARD, enabled: true };
       });
@@ -489,6 +713,7 @@
       btn.querySelector('.c').textContent = eff > 0 ? credit + ' 额度' : '没记';
       btn.onclick = () => {
         state.selected = k;
+        clearResult();          // 换了一天 ⇒ 上一次「已记录」那条提示作废
         renderDay();
         renderWeek();
       };
@@ -503,29 +728,41 @@
     $('#weekCredit').textContent = creditsForDays(win, state.per, state.cap) + ' 个额度';
   }
 
-  /** 提交按钮：预填好的 GitHub 新建 issue 链接（没有量时禁用）。 */
+  /** 提交按钮：点一下直接交（交不上去就排队）；没有量时禁用。 */
   function renderSubmit() {
     const { days } = reportDays();
     const btn = $('#submitBtn');
     const has = Object.keys(days).length > 0;
+    // 老办法的链接（**永远留着** —— workers.dev 在国内可能抽风，这是兜底）
+    const old = $('#oldWayBtn');
+    if (old) old.href = has ? buildIssueUrl(days) : '#';
     if (has && state.enabled) {
-      btn.href = buildIssueUrl(days);
       btn.classList.remove('off');
       btn.removeAttribute('aria-disabled');
-      $('#submitHint').innerHTML = '点开是 GitHub 的新建 issue 页，标题和内容都填好了 —— ' +
-        '在那个页面上点一下 <b>Submit</b> 才算交上去。';
     } else if (!state.enabled) {
       // 源被停用 ⇒ 服务端会整份拒收 ⇒ 页面不许给她一个「看起来能交」的按钮
-      btn.href = '#';
       btn.classList.add('off');
       btn.setAttribute('aria-disabled', 'true');
-      $('#submitHint').innerHTML = '备考源现在被停用了（注册表里 <code>enabled</code> 不是 true）—— ' +
-        '交上去服务端也不会收这一类上报。';
     } else {
-      btn.href = '#';
       btn.classList.add('off');
       btn.setAttribute('aria-disabled', 'true');
-      $('#submitHint').innerHTML = '还没有记下任何词 —— 先在上面填个数。';
+    }
+    // 提示：**结果提示优先**，没有才说「现在是什么状态、怎么交」
+    const hint = $('#submitHint');
+    if (state.lastSubmit) {
+      // 结果提示是纯文本（服务器来的错误消息不能当 HTML 插）
+      if (hint.textContent !== state.lastSubmit.msg) hint.textContent = state.lastSubmit.msg;
+    } else {
+      const hintHtml = !state.enabled
+        ? '备考源现在被停用了（注册表里 <code>enabled</code> 不是 true）—— ' +
+          '交上去服务端也不会收这一类上报。'
+        : (!has
+          ? '还没有记下任何词 —— 先在上面填个数。'
+          : (ingestAvailable()
+            ? '点「交上去」直接交（不用登录 GitHub）。'
+            : '点「交上去」会打开 GitHub 的新建 issue 页，在那个页面上点一下 <b>Submit</b> 才算交上去。'));
+      // ★ 内容没变就别重写 DOM —— 重画时把元素换掉，鼠标按下到松开那一下会点空。
+      if (hint.innerHTML !== hintHtml) hint.innerHTML = hintHtml;
     }
     $('#issueTitle').textContent = has ? buildIssueTitle(days) : '[report] words …';
 
@@ -594,6 +831,7 @@
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
     state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
+    clearResult();                // 她改了数 ⇒ 上一次「已记录」那条提示作废
     saveDays();
   }
 
@@ -612,6 +850,7 @@
     else delete state.days[state.selected];
     state.days = trimDays(state.days);
     state.draft = null;          // 她已经表态了 ⇒ 预填使命完成
+    clearResult();                // 她改了数 ⇒ 上一次「已记录」那条提示作废
     saveDays();
     render();
   }
@@ -635,16 +874,10 @@
         e.preventDefault();
         return;
       }
-      // 她点了「去 GitHub 提交」⇒ 预填的数就此变成今天的记录
-      // （链接里已经带着它了 ⇒ 这里只是让页面上的状态跟上）。
-      if (state.draft && !(Number(state.days[state.draft.day]) > 0)) {
-        const n = Math.max(0, Math.floor(Number(state.draft.value) || 0));
-        if (n > 0) state.days[state.draft.day] = n;
-        state.days = trimDays(state.days);
-        state.draft = null;
-        saveDays();
-        render();
-      }
+      // ★ 必须挂 .catch —— doSubmit 是异步的，漏了会在控制台留一条
+      //   "Unhandled promise rejection"，页面看着像坏了。
+      //   （doSubmit 内部已经把「交不上去」兜成提示了，这里只是最后一道保险。）
+      doSubmit().catch(() => { /* 出不了什么岔子，别让控制台红 */ });
     });
   }
 
