@@ -296,14 +296,102 @@
     },
   };
 
+  /* ---------- 日期与天数的把关（与服务端同一口径） ---------- */
+
+  /**
+   * 是不是**真实存在**的 YYYY-MM-DD（2026-02-30 这种会被踢掉）。
+   *
+   * ★ 与服务端 worker/lib/validate.cjs 的 isDate **同一口径** ——
+   *   服务端是**整份拒收**（不是只拒那一天）⇒ 客户端就不该放它过去。
+   * @param {string} s
+   * @returns {boolean}
+   */
+  function isRealDate(s) {
+    if (typeof s !== 'string' || s.length !== 10) return false;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const d = new Date(s + 'T00:00:00Z');
+    if (isNaN(d.getTime())) return false;
+    return d.toISOString().slice(0, 10) === s;
+  }
+
+  /**
+   * 北京时间（UTC+8）的今天。
+   *
+   * ★ 写死 +8 小时，与服务端 worker/lib/validate.cjs 的 todayCst 同一口径
+   *   （账本、图鉴页、服务端全部按 Asia/Shanghai 分天）。
+   * @param {number} [nowMs] 现在（毫秒）；不给就用 Date.now()
+   * @returns {string} YYYY-MM-DD
+   */
+  function todayCst(nowMs) {
+    const ms = (typeof nowMs === 'number' && Number.isFinite(nowMs)) ? nowMs : Date.now();
+    return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+
+  /**
+   * 把要交上去的那些天**过一遍服务端也会过的那几关**。
+   *
+   * 服务端 worker/lib/validate.cjs 是**整份拒收**的：
+   *   - 日期不是真日期（2026-02-30）⇒ 拒；
+   *   - 日期在未来（按 UTC+8 的今天判）⇒ 拒；
+   *   - 一次超过 30 天 ⇒ 拒。
+   * ⇒ 客户端先剔掉这些天（并说明剔了哪些），不然整份报告交不上。
+   *
+   * @param {Object<string, number>} days {日期: 量}
+   * @returns {{days: Object<string, number>, dropped: Array<{day: string, why: string}>}}
+   */
+  function filterReportDays(days) {
+    const MAX_DAYS = 30;                    // 与服务端 MAX_REPORT_DAYS 对齐
+    const today = todayCst();
+    const raw = days || {};
+    const ok = {};
+    const dropped = [];
+    Object.keys(raw).sort().forEach(day => {
+      if (!isRealDate(day)) {
+        dropped.push({ day: day, why: '不是真实存在的日期' });
+      } else if (day > today) {
+        dropped.push({ day: day, why: '日期在未来' });
+      } else {
+        ok[day] = raw[day];
+      }
+    });
+    const kept = Object.keys(ok).sort().slice(-MAX_DAYS);
+    if (kept.length < Object.keys(ok).length) {
+      const keep = new Set(kept);
+      Object.keys(ok).forEach(day => {
+        if (!keep.has(day)) dropped.push({ day: day, why: '一次最多带 ' + MAX_DAYS + ' 天' });
+      });
+    }
+    const out = {};
+    kept.forEach(day => { out[day] = ok[day]; });
+    dropped.sort((a, b) => (a.day < b.day ? -1 : (a.day > b.day ? 1 : 0)));
+    return { days: out, dropped: dropped };
+  }
+
+  /* ---------- 待发队列 ---------- */
+
+  /**
+   * 本机存储现在能不能用 —— 读抛异常就是不能用（隐私模式 / 无痕 / 企业策略）。
+   *
+   * ★ 存不住的时候**必须说出来**（见 flushPending）：否则她以为
+   *   「已存着，下次打开自动补发」，其实那份报告已经没了。
+   */
+  let STORAGE_OK = true;
+
   /** 读待发队列（坏数据当空队列）。 */
   function pendingQueue() {
+    let raw = null;
     try {
-      const raw = window.localStorage.getItem(PENDING_KEY);
-      if (!raw) return [];
+      raw = window.localStorage.getItem(PENDING_KEY);
+    } catch (e) {
+      STORAGE_OK = false;      // ★ 读不了 ⇒ 队列不可信（不许假装它是真的空队列）
+      return [];
+    }
+    STORAGE_OK = true;
+    if (!raw) return [];
+    try {
       const arr = JSON.parse(raw);
       return Array.isArray(arr) ? arr : [];
-    } catch (e) { return []; }
+    } catch (e) { return []; }   // 坏数据当空队列（**不是**存储不可用）
   }
   /** 写待发队列（只留最近 50 条）。 */
   function savePending(list) {
@@ -311,7 +399,8 @@
       // ★ 超限时**静默丢掉最老的那条** —— 这是规格里定的取舍，不改行为。
       //   丢的是最老的报告（最可能已经过期），保的是最近的 50 条。
       window.localStorage.setItem(PENDING_KEY, JSON.stringify((list || []).slice(-50)));
-    } catch (e) { /* 存不住就算了 —— 顶多这次没交上 */ }
+      return true;
+    } catch (e) { /* 存不住就算了 —— 顶多这次没交上 */ return false; }
   }
   /**
    * 把一份报告排进待发队列。
@@ -335,6 +424,11 @@
   /**
    * 把一份报告 POST 到免登录通道。
    * 成功返回服务端的回包；失败**抛异常**（调用方负责提示与排队）。
+   *
+   * ★ 失败要分「永久」与「暂时」：
+   *   - 4xx（429 除外）⇒ 服务端说这份报告**本身**有问题 ⇒ 再试一万次也一样；
+   *   - 网络抽风 / 5xx / 429 ⇒ 重试有用。
+   *   分不出来的话，调用方只能把每一条都当成「下次还能成」⇒ 一条毒丸能堵死整条队列。
    */
   async function postIngest(report) {
     if (!ingestAvailable()) {
@@ -343,6 +437,7 @@
     const ctrl = new AbortController();
     const timer = setTimeout(function () { ctrl.abort(); }, INGEST_TIMEOUT_MS);
     let resp = null;
+    let text = '';
     try {
       resp = await fetch(state.ingest.url, {
         method: 'POST',
@@ -350,14 +445,20 @@
         body: JSON.stringify(report),
         signal: ctrl.signal,
       });
+      // ★ 读 body 也要在超时窗口里 —— fetch 收到**响应头**就 resolve 了，
+      //   之后 resp.text() 读 body 没有任何超时保护 ⇒ body 迟迟不来时
+      //   postIngest 永不 settle ⇒ 按钮被永久卡住（INGESTING 清不掉）。
+      text = await resp.text();
     } finally {
       clearTimeout(timer);
     }
-    const text = await resp.text();
     let data = null;
     try { data = JSON.parse(text); } catch (e) { data = null; }
     if (!resp.ok || !data || data.ok !== true) {
-      throw new Error((data && data.error) ? data.error : ('HTTP ' + resp.status));
+      const err = new Error((data && data.error) ? data.error : ('HTTP ' + resp.status));
+      err.status = resp.status;
+      err.permanent = (resp.status >= 400 && resp.status < 500 && resp.status !== 429);
+      throw err;
     }
     return data;
   }
@@ -394,24 +495,45 @@
     render();
   }
 
+  /**
+   * 补发结果怎么说（各页的提示机制不同 ⇒ 这句话三页一样，喊话的地方不一样）。
+   * @param {number} sent 补发成功几条
+   * @param {number} dropped 有几条被服务端拒收、丢弃了
+   * @returns {string}
+   */
+  function flushMsg(sent, dropped) {
+    const parts = [];
+    if (sent > 0) parts.push('补发了 ' + sent + ' 条');
+    if (dropped > 0) parts.push('有 ' + dropped + ' 条服务端拒收，已丢弃');
+    return parts.join('，');
+  }
+
   /** 把上次没交上去的补发掉（页面打开时调一次）。 */
   async function flushPending() {
     if (!ingestAvailable()) return;      // 通道没开 ⇒ 没有可补的（也别把它越攒越多）
     let sent = 0;
+    let dropped = 0;
     let report = shiftPending();
     while (report) {
       try {
         await postIngest(report);
         sent++;
       } catch (e) {
-        // 还是交不上去 ⇒ **放回队首**（不是队尾！）—— 队列是「最老在前」的，
-        // 放回队尾会把它排到最后，越攒越晚才交上去。
-        enqueueReport(report, true);
-        break;
+        if (e && e.permanent) {
+          // ★ 服务端说这份报告**本身**有问题（4xx）⇒ 再试一万次也一样 ⇒
+          //   丢掉这一条、**继续发下一条**（不许 break ——
+          //   否则排在它后面的、本来能交上去的报告会被这一条永久堵死）。
+          dropped++;
+        } else {
+          // 暂时性失败（网络抽风 / 5xx / 429）⇒ **放回队首**（不是队尾！）——
+          // 队列是「最老在前」的，放回队尾会把它排到最后，越攒越晚才交上去。
+          enqueueReport(report, true);
+          break;
+        }
       }
       report = shiftPending();
     }
-    if (sent) setResult('补发了 ' + sent + ' 条');
+    if (sent || dropped) setResult(flushMsg(sent, dropped));
   }
 
   /**
@@ -475,6 +597,8 @@
     PENDING_KEY, INGEST_TIMEOUT_MS,
     pendingQueue, savePending, enqueueReport, shiftPending,
     postIngest, ingestAvailable, flushPending, doSubmit,
+    /* 日期与天数的把关 —— 探针要能真跑（也要跟服务端对拍） */
+    isRealDate, todayCst, filterReportDays, flushMsg, reportDays,
     isIngesting: function () { return INGESTING; },
     loadRegistry,
     ui, state,
@@ -589,15 +713,18 @@
    */
   function reportDays() {
     const clamped = clampDays(state.days, state.cap);
+    // ★ 服务端会**整份拒收**带「未来的日期 / 假日期 / 超过 30 天」的报告 ⇒
+    //   在客户端先剔掉（剔了哪些要在页面上说明），不然整份报告交不上。
+    const filtered = filterReportDays(clamped.days);
     const days = {};
-    Object.keys(clamped.days).sort().reverse().forEach(d => {
-      if (clamped.days[d] > 0) days[d] = clamped.days[d];
+    Object.keys(filtered.days).sort().reverse().forEach(d => {
+      if (filtered.days[d] > 0) days[d] = filtered.days[d];
     });
     if (state.draft && !(days[state.draft.day] > 0)) {
       const capped = clampDays({ [state.draft.day]: state.draft.value }, state.cap);
       if (capped.days[state.draft.day] > 0) days[state.draft.day] = capped.days[state.draft.day];
     }
-    return { days: days, clamped: clamped.clamped };
+    return { days: days, clamped: clamped.clamped, dropped: filtered.dropped };
   }
 
   /** 正在编辑的那天的标题：今天是「今天」，别的天是「11-21（周四）」。 */
@@ -651,7 +778,7 @@
     $('#perNote').textContent = state.per + ' 个 = 1 个额度（按天算，零头不计）';
     $('#awardNote').textContent = '攒满 ' + state.perAward + ' 个额度掉 1 只宝可梦（当天最多 1 只）';
 
-    const { clamped } = reportDays();
+    const { clamped, dropped } = reportDays();
     const note = $('#clampNote');
     if (!clamped.length) {
       note.hidden = true;
@@ -662,6 +789,17 @@
         shortLabel(c.day) + ' 那天记了 ' + c.raw + ' 个，超过单日上限 ' + state.cap +
         ' 个 —— 提交时按 ' + c.capped + ' 个报（服务端会把超上限的报告整份丢掉）。'
       ).join(' ');
+    }
+
+    // ★ 被剔掉的天（未来的日期 / 假日期 / 一次超过 30 天）—— **必须说明，不许静默丢**
+    const drop = $('#droppedNote');
+    if (!dropped.length) {
+      drop.hidden = true;
+      drop.textContent = '';
+    } else {
+      drop.hidden = false;
+      drop.textContent = '⚠️ ' + dropped.map(d => d.day + '（' + d.why + '）').join('、') +
+        ' 没有算进这份报告 —— 服务端会把带这些日子的报告整份拒收。';
     }
 
     // 源被停用 ⇒ 说清楚（服务端不收这一类上报，页面不能让她白交）

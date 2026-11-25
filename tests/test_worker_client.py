@@ -327,6 +327,7 @@ function sandbox(decls, fns, exposed) {
 
 const PENDING_KEY = constStr('PENDING_KEY', 'pendingIngest');
 const QUEUE_FNS = ['pendingQueue', 'savePending', 'enqueueReport', 'shiftPending'].map(extractFunction);
+const DATE_FNS = ['isRealDate', 'todayCst', 'filterReportDays'].map(extractFunction);
 const REPORT = { v: 1, source: 'pom', days: { '2026-11-25': 50 } };
 
 function queueApi(storage) {
@@ -335,6 +336,26 @@ function queueApi(storage) {
     QUEUE_FNS,
     ['pendingQueue', 'savePending', 'enqueueReport', 'shiftPending']
   )({ window: { localStorage: storage }, PENDING_KEY: PENDING_KEY });
+}
+
+/** flushPending 的沙箱（补发用）。 */
+function makeFlushApi(storage, deps) {
+  return sandbox(
+    [
+      'var window = deps.window;', 'var PENDING_KEY = deps.PENDING_KEY;',
+      'var STORAGE_OK = true;',
+      'var ingestAvailable = deps.ingestAvailable;', 'var postIngest = deps.postIngest;',
+      'var setResult = deps.setResult;',
+    ].join('\n'),
+    QUEUE_FNS.concat([extractFunction('flushMsg'), extractFunction('flushPending')]),
+    ['flushPending']
+  )({
+    window: { localStorage: storage },
+    PENDING_KEY: PENDING_KEY,
+    ingestAvailable: deps.ingestAvailable,
+    postIngest: deps.postIngest,
+    setResult: deps.setResult,
+  });
 }
 
 function syncApi(deps) {
@@ -645,6 +666,93 @@ async function main() {
     flushCalls: flushCalls,
     ingestUrl: (loadApi.getIngest() || {}).url || null,
     fetchCalls: fetchCalls.length,
+  };
+
+  /* ---- 16. ★ 客户端提前拦：未来的日期 / 假日期 / 超过 30 天 ---- */
+  const filterApi = sandbox(
+    [],
+    DATE_FNS,
+    ['filterReportDays', 'isRealDate', 'todayCst']
+  )({});
+  const many = {};
+  for (let i = 0; i < 35; i += 1) {
+    const d = new Date(Date.UTC(2026, 8, 27 + i));   // 2026-09-27 起 35 天（都是真日子）
+    many[d.toISOString().slice(0, 10)] = 10;
+  }
+  const filtered = filterApi.filterReportDays(Object.assign({}, many, {
+    '2026-02-30': 10,      // 假日期（2 月没有 30 号）
+    '2099-01-01': 10,      // 未来的日期
+  }));
+  obs.filter = {
+    kept: Object.keys(filtered.days).sort(),
+    dropped: filtered.dropped.map(d => d.day).sort(),
+    keptCount: Object.keys(filtered.days).length,
+  };
+
+  /* ---- 17. ★ 要上报的天里，未来的 / 假的日子要剔掉 ---- */
+  const syncApi2 = sandbox(
+    ['var S = deps.S;', 'var MAX_SYNC_DAYS = deps.MAX_SYNC_DAYS;'].join('\n'),
+    DATE_FNS.concat([extractFunction('syncDaysRaw'), extractFunction('syncDays')]),
+    ['syncDays']
+  )({
+    S: () => ({
+      days: {
+        '2026-11-25': { minutes: 50, poms: 2 },
+        '2099-01-01': { minutes: 30, poms: 1 },   // 未来
+        '2026-02-30': { minutes: 30, poms: 1 },   // 假日期
+      },
+    }),
+    MAX_SYNC_DAYS: 30,
+  });
+  obs.syncFilter = { days: syncApi2.syncDays() };
+
+  /* ---- 18. ★ 毒丸报告（服务端 400 拒收）不许堵住后面的报告 ---- */
+  const stPoison = fakeStorage({});
+  stPoison.setItem(PENDING_KEY, JSON.stringify([
+    { v: 1, source: 'pom', days: { '2099-01-01': 30 } },   // 服务端永远拒收
+    { v: 1, source: 'pom', days: { '2026-11-20': 50 } },   // 这条是好的
+  ]));
+  const poisonPosts = [];
+  const poisonResults = [];
+  const poisonApi = makeFlushApi(stPoison, {
+    ingestAvailable: () => true,
+    postIngest: (r) => {
+      poisonPosts.push(r);
+      const err = new Error('日期在未来：2099-01-01');
+      err.status = 400;
+      err.permanent = true;                       // ★ 4xx ⇒ 永久失败
+      return Promise.reject(err);
+    },
+    setResult: (m) => poisonResults.push(m),
+  });
+  await poisonApi.flushPending();
+  obs.poison = {
+    posts: poisonPosts.length,
+    posted: poisonPosts,
+    queue: JSON.parse(stPoison._data[PENDING_KEY] || '[]'),
+    results: poisonResults,
+  };
+
+  /* ---- 19. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  const stTemp = fakeStorage({});
+  stTemp.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
+  const tempPosts = [];
+  const tempResults = [];
+  const tempApi = makeFlushApi(stTemp, {
+    ingestAvailable: () => true,
+    postIngest: (r) => {
+      tempPosts.push(r);
+      const err = new Error('服务端满了');
+      err.status = 503;                           // ★ 5xx ⇒ 暂时失败
+      return Promise.reject(err);
+    },
+    setResult: (m) => tempResults.push(m),
+  });
+  await tempApi.flushPending();
+  obs.tempFail = {
+    posts: tempPosts.length,
+    queue: JSON.parse(stTemp._data[PENDING_KEY] || '[]'),
+    results: tempResults,
   };
 
   process.stdout.write(JSON.stringify(obs));
@@ -965,6 +1073,72 @@ async function main() {
     enabled: reg ? reg.enabled : null,
   };
 
+  /* ---- 20. ★ 未来的日期 / 假日期要剔掉（服务端是**整份拒收**） ---- */
+  reset();
+  const many = {};
+  for (let i = 0; i < 35; i += 1) {
+    const d = new Date(Date.UTC(2026, 8, 27 + i));   // 2026-09-27 起 35 天（都是真日子）
+    many[d.toISOString().slice(0, 10)] = 100;
+  }
+  const filtered = api.filterReportDays(Object.assign({}, many, {
+    '2026-02-30': 100,     // 假日期（2 月没有 30 号）
+    '2099-01-01': 100,     // 未来的日期
+  }));
+  obs.filter = {
+    kept: Object.keys(filtered.days).sort(),
+    dropped: filtered.dropped.map(d => d.day).sort(),
+    keptCount: Object.keys(filtered.days).length,
+  };
+
+  /* ---- 21. ★ 真的交上去的那份报告里不许有未来的 / 假的日子 ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150, '2099-01-01': 150, '2026-02-30': 150 };
+  api.state.ingest = INGEST;
+  const postsFuture = [];
+  fetchImpl = function (url, opts) {
+    postsFuture.push(JSON.parse(opts.body));
+    return okResponse({ ok: true });
+  };
+  await api.doSubmit();
+  obs.futureDays = { report: postsFuture[0] || null };
+
+  /* ---- 22. ★ 毒丸报告（服务端 400 拒收）不许堵住后面的报告 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([
+    { v: 1, source: 'words', days: { '2099-01-01': 30 } },   // 服务端永远拒收
+    { v: 1, source: 'words', days: { '2026-11-20': 50 } },   // 这条是好的
+  ]));
+  fetchImpl = function () {
+    return Promise.resolve({
+      ok: false, status: 400,
+      text: function () { return Promise.resolve(JSON.stringify({ ok: false, error: '日期在未来：2099-01-01' })); },
+    });
+  };
+  await api.flushPending();
+  obs.poison = {
+    postCalls: fetchCalls.length,
+    queue: api.pendingQueue(),
+    hints: hints.slice(),
+  };
+
+  /* ---- 23. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
+  fetchImpl = function () {
+    return Promise.resolve({
+      ok: false, status: 503,
+      text: function () { return Promise.resolve(JSON.stringify({ ok: false, error: '服务端满了' })); },
+    });
+  };
+  await api.flushPending();
+  obs.tempFail = {
+    postCalls: fetchCalls.length,
+    queue: api.pendingQueue(),
+    hints: hints.slice(),
+  };
+
   process.stdout.write(JSON.stringify(obs));
 }
 
@@ -1079,6 +1253,61 @@ class PomodoroIngestBehaviorTest(unittest.TestCase):
         flush = self.obs.get("flushOff") or {}
         self.assertEqual(flush.get("postCalls"), 0, "通道没开时不该发任何请求")
         self.assertEqual(flush.get("queue"), [{"id": "X"}], "通道没开时队列要原封不动")
+
+    # ---------------- 毒丸报告（永久失败不许堵队列） ----------------
+
+    def test_a_permanently_rejected_report_does_not_block_the_queue(self):
+        """★ 服务端**永久**拒收的那条（4xx）⇒ 丢掉它、**继续发下一条**。
+
+        为什么：以前失败就 break ⇒ 一条永远交不上的报告能把整条队列堵死，
+        排在它后面的、本来能交上去的报告也永远发不出去，而且**没有任何提示**。
+        """
+        poison = self.obs.get("poison") or {}
+        self.assertEqual(
+            poison.get("posts"), 2,
+            "毒丸那条被拒之后，**后面那条也要发**（不能 break 停手）",
+        )
+        self.assertEqual(
+            poison.get("queue"), [],
+            "被服务端永久拒收的那条要丢掉（再试一万次也一样）",
+        )
+        self.assertTrue(
+            any("已丢弃" in t for t in poison.get("results") or []),
+            "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("results"),),
+        )
+
+    def test_a_temporarily_failed_report_keeps_the_queue(self):
+        """★ 暂时性失败（5xx / 网络抽风）⇒ 放回队首、**停手**，后面的先不发。"""
+        temp = self.obs.get("tempFail") or {}
+        self.assertEqual(temp.get("posts"), 1, "暂时失败时要停手（后面的留着下次再发）")
+        self.assertEqual(
+            temp.get("queue"),
+            [{"id": "X"}, {"id": "Y"}],
+            "失败的那条要放回**队首**（后面的那条不能丢）",
+        )
+        self.assertEqual(temp.get("results"), [], "一条都没发成功时不该说「补发了 N 条」")
+
+    # ---------------- 客户端提前拦 ----------------
+
+    def test_the_future_and_fake_days_are_dropped_before_sending(self):
+        """★ 未来的日期 / 假日期要在客户端就剔掉 —— 服务端是**整份拒收**。"""
+        f = self.obs.get("filter") or {}
+        self.assertNotIn("2099-01-01", f.get("kept") or [], "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", f.get("kept") or [], "假日期（2026-02-30）不许进报告")
+        self.assertIn("2099-01-01", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+        self.assertIn("2026-02-30", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+
+    def test_only_the_newest_thirty_days_are_sent(self):
+        """★ 一次最多带 30 天（与服务端对齐）—— 超了只带最近 30 天。"""
+        f = self.obs.get("filter") or {}
+        self.assertEqual(f.get("keptCount"), 30, "超过 30 天时只带最近 30 天")
+
+    def test_the_days_to_report_exclude_future_and_fake_ones(self):
+        """★ 这一页真正要交上去的天数里，不许有未来的 / 假的日子。"""
+        days = (self.obs.get("syncFilter") or {}).get("days") or {}
+        self.assertIn("2026-11-25", days, "正常那天要在报告里")
+        self.assertNotIn("2099-01-01", days, "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", days, "假日期不许进报告")
 
     # ---------------- 投递本身 ----------------
 
@@ -1213,6 +1442,18 @@ class PomodoroIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSync 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(buildIssueUrl()", body, "老办法要真的打开 GitHub 页面")
+
+    def test_the_post_marks_permanent_failures(self):
+        """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
+
+        （分不出来的话，调用方只能把每一条都当成「下次还能成」
+        ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
+        """
+        body = _function_body(self.js, "async function postIngest(")
+        self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
+        self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
+        self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
+
 
     def test_the_queue_keeps_the_newest_50(self):
         """队列上限：只留最近 50 条（slice(-50)），不是最老 50 条。"""
@@ -1382,6 +1623,72 @@ class WordsIngestBehaviorTest(unittest.TestCase):
             any("补发了 2 条" in t for t in flush.get("hints") or []),
             "补发完要告诉她补了几条（现在的提示：%r）" % (flush.get("hints"),),
         )
+
+    # ---------------- 毒丸报告（永久失败不许堵队列） ----------------
+
+    def test_a_permanently_rejected_report_does_not_block_the_queue(self):
+        """★ 服务端**永久**拒收的那条（4xx）⇒ 丢掉它、**继续发下一条**。
+
+        为什么：以前失败就 break ⇒ 一条永远交不上的报告能把整条队列堵死，
+        排在它后面的、本来能交上去的报告也永远发不出去，而且**没有任何提示**。
+        """
+        poison = self.obs.get("poison") or {}
+        self.assertEqual(
+            poison.get("postCalls"), 2,
+            "毒丸那条被拒之后，**后面那条也要发**（不能 break 停手）",
+        )
+        self.assertEqual(
+            poison.get("queue"), [],
+            "被服务端永久拒收的那条要丢掉（再试一万次也一样）",
+        )
+        self.assertTrue(
+            any("已丢弃" in t for t in poison.get("hints") or []),
+            "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("hints"),),
+        )
+
+    def test_a_temporarily_failed_report_keeps_the_queue(self):
+        """★ 暂时性失败（5xx / 网络抽风）⇒ 放回队首、**停手**，后面的先不发。"""
+        temp = self.obs.get("tempFail") or {}
+        self.assertEqual(temp.get("postCalls"), 1, "暂时失败时要停手（后面的留着下次再发）")
+        self.assertEqual(
+            temp.get("queue"),
+            [{"id": "X"}, {"id": "Y"}],
+            "失败的那条要放回**队首**（后面的那条不能丢）",
+        )
+        self.assertEqual(temp.get("hints"), [], "一条都没发成功时不该说「补发了 N 条」")
+
+    # ---------------- 客户端提前拦 ----------------
+
+    def test_the_future_and_fake_days_are_dropped_before_sending(self):
+        """★ 未来的日期 / 假日期要在客户端就剔掉 —— 服务端是**整份拒收**。"""
+        f = self.obs.get("filter") or {}
+        self.assertNotIn("2099-01-01", f.get("kept") or [], "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", f.get("kept") or [], "假日期（2026-02-30）不许进报告")
+        self.assertIn("2099-01-01", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+        self.assertIn("2026-02-30", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+
+    def test_only_the_newest_thirty_days_are_sent(self):
+        """★ 一次最多带 30 天（与服务端对齐）—— 超了只带**最近** 30 天。"""
+        f = self.obs.get("filter") or {}
+        self.assertEqual(f.get("keptCount"), 30, "超过 30 天时只带最近 30 天")
+
+    def test_the_report_carries_no_future_or_fake_day(self):
+        """★ 页面重算之后要交上去的那份里，不许有未来的 / 假的日子。"""
+        rec = self.obs.get("recomputed") or {}
+        days = rec.get("reportDays") or {}
+        self.assertIn("2026-11-25", days, "正常那天要在报告里")
+        self.assertNotIn("2099-01-01", days, "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", days, "假日期不许进报告")
+        self.assertIn("2099-01-01", rec.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+        self.assertIn("2026-02-30", rec.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+
+    def test_the_report_carries_no_future_or_fake_day(self):
+        """★ 真的交上去的那份报告里，不许有未来的 / 假的日子。"""
+        report = (self.obs.get("futureDays") or {}).get("report") or {}
+        days = report.get("days") or {}
+        self.assertIn("2026-11-25", days, "正常那天要在报告里")
+        self.assertNotIn("2099-01-01", days, "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", days, "假日期不许进报告")
 
     # ---------------- 投递本身 ----------------
 
@@ -1610,6 +1917,18 @@ class WordsIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(buildIssueUrl(", body, "老办法要真的打开 GitHub 页面")
+
+    def test_the_post_marks_permanent_failures(self):
+        """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
+
+        （分不出来的话，调用方只能把每一条都当成「下次还能成」
+        ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
+        """
+        body = _function_body(self.js, "async function postIngest(")
+        self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
+        self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
+        self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
+
 
     def test_the_page_flushes_the_queue_after_loading_the_registry(self):
         """页面打开时要调 flushPending（配置到了就补发）。"""
@@ -2000,6 +2319,7 @@ function reset(over) {
   api.state.days = {};
   api.state.reportDays = {};
   api.state.clamped = [];
+  api.state.dropped = [];
   api.state.ingest = null;
   api.state.lastSubmit = null;
   api.state.per = 15;
@@ -2250,6 +2570,70 @@ async function main() {
   const hintOff = api.statusHint();
   obs.hints = { on: hintOn, off: hintOff, same: hintOn === hintOff };
 
+  /* ---- 21. ★ 未来的日期 / 假日期要剔掉（服务端是**整份拒收**） ---- */
+  reset();
+  const many = {};
+  for (let i = 0; i < 35; i += 1) {
+    const d = new Date(Date.UTC(2026, 8, 27 + i));   // 2026-09-27 起 35 天（都是真日子）
+    many[d.toISOString().slice(0, 10)] = 50;
+  }
+  const filtered = api.filterReportDays(Object.assign({}, many, {
+    '2026-02-30': 50,       // 假日期（2 月没有 30 号）
+    '2099-01-01': 50,       // 未来的日期
+  }));
+  obs.filter = {
+    kept: Object.keys(filtered.days).sort(),
+    dropped: filtered.dropped.map(d => d.day).sort(),
+    keptCount: Object.keys(filtered.days).length,
+  };
+
+  /* ---- 22. ★ 页面真正要交上去的那份报告里不许有未来的 / 假的日子 ---- */
+  reset();
+  api.state.days = { '2026-11-25': 50, '2099-01-01': 30, '2026-02-30': 30 };
+  api.recompute();
+  obs.recomputed = {
+    reportDays: api.state.reportDays,
+    dropped: (api.state.dropped || []).map(d => d.day).sort(),
+    credits: api.state.credits,
+  };
+
+  /* ---- 23. ★ 毒丸报告（服务端 400 拒收）不许堵住后面的报告 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([
+    { v: 1, source: 'koreader', days: { '2099-01-01': 30 } },   // 服务端永远拒收
+    { v: 1, source: 'koreader', days: { '2026-11-20': 50 } },   // 这条是好的
+  ]));
+  fetchImpl = function () {
+    return Promise.resolve({
+      ok: false, status: 400,
+      text: function () { return Promise.resolve(JSON.stringify({ ok: false, error: '日期在未来：2099-01-01' })); },
+    });
+  };
+  await api.flushPending();
+  obs.poison = {
+    postCalls: fetchCalls.length,
+    queue: api.pendingQueue(),
+    hints: hints.slice(),
+  };
+
+  /* ---- 24. ★ 暂时性失败（5xx）⇒ 队列留着，后面的先不发 ---- */
+  reset();
+  api.state.ingest = INGEST;                 // 通道开着
+  storage.setItem(PENDING_KEY, JSON.stringify([{ id: 'X' }, { id: 'Y' }]));
+  fetchImpl = function () {
+    return Promise.resolve({
+      ok: false, status: 503,
+      text: function () { return Promise.resolve(JSON.stringify({ ok: false, error: '服务端满了' })); },
+    });
+  };
+  await api.flushPending();
+  obs.tempFail = {
+    postCalls: fetchCalls.length,
+    queue: api.pendingQueue(),
+    hints: hints.slice(),
+  };
+
   process.stdout.write(JSON.stringify(obs));
 }
 
@@ -2397,6 +2781,54 @@ class KoreaderIngestBehaviorTest(unittest.TestCase):
             any("补发了 2 条" in t for t in flush.get("hints") or []),
             "补发完要告诉她补了几条（现在的提示：%r）" % (flush.get("hints"),),
         )
+
+    # ---------------- 毒丸报告（永久失败不许堵队列） ----------------
+
+    def test_a_permanently_rejected_report_does_not_block_the_queue(self):
+        """★ 服务端**永久**拒收的那条（4xx）⇒ 丢掉它、**继续发下一条**。
+
+        为什么：以前失败就 break ⇒ 一条永远交不上的报告能把整条队列堵死，
+        排在它后面的、本来能交上去的报告也永远发不出去，而且**没有任何提示**。
+        """
+        poison = self.obs.get("poison") or {}
+        self.assertEqual(
+            poison.get("postCalls"), 2,
+            "毒丸那条被拒之后，**后面那条也要发**（不能 break 停手）",
+        )
+        self.assertEqual(
+            poison.get("queue"), [],
+            "被服务端永久拒收的那条要丢掉（再试一万次也一样）",
+        )
+        self.assertTrue(
+            any("已丢弃" in t for t in poison.get("hints") or []),
+            "要告诉她「有 N 条服务端拒收，已丢弃」（现在的提示：%r）" % (poison.get("hints"),),
+        )
+
+    def test_a_temporarily_failed_report_keeps_the_queue(self):
+        """★ 暂时性失败（5xx / 网络抽风）⇒ 放回队首、**停手**，后面的先不发。"""
+        temp = self.obs.get("tempFail") or {}
+        self.assertEqual(temp.get("postCalls"), 1, "暂时失败时要停手（后面的留着下次再发）")
+        self.assertEqual(
+            temp.get("queue"),
+            [{"id": "X"}, {"id": "Y"}],
+            "失败的那条要放回**队首**（后面的那条不能丢）",
+        )
+        self.assertEqual(temp.get("hints"), [], "一条都没发成功时不该说「补发了 N 条」")
+
+    # ---------------- 客户端提前拦 ----------------
+
+    def test_the_future_and_fake_days_are_dropped_before_sending(self):
+        """★ 未来的日期 / 假日期要在客户端就剔掉 —— 服务端是**整份拒收**。"""
+        f = self.obs.get("filter") or {}
+        self.assertNotIn("2099-01-01", f.get("kept") or [], "未来的日期不许进报告")
+        self.assertNotIn("2026-02-30", f.get("kept") or [], "假日期（2026-02-30）不许进报告")
+        self.assertIn("2099-01-01", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+        self.assertIn("2026-02-30", f.get("dropped") or [], "剔掉的天要记下来（页面上要说明）")
+
+    def test_only_the_newest_thirty_days_are_sent(self):
+        """★ 一次最多带 30 天（与服务端对齐）—— 超了只带**最近** 30 天。"""
+        f = self.obs.get("filter") or {}
+        self.assertEqual(f.get("keptCount"), 30, "超过 30 天时只带最近 30 天")
 
     # ---------------- 投递本身 ----------------
 
@@ -2633,6 +3065,18 @@ class KoreaderIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(", body, "老办法要真的打开 GitHub 页面")
+
+    def test_the_post_marks_permanent_failures(self):
+        """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
+
+        （分不出来的话，调用方只能把每一条都当成「下次还能成」
+        ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
+        """
+        body = _function_body(self.js, "async function postIngest(")
+        self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
+        self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
+        self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
+
 
     def test_the_page_flushes_the_queue_after_loading_the_registry(self):
         """页面打开时要调 flushPending（配置到了就补发）。"""
