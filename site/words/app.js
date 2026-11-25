@@ -572,6 +572,13 @@
       setResult('还没有记下任何词 —— 先在上面填个数。');
       return;
     }
+    // ★ 通道配置**还没读到** ⇒ **什么都不做**（不开窗口、不发 POST）。
+    //   「还没读到配置」与「通道被关了」是两件事：后者才走老办法。
+    //   （以前这两种情况被当成同一件事 ⇒ 她明明能直投，却拿到了 GitHub 新建 issue 页。）
+    if (!state.registryLoaded) {
+      setResult('还在读通道配置，稍等一下再点');
+      return;
+    }
     // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
     //   直接开 GitHub 的新建 issue 页。少了这个分支，部署窗口里她点提交只会报错。
     if (!ingestAvailable()) {
@@ -899,7 +906,9 @@
     // 老办法的链接（**永远留着** —— workers.dev 在国内可能抽风，这是兜底）
     const old = $('#oldWayBtn');
     if (old) old.href = has ? buildIssueUrl(days) : '#';
-    if (has && state.enabled) {
+    // ★ 通道配置还没读到 ⇒ 按钮也置灰 —— 她一眼就知道「还没准备好」，
+    //   不会以为功能没上线，也不会点出一个「已打开提交页」的老办法降级。
+    if (has && state.enabled && state.registryLoaded) {
       btn.classList.remove('off');
       btn.removeAttribute('aria-disabled');
     } else if (!state.enabled) {
@@ -921,9 +930,13 @@
           '交上去服务端也不会收这一类上报。'
         : (!has
           ? '还没有记下任何词 —— 先在上面填个数。'
-          : (ingestAvailable()
-            ? '点「交上去」直接交（不用登录 GitHub）。'
-            : '点「交上去」会打开 GitHub 的新建 issue 页，在那个页面上点一下 <b>Submit</b> 才算交上去。'));
+          // ★ 通道配置还没读到 ⇒ **不许**说「会打开 GitHub 的新建 issue 页」
+          //   （那是「通道被关了」的话术；注册表还没到的时候说它属于误导）。
+          : (!state.registryLoaded
+            ? '正在读通道配置……稍等一下再点「交上去」。'
+            : (ingestAvailable()
+              ? '点「交上去」直接交（不用登录 GitHub）。'
+              : '点「交上去」会打开 GitHub 的新建 issue 页，在那个页面上点一下 <b>Submit</b> 才算交上去。')));
       // ★ 内容没变就别重写 DOM —— 重画时把元素换掉，鼠标按下到松开那一下会点空。
       if (hint.innerHTML !== hintHtml) hint.innerHTML = hintHtml;
     }
@@ -1120,9 +1133,11 @@
       state.cap = reg.cap;
       state.perAward = reg.perAward;
       state.enabled = reg.enabled;
-      render();
       // 注册表（真口径或兜底口径）**已经生效** ⇒ 这一行是「可以断言了」的信号。
+      // ★ 放在 render **之前**：按钮解禁、提示换成「通道开着 / 关着」的话，
+      //   都要靠这个标志 —— 放在之后的话，页面会一直停在「正在读通道配置」。
       state.registryLoaded = true;
+      render();
     });
   }
 

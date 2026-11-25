@@ -33,6 +33,15 @@ const INGEST_TIMEOUT_MS = 15000;
 /** 免登录通道的配置（从 sources.json 顶层读，见 loadList） */
 let INGEST = null;
 /**
+ * 通道配置**读到没有**（sources.json 回来了没有）。
+ *
+ * ★ 为什么要有它：「还没读到配置」与「通道被关了」是**两件事** ——
+ *   以前被当成同一件事 ⇒ 她明明能直投，却拿到 GitHub 新建 issue 页
+ *   （而 GitHub 恰是那条在国内经常抽风的路）。
+ *   ⇒ 按钮要**等**它；提示也要分开说。
+ */
+let REGISTRY_LOADED = false;
+/**
  * 投递进行中（连点两次「同步」时用它挡住第二次）。
  * workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
  * 两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
@@ -894,7 +903,9 @@ function renderSync() {
     }
   }
   const btn = $('#btnSync');
-  if (btn) btn.disabled = dayCount === 0;
+  // ★ 通道配置还没读到 ⇒ 按钮也置灰 —— 她一眼就知道「还没准备好」，
+  //   不会以为功能没上线，也不会点出一个「已打开提交页」的老办法降级。
+  if (btn) btn.disabled = (dayCount === 0 || !REGISTRY_LOADED);
   const sub = $('#syncSub');
   if (sub) sub.textContent = dayCount ? dayCount + ' 天' : '';
   const hint = $('#syncHint');
@@ -907,9 +918,13 @@ function renderSync() {
       // ★ 老办法的链接**照样留着**（workers.dev 在国内可能抽风，这是兜底）
       const oldWay = '<a id="syncOldWay" href="' + esc(buildIssueUrl()) +
         '" target="_blank" rel="noopener noreferrer">用 GitHub 提交（老办法）</a>';
-      hintHtml = ingestAvailable()
-        ? '点「同步到图鉴」直接交上去（不用登录 GitHub）。连不上？' + oldWay
-        : '点同步会打开 GitHub 的新建 issue 页面，<b style="opacity:.9">在那个页面上点一下 Submit</b> 才算交上去。也可以直接' + oldWay;
+      // ★ 通道配置还没读到 ⇒ **不许**说「会打开 GitHub 的新建 issue 页面」
+      //   （那是「通道被关了」的话术；注册表还没到的时候说它属于误导）。
+      hintHtml = !REGISTRY_LOADED
+        ? '正在读通道配置……稍等一下再点「同步到图鉴」。连不上？' + oldWay
+        : (ingestAvailable()
+          ? '点「同步到图鉴」直接交上去（不用登录 GitHub）。连不上？' + oldWay
+          : '点同步会打开 GitHub 的新建 issue 页面，<b style="opacity:.9">在那个页面上点一下 Submit</b> 才算交上去。也可以直接' + oldWay);
     }
     // ★ 内容没变就别重写 —— render() 每 200ms 调一次 renderSync()，
     //   每次重建这个 <a> 会把「按下鼠标」到「松开鼠标」之间那个元素换掉 ⇒ 点击会丢。
@@ -926,6 +941,13 @@ function doSync() {
   //   workers.dev 在国内慢，15 秒超时窗口里很容易再点一下 ⇒ 两个 POST 同时在飞；
   //   两个都失败的话，同一份报告会入队两次，白占 50 条上限、还把别的报告挤掉。
   if (INGESTING) { toast('正在交上去，稍等一下'); return; }
+  // ★ 通道配置**还没读到** ⇒ **什么都不做**（不开窗口、不发 POST）。
+  //   「还没读到配置」与「通道被关了」是两件事：后者才走老办法。
+  //   （以前这两种情况被当成同一件事 ⇒ 她明明能直投，却拿到了 GitHub 新建 issue 页。）
+  if (!REGISTRY_LOADED) {
+    setResult('还在读通道配置，稍等一下再点');
+    return;
+  }
   // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
   //   直接开 GitHub 的新建 issue 页。少了这个分支，部署窗口里她点同步只会报错。
   if (!ingestAvailable()) {
@@ -991,12 +1013,21 @@ function loadList() {
       if (per > 0) { UNIT_PER_CREDIT = per; renderSync(); }
       // 免登录通道的配置 —— **同一份 sources.json**，不再多发一个请求
       INGEST = (d && d.ingest && typeof d.ingest === 'object') ? d.ingest : null;
+      // ★ 注册表到了 ⇒ 按钮解禁、提示可以按通道状态说话了
+      REGISTRY_LOADED = true;
+      renderSync();
       // 配置到了 ⇒ 把上次没交上去的补发掉
       // ★ 这里必须挂 .catch —— flushPending 是异步的，漏了会在控制台留一条
       //   "Unhandled promise rejection"，页面看着像坏了（浏览器的 console 错误）。
       flushPending().catch(() => { /* 补发失败就下次再说 */ });
     })
-    .catch(() => { /* 用默认 25 */ });
+    .catch(() => {
+      // 拉不到注册表 ⇒ 不知道通道开没开 ⇒ 退回老办法（老办法不需要配置）
+      INGEST = null;
+      // ★ 但按钮**要能点**（走老办法）—— 不然她连兜底的路都没了
+      REGISTRY_LOADED = true;
+      renderSync();
+    });
 }
 
 /* ---------- 设置与界面 ---------- */

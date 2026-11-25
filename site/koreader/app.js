@@ -436,6 +436,11 @@
     if (!Object.keys(state.reportDays || {}).length) {
       return '还没读到时长 —— 重新扫一次带天数的链接，或在下面手动补一天。';
     }
+    // ★ 通道配置还没读到 ⇒ **不许**说「会打开 GitHub 的新建 issue 页」
+    //   （那是「通道被关了」的话术；注册表还没到的时候说它属于误导）。
+    if (!state.registryLoaded) {
+      return '正在读通道配置……稍等一下再点「交上去」。';
+    }
     return ingestAvailable()
       ? '点「交上去」直接交（不用登录 GitHub）。'
       : '点「交上去」会打开 GitHub 的新建 issue 页，在那个页面上点一下 Submit 才算交上去。';
@@ -506,6 +511,13 @@
     const days = state.reportDays || {};
     if (!Object.keys(days).length) {
       setResult('还没有读到时长 —— 先扫一次带天数的链接。');
+      return;
+    }
+    // ★ 通道配置**还没读到** ⇒ **什么都不做**（不开窗口、不发 POST）。
+    //   「还没读到配置」与「通道被关了」是两件事：后者才走老办法。
+    //   （以前这两种情况被当成同一件事 ⇒ 她明明能直投，却拿到了 GitHub 新建 issue 页。）
+    if (!state.registryLoaded) {
+      setResult('还在读通道配置，稍等一下再点');
       return;
     }
     // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
@@ -654,7 +666,9 @@
     const has = keys.length > 0;
     const submit = $('#submitBtn');
     if (submit) {
-      if (has) {
+      // ★ 通道配置还没读到 ⇒ 按钮也置灰 —— 她一眼就知道「还没准备好」，
+      //   不会以为功能没上线，也不会点出一个「已打开提交页」的老办法降级。
+      if (has && state.registryLoaded) {
         submit.removeAttribute('aria-disabled');
         submit.disabled = false;
       } else {
@@ -833,10 +847,12 @@
       state.per = reg.per;
       state.cap = reg.cap;
       recompute();
-      renderDays();
       // 注册表（真口径或兜底口径）**已经生效** ⇒ 这一行是「可以断言了」的信号。
-      // 放在 renderDays 之后：等到这个标志为 true 时，页面上的数字一定已经是新口径的了。
+      // ★ 放在 renderDays **之前**：按钮解禁、提示换成「通道开着 / 关着」的话，
+      //   都要靠这个标志 —— 放在之后的话，页面会一直停在「正在读通道配置」。
+      //   （数字仍然是新口径的：recompute() 已经在上面跑过了。）
       state.registryLoaded = true;
+      renderDays();
       // ★ 上次没交上去的补发掉（注册表到了 ⇒ 知道通道开没开）。
       //   这里必须挂 .catch —— flushPending 是异步的，漏了会在控制台留一条
       //   "Unhandled promise rejection"，页面看着像坏了。

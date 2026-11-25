@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import http.server
 import json
@@ -69,6 +70,13 @@ try:  # playwright 可能没装 —— 不能让整套测试挂掉
     HAVE_PLAYWRIGHT = True
 except Exception:  # pragma: no cover - 环境问题
     HAVE_PLAYWRIGHT = False
+
+try:  # 异步接口 —— 测「延迟响应」「连点」必须用它（同步版会串线程）
+    from playwright.async_api import async_playwright
+
+    HAVE_ASYNC_PLAYWRIGHT = True
+except Exception:  # pragma: no cover - 环境问题
+    HAVE_ASYNC_PLAYWRIGHT = False
 
 
 # --------------------------------------------------------------------------
@@ -364,6 +372,7 @@ function syncApi(deps) {
   return sandbox(
     [
       'var window = deps.window;', 'var PENDING_KEY = deps.PENDING_KEY;', 'var INGESTING = false;',
+      'var REGISTRY_LOADED = deps.REGISTRY_LOADED !== false;',
       'var syncDays = deps.syncDays;', 'var toast = deps.toast;',
       'var setResult = deps.setResult;',
       'var ingestAvailable = deps.ingestAvailable;', 'var S = deps.S;', 'var Store = deps.Store;',
@@ -375,6 +384,7 @@ function syncApi(deps) {
   )({
     window: win,
     PENDING_KEY: PENDING_KEY,
+    REGISTRY_LOADED: deps.REGISTRY_LOADED,
     syncDays: deps.syncDays,
     toast: deps.toast,
     setResult: deps.setResult || deps.toast,
@@ -735,6 +745,31 @@ async function main() {
     results: poisonResults,
   };
 
+  /* ---- 18. ★ 注册表还没到就点「同步」⇒ 什么都不做（不许降级成老办法） ---- */
+  const raceOpened = [];
+  const raceToasts = [];
+  let racePosts = 0;
+  const raceSync = syncApi({
+    REGISTRY_LOADED: false,               // ★ 注册表还没回来
+    window: { open: (url) => raceOpened.push(url) },
+    syncDays: () => ({ '2026-11-25': 50 }),
+    toast: (m) => raceToasts.push(m),
+    ingestAvailable: () => true,           // 通道其实是开着的（配置到了才知道）
+    S: () => ({}),
+    Store: { write: () => {} },
+    renderSync: () => {},
+    buildIssueUrl: () => 'https://github.com/lilia-shound/pokemon-dex/issues/new?title=x',
+    buildReport: () => REPORT,
+    postIngest: () => { racePosts += 1; return Promise.resolve({ ok: true }); },
+  });
+  raceSync.doSync();
+  await tick();
+  obs.registryRace = {
+    postCalls: racePosts,
+    opened: raceOpened.slice(),
+    toasts: raceToasts.slice(),
+  };
+
   /* ---- 19. ★ 存储写不进去时，别再谎称「已存着」 ---- */
   const stNoWrite = fakeStorage();
   stNoWrite.throwSet = true;
@@ -885,6 +920,7 @@ function reset(over) {
   api.state.draft = null;
   api.state.ingest = null;
   api.state.lastSubmit = null;
+  api.state.registryLoaded = true;      // 默认「注册表已经到了」（单独测竞态时再关掉）
   api.state.cap = 500;
   api.state.per = 100;
   api.state.enabled = true;
@@ -1161,6 +1197,19 @@ async function main() {
     hints: hints.slice(),
   };
 
+  /* ---- 22. ★ 注册表还没到就点「交上去」⇒ 什么都不做（不许降级成老办法） ---- */
+  reset();
+  api.state.days = { '2026-11-25': 150 };
+  api.state.ingest = INGEST;                 // 通道其实是开着的（配置到了才知道）
+  api.state.registryLoaded = false;           // ★ 注册表还没回来
+  fetchImpl = function () { throw new Error('配置没到时不该发请求'); };
+  await api.doSubmit();
+  obs.registryRace = {
+    postCalls: fetchCalls.length,
+    opened: opened.slice(),
+    hints: hints.slice(),
+  };
+
   /* ---- 23. ★ 存储写不进去时，别再谎称「已存着」 ---- */
   reset();
   api.state.days = { '2026-11-25': 150 };
@@ -1373,6 +1422,22 @@ class PomodoroIngestBehaviorTest(unittest.TestCase):
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
+    # ---------------- 注册表还没到就点提交 ----------------
+
+    def test_clicking_before_the_registry_arrives_does_nothing(self):
+        """★ 注册表还没到就点「交上去」⇒ **什么都不做**。
+
+        （以前会被静默降级成「打开 GitHub 新建 issue 页」—— 而 GitHub 恰是
+        那条在国内经常抽风的路；提示还说「已打开提交页」⇒ 她会以为功能没上线。）
+        """
+        race = self.obs.get("registryRace") or {}
+        self.assertEqual(race.get("postCalls"), 0, "配置没读到时一个 POST 都不许发")
+        self.assertEqual(race.get("opened"), [], "配置没读到时不许打开 GitHub 新建 issue 页")
+        self.assertTrue(
+            any("还在读通道配置" in t for t in race.get("toasts") or []),
+            "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (race.get("toasts"),),
+        )
+
     def test_a_temporarily_failed_report_keeps_the_queue(self):
         """★ 暂时性失败（5xx / 网络抽风）⇒ 放回队首、**停手**，后面的先不发。"""
         temp = self.obs.get("tempFail") or {}
@@ -1539,6 +1604,13 @@ class PomodoroIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSync 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(buildIssueUrl()", body, "老办法要真的打开 GitHub 页面")
+
+
+    def test_the_button_waits_for_the_registry(self):
+        """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
+        body = _function_body(self.js, "function renderSync(")
+        self.assertIn("REGISTRY_LOADED", body,
+                      "按钮的禁用条件要看 REGISTRY_LOADED（注册表没到就置灰）")
 
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
@@ -1776,6 +1848,22 @@ class WordsIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("队列" in t for t in texts),
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
+        )
+
+    # ---------------- 注册表还没到就点提交 ----------------
+
+    def test_clicking_before_the_registry_arrives_does_nothing(self):
+        """★ 注册表还没到就点「交上去」⇒ **什么都不做**。
+
+        （以前会被静默降级成「打开 GitHub 新建 issue 页」—— 而 GitHub 恰是
+        那条在国内经常抽风的路；提示还说「已打开提交页」⇒ 她会以为功能没上线。）
+        """
+        race = self.obs.get("registryRace") or {}
+        self.assertEqual(race.get("postCalls"), 0, "配置没读到时一个 POST 都不许发")
+        self.assertEqual(race.get("opened"), [], "配置没读到时不许打开 GitHub 新建 issue 页")
+        self.assertTrue(
+            any("还在读通道配置" in t for t in race.get("hints") or []),
+            "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (race.get("hints"),),
         )
 
     def test_a_temporarily_failed_report_keeps_the_queue(self):
@@ -2049,6 +2137,13 @@ class WordsIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(buildIssueUrl(", body, "老办法要真的打开 GitHub 页面")
+
+
+    def test_the_button_waits_for_the_registry(self):
+        """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
+        body = _function_body(self.js, "function renderSubmit(")
+        self.assertIn("registryLoaded", body,
+                      "按钮的禁用条件要看 registryLoaded（注册表没到就置灰）")
 
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
@@ -2454,6 +2549,7 @@ function reset(over) {
   api.state.dropped = [];
   api.state.ingest = null;
   api.state.lastSubmit = null;
+  api.state.registryLoaded = true;      // 默认「注册表已经到了」（单独测竞态时再关掉）
   api.state.per = 15;
   api.state.cap = 1440;
   api.state.credits = 0;
@@ -2749,6 +2845,19 @@ async function main() {
     hints: hints.slice(),
   };
 
+  /* ---- 23. ★ 注册表还没到就点「交上去」⇒ 什么都不做（不许降级成老办法） ---- */
+  reset();
+  withDays(DAYS);
+  api.state.ingest = INGEST;                 // 通道其实是开着的（配置到了才知道）
+  api.state.registryLoaded = false;           // ★ 注册表还没回来
+  fetchImpl = function () { throw new Error('配置没到时不该发请求'); };
+  await api.doSubmit();
+  obs.registryRace = {
+    postCalls: fetchCalls.length,
+    opened: opened.slice(),
+    hints: hints.slice(),
+  };
+
   /* ---- 24. ★ 存储写不进去时，别再谎称「已存着」 ---- */
   reset();
   withDays(DAYS);
@@ -2992,6 +3101,22 @@ class KoreaderIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("队列" in t for t in texts),
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
+        )
+
+    # ---------------- 注册表还没到就点提交 ----------------
+
+    def test_clicking_before_the_registry_arrives_does_nothing(self):
+        """★ 注册表还没到就点「交上去」⇒ **什么都不做**。
+
+        （以前会被静默降级成「打开 GitHub 新建 issue 页」—— 而 GitHub 恰是
+        那条在国内经常抽风的路；提示还说「已打开提交页」⇒ 她会以为功能没上线。）
+        """
+        race = self.obs.get("registryRace") or {}
+        self.assertEqual(race.get("postCalls"), 0, "配置没读到时一个 POST 都不许发")
+        self.assertEqual(race.get("opened"), [], "配置没读到时不许打开 GitHub 新建 issue 页")
+        self.assertTrue(
+            any("还在读通道配置" in t for t in race.get("hints") or []),
+            "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (race.get("hints"),),
         )
 
     def test_a_temporarily_failed_report_keeps_the_queue(self):
@@ -3255,6 +3380,13 @@ class KoreaderIngestContractTest(unittest.TestCase):
         self.assertGreaterEqual(guard, 0, "doSubmit 里要有「通道没开」的分支")
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(", body, "老办法要真的打开 GitHub 页面")
+
+
+    def test_the_button_waits_for_the_registry(self):
+        """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
+        body = _function_body(self.js, "function renderDays(")
+        self.assertIn("registryLoaded", body,
+                      "按钮的禁用条件要看 registryLoaded（注册表没到就置灰）")
 
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
@@ -3638,3 +3770,107 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# 注册表竞态 —— **异步** Playwright
+#
+# ★ 为什么必须用异步版：
+#   同步版会把 route 回调和 click() 串在同一条线程上 ⇒
+#   「把 sources.json 延迟 3 秒」根本插不进点击前面 ⇒
+#   测出来的是「点的时候响应早就到了」⇒ 这条用例永远绿。
+# --------------------------------------------------------------------------
+
+class RegistryRaceBrowserTest(unittest.IsolatedAsyncioTestCase):
+    """注册表（sources.json）还没到就点「交上去」⇒ **不许**被静默降级成老办法。
+
+    为什么：以前「还没读到配置」与「通道被关了」被当成同一件事
+    ⇒ 她明明能直投，却拿到 GitHub 新建 issue 页（而 GitHub 恰是那条
+    在国内经常抽风的路），提示还说「已打开提交页」⇒ 她会以为功能没上线。
+    """
+
+    async def asyncSetUp(self):
+        if not HAVE_ASYNC_PLAYWRIGHT:
+            self.skipTest("没装 playwright 的异步接口，跳过注册表竞态的浏览器测试")
+        if not CHROME:
+            self.skipTest("找不到 chromium，跳过注册表竞态的浏览器测试")
+        self.httpd = _make_server(KO_SITE_DIR)
+        self.origin = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self._pw = await async_playwright().start()
+        self.browser = await self._pw.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+
+    async def asyncTearDown(self):
+        try:
+            await self.browser.close()
+        finally:
+            await self._pw.stop()
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+    async def _race(self, page_path, api_name, source_id, ready_selector, query="", fill=None):
+        """把注册表**延迟 3 秒**，然后在它到达之前点「交上去」。"""
+        reg = {
+            "version": 1,
+            "perAward": 2,
+            "sources": {source_id: {"per": 15, "maxPerDay": 1440, "enabled": True}},
+            "ingest": {
+                "url": self.origin + "/ingest-mock",
+                "token": "tok-mock",
+                "enabled": True,
+            },
+        }
+        posts = []
+
+        async def handle_registry(route):
+            await asyncio.sleep(3)          # ★ 延迟：让点击插在它前面
+            await route.fulfill(status=200, content_type="application/json",
+                                body=json.dumps(reg))
+
+        async def handle_ingest(route):
+            posts.append(route.request.url)
+            await route.fulfill(status=200, content_type="application/json",
+                                body=json.dumps({"ok": True, "id": "mock-1"}))
+
+        page = await self.browser.new_page(viewport={"width": 390, "height": 844})
+        await page.add_init_script("""
+          window.__opened = [];
+          window.open = function (u) { window.__opened.push(String(u)); return null; };
+        """)
+        await page.route("**/sources.json", handle_registry)
+        await page.route("**/ingest-mock", handle_ingest)
+        try:
+            await page.goto(self.origin + page_path + query, wait_until="commit")
+            await page.wait_for_selector(ready_selector, timeout=20000)
+            if fill:
+                await page.fill("#countInput", fill)
+            # ★ 注册表还没到 ⇒ 按钮是灰的
+            disabled = await page.get_attribute("#submitBtn", "aria-disabled")
+            # 绕过被禁用的按钮，直接调 doSubmit（看它自己会不会乱来）
+            await page.evaluate("() => %s.doSubmit()" % api_name)
+            await asyncio.sleep(0.4)
+            hint = await page.inner_text("#submitHint")
+            opened = await page.evaluate("() => window.__opened")
+        finally:
+            await page.close()
+        return {"disabled": disabled, "posts": posts, "opened": opened, "hint": hint}
+
+    async def test_the_koreader_page_waits_for_the_registry(self):
+        """★ KOReader 页：注册表还没到 ⇒ 按钮灰着、一个 POST 都不发、不开 GitHub 页。"""
+        r = await self._race("/koreader/index.html", "KoreaderLanding", "koreader",
+                             "#dayList li",
+                             query="?days=" + urllib.parse.quote("2026-11-21:25,2026-11-20:50", safe=""))
+        self.assertEqual(r["disabled"], "true", "注册表还没读到时按钮要置灰")
+        self.assertEqual(r["posts"], [], "配置没读到时一个 POST 都不许发")
+        self.assertEqual(r["opened"], [], "配置没读到时不许打开 GitHub 新建 issue 页")
+        self.assertIn("还在读通道配置", r["hint"],
+                      "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (r["hint"],))
+
+    async def test_the_words_page_waits_for_the_registry(self):
+        """★ 背单词页：同上。"""
+        r = await self._race("/words/index.html", "WordsLanding", "words",
+                             "#countInput", fill="150")
+        self.assertEqual(r["disabled"], "true", "注册表还没读到时按钮要置灰")
+        self.assertEqual(r["posts"], [], "配置没读到时一个 POST 都不许发")
+        self.assertEqual(r["opened"], [], "配置没读到时不许打开 GitHub 新建 issue 页")
+        self.assertIn("还在读通道配置", r["hint"],
+                      "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (r["hint"],))
