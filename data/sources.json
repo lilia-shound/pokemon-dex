@@ -5,9 +5,9 @@
   "maxBackfill": 3,
   "ledgerDays": 30,
   "ingest": {
-    "url": "",
-    "token": "",
-    "enabled": false
+    "url": "https://pokemon-dex-ingest.pages.dev/ingest",
+    "token": "TraYCUMoC37ZQzq3qT9fGvXtNSC_WI5AfnUwk7u82Co",
+    "enabled": true
   },
   "sources": {
     "weread": {

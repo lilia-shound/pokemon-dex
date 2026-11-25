@@ -29,6 +29,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -43,7 +44,22 @@ DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
 SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
 
 # 拉队列与 ack 的超时（秒）。★ 必须设 —— cron 不该被一个不响应的 Worker 挂住。
-TIMEOUT = 30
+# ★ 60 而不是 30：这条链路在国内（沙箱 → Cloudflare 边缘）实测冷启动要 4~15 秒
+#   （Pages 函数冷启动 + KV list）⇒ 30 秒太紧，会间歇性把整轮拉取拖超时。
+TIMEOUT = 60
+
+# 拉队列的重试次数与间隔（秒）。
+# ★ 实测这条链路会抖（TLS 掐断、冷启动慢）⇒ 一次失败就放弃，
+#   意味着这一轮的报告要等 3 小时后的下一轮才被拉走。
+PULL_ATTEMPTS = 2
+PULL_RETRY_PAUSE = 3
+
+# Cloudflare 前面会按「浏览器签名」封掉 urllib 的默认 UA（`Python-urllib/x.y`）
+# ⇒ 报 `HTTP 403 error code: 1010`。
+# ★ 与 scripts/notify.py 里给 Resend 加 UA 是**同一件事**（Resend 也在 Cloudflare 后面）。
+# ⇒ 这里也必须带一个像浏览器的 UA，否则 cron 每轮都拉不到队列（而它是旁路 ⇒ 只会静默失败）。
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
 def _http(url: str, method: str = "GET", payload=None, headers=None, timeout: int = 30):
@@ -51,12 +67,17 @@ def _http(url: str, method: str = "GET", payload=None, headers=None, timeout: in
 
     连不上时返回 `(0, 原因字符串)` —— **不抛异常**，
     好让上层把「通道不通」和「数据有问题」分开说。
+
+    ★ 一定会带上 `BROWSER_UA`（调用方没给 User-Agent 时）——
+      Cloudflare 会按浏览器签名封掉 urllib 的默认 UA ⇒ 403 / error code 1010。
     """
     data = None
     hdrs = dict(headers or {})
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
+    if not any(k.lower() == "user-agent" for k in hdrs):
+        hdrs["User-Agent"] = BROWSER_UA
     req = urllib.request.Request(url, method=method, data=data)
     for k, v in hdrs.items():
         req.add_header(k, v)
@@ -70,7 +91,7 @@ def _http(url: str, method: str = "GET", payload=None, headers=None, timeout: in
         return 0, str(exc)
 
 
-def pull_items(url: str, admin_token: str, timeout: int = 30) -> list[dict]:
+def pull_items(url: str, admin_token: str, timeout: int = TIMEOUT) -> list[dict]:
     """从 Worker 拉待处理的队列。**拉不到就抛异常**（调用方负责跳过）。"""
     status, data = _http(url.rstrip("/") + "/pull", "GET",
                          headers={"X-Dex-Admin": admin_token}, timeout=timeout)
@@ -81,7 +102,7 @@ def pull_items(url: str, admin_token: str, timeout: int = 30) -> list[dict]:
     return data["items"]
 
 
-def ack_items(url: str, admin_token: str, ids, timeout: int = 30) -> int:
+def ack_items(url: str, admin_token: str, ids, timeout: int = TIMEOUT) -> int:
     """确认已并账，把这些条目从队列里删掉。返回**真删掉**的条数。
 
     ★ 用服务端回的 `removed`，不用「我们请求删了几条」——
@@ -100,6 +121,29 @@ def ack_items(url: str, admin_token: str, ids, timeout: int = 30) -> int:
     if isinstance(removed, int) and not isinstance(removed, bool):
         return int(removed)
     return len(ids)
+
+
+def _pull_with_retry(url: str, admin_token: str) -> list[dict]:
+    """拉队列，失败重试一次。
+
+    ★ 为什么要有重试：这条链路在国内会抖（TLS 被掐、冷启动慢、KV 最终一致）。
+      一次失败就放弃 ⇒ 这一轮的报告要等 3 小时后的下一轮才被拉走 ⇒ 她会以为「交了没动静」。
+    ★ 只重试**网络类**失败（status 0 / 超时 / 5xx）；凭证不对（401）不重试 —— 重试也没用。
+    """
+    last_exc = None
+    for attempt in range(PULL_ATTEMPTS):
+        try:
+            return pull_items(url, admin_token, timeout=TIMEOUT)
+        except RuntimeError as exc:
+            last_exc = exc
+            # 凭证不对 ⇒ 重试没有意义，直接放弃。
+            if "HTTP 401" in str(exc):
+                raise
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+        if attempt + 1 < PULL_ATTEMPTS:
+            time.sleep(PULL_RETRY_PAUSE)
+    raise last_exc  # type: ignore[misc]
 
 
 def process_items(items, cfg: dict, today: str, ledger: dict):
@@ -161,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        items = pull_items(url, admin_token, timeout=TIMEOUT)
+        items = _pull_with_retry(url, admin_token)
     except Exception as exc:  # noqa: BLE001
         # ★ 拉不到就跳过 —— **绝不阻塞发奖**（这是旁路）。
         print("[投递] 拉取失败：%s，跳过" % exc, file=sys.stderr)

@@ -376,5 +376,135 @@ class AmountShapeTest(unittest.TestCase):
         self.assertEqual(new_ledger["2026-11-21"], {"weread": 900, "pom": 37})
 
 
+class BrowserUserAgentTest(unittest.TestCase):
+    """★ 请求必须带浏览器 UA —— 否则 Cloudflare 会 403（error code 1010）。
+
+    ★ 这不是假设：**2026-11-25 真机上撞到了**。
+      urllib 的默认 UA（`Python-urllib/3.11`）会被 Cloudflare 按「浏览器签名」封掉
+      ⇒ `HTTP 403 error code: 1010` ⇒ cron 每轮都拉不到队列。
+      （与 scripts/notify.py 给 Resend 加 UA 是同一件事 —— Resend 也在 Cloudflare 后面。）
+    """
+
+    def test_the_request_carries_a_browser_user_agent(self):
+        """对着真的 HTTP 说话 ⇒ 看服务端收到的 User-Agent 是什么。"""
+        seen = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                seen["ua"] = self.headers.get("User-Agent")
+                raw = json.dumps({"ok": True, "items": []}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % httpd.server_address[1]
+            status, _data = cw._http(url + "/pull", "GET",
+                                     headers={"X-Dex-Admin": "secret"})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(status, 200)
+        ua = seen.get("ua") or ""
+        self.assertNotIn("Python-urllib", ua,
+                         "还带着 urllib 的默认 UA ⇒ Cloudflare 会 403（1010）")
+        self.assertIn("Mozilla/5.0", ua, "UA 应当像个浏览器")
+
+    def test_the_caller_can_still_override_the_user_agent(self):
+        """调用方自己给了 UA ⇒ 尊重它（别覆盖掉）。"""
+        seen = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                seen["ua"] = self.headers.get("User-Agent")
+                raw = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % httpd.server_address[1]
+            cw._http(url + "/pull", "GET", headers={"User-Agent": "pokemon-dex/1"})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(seen.get("ua"), "pokemon-dex/1")
+
+
+class PullRetryTest(unittest.TestCase):
+    """★ 拉队列要重试一次 —— 这条链路在国内会抖。
+
+    ★ 实测：TLS 被掐、冷启动 4~15 秒 ⇒ 一次失败就放弃 ⇒
+      这一轮的报告要等 3 小时后的下一轮才被拉走 ⇒ 她会以为「交了没动静」。
+    """
+
+    def setUp(self):
+        self._orig_pull = cw.pull_items
+        self._orig_sleep = cw.time.sleep
+        cw.time.sleep = lambda _s: None      # 别真的等
+
+    def tearDown(self):
+        cw.pull_items = self._orig_pull
+        cw.time.sleep = self._orig_sleep
+
+    def test_a_transient_failure_is_retried(self):
+        calls = []
+
+        def flaky(url, admin_token, timeout=0):
+            calls.append(url)
+            if len(calls) == 1:
+                raise RuntimeError("拉队列失败：HTTP 0 读超时")
+            return [{"id": "q:1"}]
+
+        cw.pull_items = flaky
+        items = cw._pull_with_retry("https://x.example", "tok")
+        self.assertEqual(items, [{"id": "q:1"}])
+        self.assertEqual(len(calls), 2, "第一次失败后应该再试一次")
+
+    def test_it_gives_up_after_the_attempts_are_used_up(self):
+        calls = []
+
+        def always_fail(url, admin_token, timeout=0):
+            calls.append(url)
+            raise RuntimeError("拉队列失败：HTTP 0 读超时")
+
+        cw.pull_items = always_fail
+        with self.assertRaises(RuntimeError):
+            cw._pull_with_retry("https://x.example", "tok")
+        self.assertEqual(len(calls), cw.PULL_ATTEMPTS,
+                         "重试次数应当是 PULL_ATTEMPTS（不是无限重试）")
+
+    def test_a_wrong_token_is_not_retried(self):
+        """401 重试也没用 ⇒ 不该浪费一轮。"""
+        calls = []
+
+        def unauthorized(url, admin_token, timeout=0):
+            calls.append(url)
+            raise RuntimeError("拉队列失败：HTTP 401 凭证不对")
+
+        cw.pull_items = unauthorized
+        with self.assertRaises(RuntimeError):
+            cw._pull_with_retry("https://x.example", "tok")
+        self.assertEqual(len(calls), 1, "凭证不对时不该重试")
+
+
 if __name__ == "__main__":
     unittest.main()
