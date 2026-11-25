@@ -1661,6 +1661,16 @@ git commit -m "feat: 服务端接收端 collect_worker.py（拉队列 → 校验
 
 ### Task 5: 客户端 · 番茄钟页
 
+> **实现说明（Task 5 落地时发现并修掉的 4 处，别再照抄本计划里的旧抄本）**：
+> **以 `site/pomodoro/app.js` 里已落地的那份为准**，它比本任务代码块多了 4 处修正：
+> ① `enqueueReport(report, toFront)` 加了 `toFront` 参数 ⇒ 补发失败时 `unshift` **放回队首**
+>    （本计划旧抄本是 `push` 到队尾 ⇒ 越攒越晚才交上去）；
+> ② 提示语按 `ingestAvailable()` 分两种说法（通道关着时不能说「直接交上去」）；
+> ③ `renderSync()` 重建那个 `<a>` 会让**鼠标按下到松开元素被换掉、老办法链接点不动**
+>    ⇒ 内容没变就不重写 DOM；
+> ④ `flushPending()` 的调用处要 `.catch()`（否则异步拒绝会留控制台错误）。
+
+
 **Files:**
 - Modify: `site/pomodoro/app.js`（`loadList()` 里读 ingest 段；新增投递函数；改 `doSync()`；改 `renderSync()` 的提示）
 - Create: `tests/test_worker_client.py`
@@ -2062,7 +2072,17 @@ Expected: FAIL —— `AssertionError: 要有 postIngest`
 
 并在 `.catch` 里也置 `state.ingest = null;`（拉不到注册表 ⇒ 没有通道配置 ⇒ 走老路）。
 
-**(d) 新增投递函数**（放在 `buildIssueUrl()` 后面）—— 与番茄钟那份**逐字相同**（只有命名空间不同，本文件在 IIFE 里）：
+**(d) 新增投递函数**（放在 `buildIssueUrl()` 后面）—— ⚠️ **别照抄下面这段旧抄本**：
+**以 `site/pomodoro/app.js` 里已落地并过了审的那份为准**（它多了 Task 5 实现说明里的 4 处修正：
+`toFront` 放回队首、按通道开关分文案、`renderSync()` 内容没变就不重写 DOM、调用处 `.catch()`）。
+本页还**必须**比番茄钟页多一条差异：
+
+> **★ 队列键要按源分开**：三个子页**同源 ⇒ 共用同一份 localStorage**。
+> 若本页也用 `PENDING_KEY = 'pendingIngest'`，两个页面的条目会混在一个数组里，
+> **总数超 50 时 `slice(-50)` 会静默丢掉别页最老那条报告** ⇒
+> 本页必须用 `PENDING_KEY = 'pendingIngest.words'`（KOReader 页用 `pendingIngest.koreader`）。
+
+下面这段是**旧抄本**（只作参考，逐字照抄会带进 `toFront` 的坑）：
 
 ```javascript
   /** 读待发队列（坏数据当空队列）。 */
@@ -2357,7 +2377,18 @@ Expected: FAIL —— `AssertionError: 要有 postIngest`
 
 `.catch` 里加 `state.ingest = null;`。
 
-**(d) 新增投递函数**（放在 `buildIssueUrl()` 后面）—— 与背单词页那份**逐字相同**：
+**(d) 新增投递函数**（放在 `buildIssueUrl()` 后面）—— ⚠️ **别照抄下面这段旧抄本**：
+**以 `site/pomodoro/app.js` 里已落地并过了审的那份为准**（4 处修正见 Task 5 的实现说明）。
+本页还**必须**比番茄钟页多两条差异：
+
+> **★ 队列键要按源分开**：三个子页**同源 ⇒ 共用同一份 localStorage** ⇒
+> 本页必须用 `PENDING_KEY = 'pendingIngest.koreader'`（番茄钟页是 `pendingIngest`、背单词页是 `pendingIngest.words`），
+> 否则两个页面的条目混在一个数组里，**总数超 50 时 `slice(-50)` 会静默丢掉别页最老那条报告**。
+>
+> **★ 本页没有现成的 localStorage 存储层**（不像背单词页有 `LS_KEY` / `loadDays` / `saveDays`）
+> ⇒ 队列函数要**自包含**（直接用 `window.localStorage`，并且要包 try/catch —— 隐私模式下会抛）。
+
+下面这段是**旧抄本**（只作参考，逐字照抄会带进 `toFront` 的坑）：
 
 ```javascript
   /** 读待发队列（坏数据当空队列）。 */
