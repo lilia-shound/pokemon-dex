@@ -450,6 +450,12 @@
       //   之后 resp.text() 读 body 没有任何超时保护 ⇒ body 迟迟不来时
       //   postIngest 永不 settle ⇒ 按钮被永久卡住（INGESTING 清不掉）。
       text = await resp.text();
+    } catch (err) {
+      // ★ 超时（abort）⇒ 说人话，别让英文的 AbortError 出现在她眼前
+      if (err && err.name === 'AbortError') {
+        throw new Error('等了 ' + Math.round(INGEST_TIMEOUT_MS / 1000) + ' 秒还没交上去');
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }

@@ -169,6 +169,41 @@ def _function_body(js: str, header: str) -> str:
     raise AssertionError("函数体没配平：%s" % header)
 
 
+def _strip_js_comments(js: str) -> str:
+    """把 JS 里的**注释**去掉（字符串 / 模板串里的 // 不算注释）。
+
+    ★ 为什么需要：契约断言经常是 `assertIn("resp.text()", body)` 这种 ——
+      而 app.js 的注释里也写着「resp.text()」⇒ 不去注释的话，
+      **注释本身就能满足断言**（错因满足：代码改了断言照样绿）。
+    """
+    out = []
+    i = 0
+    n = len(js)
+    while i < n:
+        c = js[i]
+        if c in "'\"":
+            j = _skip_string(js, i)
+            out.append(js[i:j])
+            i = j
+            continue
+        if c == "`":
+            j = _skip_template(js, i)
+            out.append(js[i:j])
+            i = j
+            continue
+        if js[i:i + 2] == "//":
+            nl = js.find("\n", i)
+            i = n if nl < 0 else nl
+            continue
+        if js[i:i + 2] == "/*":
+            end = js.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _make_server(directory: pathlib.Path):
     """在 directory 上起一个静态服务器（端口 0 = 随机端口，免跟别的测试撞车）。"""
 
@@ -201,6 +236,15 @@ const path = require('path');
 
 const APP = process.env.APP_JS_PATH || path.join(__dirname, 'app.js');
 const src = fs.readFileSync(APP, 'utf8');
+
+/* ---------- 把「长延时」缩到 50ms ---------- *
+ * 用来测「超时窗口」时不必真等 15 秒；短延时（0ms 之类）不动。
+ */
+const realSetTimeout = global.setTimeout;
+global.setTimeout = function (fn, ms) {
+  const delay = (typeof ms === 'number' && ms > 1000) ? 50 : ms;
+  return realSetTimeout(fn, delay);
+};
 
 /* ---------- 抠函数 ---------- */
 function skipString(s, i) {
@@ -829,6 +873,42 @@ async function main() {
     results: tempResults,
   };
 
+  /* ---- 22. ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  const postApiHang = sandbox(
+    [
+      'var INGEST = deps.INGEST;', 'var INGEST_TIMEOUT_MS = deps.INGEST_TIMEOUT_MS;',
+      'var ingestAvailable = deps.ingestAvailable;', 'var fetch = deps.fetch;',
+    ].join('\n'),
+    [extractFunction('postIngest')],
+    ['postIngest']
+  )({
+    INGEST: { url: 'https://worker.example/ingest', token: 'tok-abc', enabled: true },
+    INGEST_TIMEOUT_MS: 15000,
+    ingestAvailable: () => true,
+    fetch: (url, options) => Promise.resolve({
+      ok: true, status: 200,
+      text: function () {
+        // body 迟迟不来（连接半死不活）—— 只有 abort 才会结束它
+        return new Promise(function (resolve, reject) {
+          options.signal.addEventListener('abort', function () {
+            const e = new Error('Aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+      },
+    }),
+  });
+
+  /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  const hangResult = await Promise.race([
+    postApiHang.postIngest(REPORT).then(() => ({ settled: true, msg: null }),
+                   (e) => ({ settled: true, msg: String(e && e.message) })),
+    // ★ 这个 800ms 是「还没 settle」的判据；下面的 abort 定时器是 50ms（被缩过）
+    new Promise(function (r) { setTimeout(function () { r({ settled: false, msg: null }); }, 800); }),
+  ]);
+  obs.hangingBody = hangResult;
+
   process.stdout.write(JSON.stringify(obs));
 }
 
@@ -881,6 +961,16 @@ const opened = [];
 global.window = {
   get localStorage() { return storage; },
   open: function (url) { opened.push(url); },
+};
+
+
+/* ---------- 把「长延时」缩到 50ms ---------- *
+ * 用来测「超时窗口」时不必真等 15 秒；短延时（0ms 之类）不动。
+ */
+const realSetTimeout = global.setTimeout;
+global.setTimeout = function (fn, ms) {
+  const delay = (typeof ms === 'number' && ms > 1000) ? 50 : ms;
+  return realSetTimeout(fn, delay);
 };
 
 const api = require(APP);
@@ -1250,6 +1340,34 @@ async function main() {
     hints: hints.slice(),
   };
 
+  /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  reset();
+  api.state.ingest = INGEST;
+  fetchImpl = function (url, opts) {
+    return Promise.resolve({
+      ok: true, status: 200,
+      text: function () {
+        // body 迟迟不来（连接半死不活）—— 只有 abort 才会结束它
+        return new Promise(function (resolve, reject) {
+          opts.signal.addEventListener('abort', function () {
+            const e = new Error('Aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+      },
+    });
+  };
+
+  /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  const hangResult = await Promise.race([
+    api.postIngest(REPORT).then(() => ({ settled: true, msg: null }),
+                   (e) => ({ settled: true, msg: String(e && e.message) })),
+    // ★ 这个 800ms 是「还没 settle」的判据；下面的 abort 定时器是 50ms（被缩过）
+    new Promise(function (r) { setTimeout(function () { r({ settled: false, msg: null }); }, 800); }),
+  ]);
+  obs.hangingBody = hangResult;
+
   process.stdout.write(JSON.stringify(obs));
 }
 
@@ -1420,6 +1538,26 @@ class PomodoroIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("队列" in t for t in texts),
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
+        )
+
+
+    # ---------------- 超时窗口 ----------------
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ body 迟迟不来时，postIngest 必须**在超时后抛错**（不能永远挂着）。
+
+        为什么：挂着 ⇒ doSubmit 永不 settle ⇒ finally 里的 INGESTING = false
+        永远执行不到 ⇒ 之后每次点都只走「正在交上去，稍等一下」，
+        一个 POST 都发不出去，只有刷新页面才恢复。
+        """
+        hang = self.obs.get("hangingBody") or {}
+        self.assertTrue(
+            hang.get("settled"),
+            "body 迟迟不来时 postIngest 必须抛错（超时窗口要盖住读 body）",
+        )
+        self.assertTrue(
+            hang.get("msg"),
+            "要抛一个说得清的错（现在：%r）" % (hang.get("msg"),),
         )
 
     # ---------------- 注册表还没到就点提交 ----------------
@@ -1612,13 +1750,31 @@ class PomodoroIngestContractTest(unittest.TestCase):
         self.assertIn("REGISTRY_LOADED", body,
                       "按钮的禁用条件要看 REGISTRY_LOADED（注册表没到就置灰）")
 
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ `resp.text()` 必须在 `clearTimeout` **之前** —— 读 body 也要在超时窗口里。
+
+        （fetch 收到**响应头**就 resolve 了 ⇒ body 迟迟不来时，
+        没有超时保护的话 postIngest 永不 settle ⇒ 按钮被永久卡死。）
+        """
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
+        text_at = body.find("await resp.text()")
+        clear_at = body.find("clearTimeout(")
+        self.assertGreater(text_at, 0, "postIngest 要读响应体")
+        self.assertGreater(clear_at, 0, "postIngest 要清超时定时器")
+        self.assertLess(
+            text_at, clear_at,
+            "resp.text() 必须在 clearTimeout **之前**"
+            "（否则读 body 不在超时窗口里 ⇒ 按钮会被永久卡死）",
+        )
+
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
 
         （分不出来的话，调用方只能把每一条都当成「下次还能成」
         ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
         """
-        body = _function_body(self.js, "async function postIngest(")
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
         self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
         self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
         self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
@@ -1848,6 +2004,26 @@ class WordsIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("队列" in t for t in texts),
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
+        )
+
+
+    # ---------------- 超时窗口 ----------------
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ body 迟迟不来时，postIngest 必须**在超时后抛错**（不能永远挂着）。
+
+        为什么：挂着 ⇒ doSubmit 永不 settle ⇒ finally 里的 INGESTING = false
+        永远执行不到 ⇒ 之后每次点都只走「正在交上去，稍等一下」，
+        一个 POST 都发不出去，只有刷新页面才恢复。
+        """
+        hang = self.obs.get("hangingBody") or {}
+        self.assertTrue(
+            hang.get("settled"),
+            "body 迟迟不来时 postIngest 必须抛错（超时窗口要盖住读 body）",
+        )
+        self.assertTrue(
+            hang.get("msg"),
+            "要抛一个说得清的错（现在：%r）" % (hang.get("msg"),),
         )
 
     # ---------------- 注册表还没到就点提交 ----------------
@@ -2145,13 +2321,31 @@ class WordsIngestContractTest(unittest.TestCase):
         self.assertIn("registryLoaded", body,
                       "按钮的禁用条件要看 registryLoaded（注册表没到就置灰）")
 
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ `resp.text()` 必须在 `clearTimeout` **之前** —— 读 body 也要在超时窗口里。
+
+        （fetch 收到**响应头**就 resolve 了 ⇒ body 迟迟不来时，
+        没有超时保护的话 postIngest 永不 settle ⇒ 按钮被永久卡死。）
+        """
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
+        text_at = body.find("await resp.text()")
+        clear_at = body.find("clearTimeout(")
+        self.assertGreater(text_at, 0, "postIngest 要读响应体")
+        self.assertGreater(clear_at, 0, "postIngest 要清超时定时器")
+        self.assertLess(
+            text_at, clear_at,
+            "resp.text() 必须在 clearTimeout **之前**"
+            "（否则读 body 不在超时窗口里 ⇒ 按钮会被永久卡死）",
+        )
+
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
 
         （分不出来的话，调用方只能把每一条都当成「下次还能成」
         ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
         """
-        body = _function_body(self.js, "async function postIngest(")
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
         self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
         self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
         self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
@@ -2507,6 +2701,16 @@ const opened = [];
 global.window = {
   get localStorage() { return storage; },
   open: function (url) { opened.push(url); },
+};
+
+
+/* ---------- 把「长延时」缩到 50ms ---------- *
+ * 用来测「超时窗口」时不必真等 15 秒；短延时（0ms 之类）不动。
+ */
+const realSetTimeout = global.setTimeout;
+global.setTimeout = function (fn, ms) {
+  const delay = (typeof ms === 'number' && ms > 1000) ? 50 : ms;
+  return realSetTimeout(fn, delay);
 };
 
 const api = require(APP);
@@ -2898,6 +3102,34 @@ async function main() {
     hints: hints.slice(),
   };
 
+  /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  reset();
+  api.state.ingest = INGEST;
+  fetchImpl = function (url, opts) {
+    return Promise.resolve({
+      ok: true, status: 200,
+      text: function () {
+        // body 迟迟不来（连接半死不活）—— 只有 abort 才会结束它
+        return new Promise(function (resolve, reject) {
+          opts.signal.addEventListener('abort', function () {
+            const e = new Error('Aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+      },
+    });
+  };
+
+  /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  const hangResult = await Promise.race([
+    api.postIngest(REPORT).then(() => ({ settled: true, msg: null }),
+                   (e) => ({ settled: true, msg: String(e && e.message) })),
+    // ★ 这个 800ms 是「还没 settle」的判据；下面的 abort 定时器是 50ms（被缩过）
+    new Promise(function (r) { setTimeout(function () { r({ settled: false, msg: null }); }, 800); }),
+  ]);
+  obs.hangingBody = hangResult;
+
   process.stdout.write(JSON.stringify(obs));
 }
 
@@ -3101,6 +3333,26 @@ class KoreaderIngestBehaviorTest(unittest.TestCase):
         self.assertTrue(
             any("队列" in t for t in texts),
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
+        )
+
+
+    # ---------------- 超时窗口 ----------------
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ body 迟迟不来时，postIngest 必须**在超时后抛错**（不能永远挂着）。
+
+        为什么：挂着 ⇒ doSubmit 永不 settle ⇒ finally 里的 INGESTING = false
+        永远执行不到 ⇒ 之后每次点都只走「正在交上去，稍等一下」，
+        一个 POST 都发不出去，只有刷新页面才恢复。
+        """
+        hang = self.obs.get("hangingBody") or {}
+        self.assertTrue(
+            hang.get("settled"),
+            "body 迟迟不来时 postIngest 必须抛错（超时窗口要盖住读 body）",
+        )
+        self.assertTrue(
+            hang.get("msg"),
+            "要抛一个说得清的错（现在：%r）" % (hang.get("msg"),),
         )
 
     # ---------------- 注册表还没到就点提交 ----------------
@@ -3388,13 +3640,31 @@ class KoreaderIngestContractTest(unittest.TestCase):
         self.assertIn("registryLoaded", body,
                       "按钮的禁用条件要看 registryLoaded（注册表没到就置灰）")
 
+
+    def test_the_timeout_covers_reading_the_body(self):
+        """★ `resp.text()` 必须在 `clearTimeout` **之前** —— 读 body 也要在超时窗口里。
+
+        （fetch 收到**响应头**就 resolve 了 ⇒ body 迟迟不来时，
+        没有超时保护的话 postIngest 永不 settle ⇒ 按钮被永久卡死。）
+        """
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
+        text_at = body.find("await resp.text()")
+        clear_at = body.find("clearTimeout(")
+        self.assertGreater(text_at, 0, "postIngest 要读响应体")
+        self.assertGreater(clear_at, 0, "postIngest 要清超时定时器")
+        self.assertLess(
+            text_at, clear_at,
+            "resp.text() 必须在 clearTimeout **之前**"
+            "（否则读 body 不在超时窗口里 ⇒ 按钮会被永久卡死）",
+        )
+
     def test_the_post_marks_permanent_failures(self):
         """★ 4xx（429 除外）= **永久**失败 ⇒ 调用方才能丢掉这条、继续发下一条。
 
         （分不出来的话，调用方只能把每一条都当成「下次还能成」
         ⇒ 一条永远交不上的报告就能把整条待发队列堵死。）
         """
-        body = _function_body(self.js, "async function postIngest(")
+        body = _strip_js_comments(_function_body(self.js, "async function postIngest("))
         self.assertIn("status", body, "postIngest 要把 HTTP 状态码带出来")
         self.assertIn("permanent", body, "postIngest 要标出「这次失败是永久的」")
         self.assertIn("429", body, "429（限流）是暂时失败 ⇒ 那条不能丢")
