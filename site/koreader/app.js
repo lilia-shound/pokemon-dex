@@ -342,8 +342,16 @@
    */
   function enqueueReport(report, toFront) {
     const list = pendingQueue();
-    if (toFront) list.unshift(report); else list.push(report);
-    return savePending(list);
+    if (!toFront) {
+      list.push(report);
+      return savePending(list);
+    }
+    // ★ 放回队首的那条**一定留住** —— 队列满 50 条时 slice(-50) 会把它挤掉
+    //   （它在 index 0）⇒ 那条报告就永远丢了，等于「补发失败」＝「丢数据」。
+    //   ⇒ 留「队首那条 + 最近 49 条」。
+    list.unshift(report);
+    const kept = list.length > 50 ? [list[0]].concat(list.slice(-49)) : list;
+    return savePending(kept);
   }
   /** 取出队首（没有就 null）。 */
   function shiftPending() {
@@ -838,17 +846,21 @@
     const keys = Object.keys(state.days);
     if (!keys.length) {
       // 一条都没解出来 ⇒ 友好提示，不是空白页、也不是一个空的 0
+      // ★ **不许在这里 return** —— 她不带 ?days= 参数打开落地页时
+      //   （书签、历史记录、手输网址）上次攒着的待发报告也要补发。
       renderBad();
-      return;
+    } else {
+      state.per = DEFAULT_PER;
+      state.cap = DEFAULT_MAX_PER_DAY;
+      recompute();
+      $('#badBox').hidden = true;
+      $('#mainBox').hidden = false;
+      renderDays();
     }
-    state.per = DEFAULT_PER;
-    state.cap = DEFAULT_MAX_PER_DAY;
-    recompute();
-    $('#badBox').hidden = true;
-    $('#mainBox').hidden = false;
-    renderDays();
 
     // 注册表是唯一的额度口径来源；**拉不到就用默认值 15**（绝不让页面卡在「载入中…」）
+    // ★ 不管有没有解出天数都要拉 —— 没解出天数时也得知道通道开没开，
+    //   才好把上次攒着的待发报告补发掉。
     loadRegistry().then(reg => {
       state.per = reg.per;
       state.cap = reg.cap;

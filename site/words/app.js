@@ -410,8 +410,16 @@
    */
   function enqueueReport(report, toFront) {
     const list = pendingQueue();
-    if (toFront) list.unshift(report); else list.push(report);
-    return savePending(list);
+    if (!toFront) {
+      list.push(report);
+      return savePending(list);
+    }
+    // ★ 放回队首的那条**一定留住** —— 队列满 50 条时 slice(-50) 会把它挤掉
+    //   （它在 index 0）⇒ 那条报告就永远丢了，等于「补发失败」＝「丢数据」。
+    //   ⇒ 留「队首那条 + 最近 49 条」。
+    list.unshift(report);
+    const kept = list.length > 50 ? [list[0]].concat(list.slice(-49)) : list;
+    return savePending(kept);
   }
   /** 取出队首（没有就 null）。 */
   function shiftPending() {

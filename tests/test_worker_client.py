@@ -873,6 +873,18 @@ async function main() {
     results: tempResults,
   };
 
+  /* ---- ★ 队列满 50 条时，放回队首的那条不许被挤掉 ---- */
+  const stFull = fakeStorage();
+  const qFull = queueApi(stFull);
+  for (let i = 1; i <= 50; i += 1) qFull.enqueueReport({ n: i });
+  qFull.enqueueReport({ id: 'NEW' }, true);
+  const fullList = qFull.pendingQueue();
+  obs.fullQueueToFront = {
+    len: fullList.length,
+    first: fullList[0] || null,
+    last: fullList[fullList.length - 1] || null,
+  };
+
   /* ---- 22. ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
   const postApiHang = sandbox(
     [
@@ -1341,6 +1353,17 @@ async function main() {
   };
 
   /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  /* ---- ★ 队列满 50 条时，放回队首的那条不许被挤掉 ---- */
+  reset();
+  for (let i = 1; i <= 50; i += 1) api.enqueueReport({ n: i });
+  api.enqueueReport({ id: 'NEW' }, true);
+  const fullList = api.pendingQueue();
+  obs.fullQueueToFront = {
+    len: fullList.length,
+    first: fullList[0] || null,
+    last: fullList[fullList.length - 1] || null,
+  };
+
   reset();
   api.state.ingest = INGEST;
   fetchImpl = function (url, opts) {
@@ -1540,6 +1563,23 @@ class PomodoroIngestBehaviorTest(unittest.TestCase):
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
+
+
+    # ---------------- 队列满 50 条时放回队首的那条 ----------------
+
+    def test_the_report_put_back_at_the_head_is_never_dropped(self):
+        """★ 队列满 50 条时，放回队首的那条**一定还在**。
+
+        （savePending 存的是 slice(-50) ⇒ 留的是**最后** 50 条 ⇒
+        unshift 到 index 0 的那条会被挤掉 ⇒ 那份报告就永远丢了。）
+        """
+        q = self.obs.get("fullQueueToFront") or {}
+        self.assertEqual(q.get("len"), 50, "队列上限还是 50 条")
+        self.assertEqual(
+            q.get("first"), {"id": "NEW"},
+            "放回队首的那条不许被 slice(-50) 挤掉（它现在排在第 %r 位）" % (q.get("first"),),
+        )
+        self.assertEqual(q.get("last"), {"n": 50}, "最后一条仍是最新的那条")
 
     # ---------------- 超时窗口 ----------------
 
@@ -1743,6 +1783,16 @@ class PomodoroIngestContractTest(unittest.TestCase):
         self.assertGreater(post, guard, "「退回老办法」的判断必须在投递之前")
         self.assertIn("window.open(buildIssueUrl()", body, "老办法要真的打开 GitHub 页面")
 
+
+    def test_the_toast_renders_the_message_as_text(self):
+        """★ 提示（toast）必须走 textContent —— 服务端错误消息不许当 HTML 插。
+
+        （ingest token 是公开的 ⇒ 服务端的错误消息会**回显**客户端送过去的字段
+        ⇒ 这条回显路径是外部可控的。）
+        """
+        body = _strip_js_comments(_function_body(self.js, "function toast("))
+        self.assertIn("textContent", body, "toast 要用 textContent 写提示")
+        self.assertNotIn("innerHTML", body, "toast 不许用 innerHTML（服务端消息是外部可控的）")
 
     def test_the_button_waits_for_the_registry(self):
         """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
@@ -2006,6 +2056,23 @@ class WordsIngestBehaviorTest(unittest.TestCase):
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
+
+
+    # ---------------- 队列满 50 条时放回队首的那条 ----------------
+
+    def test_the_report_put_back_at_the_head_is_never_dropped(self):
+        """★ 队列满 50 条时，放回队首的那条**一定还在**。
+
+        （savePending 存的是 slice(-50) ⇒ 留的是**最后** 50 条 ⇒
+        unshift 到 index 0 的那条会被挤掉 ⇒ 那份报告就永远丢了。）
+        """
+        q = self.obs.get("fullQueueToFront") or {}
+        self.assertEqual(q.get("len"), 50, "队列上限还是 50 条")
+        self.assertEqual(
+            q.get("first"), {"id": "NEW"},
+            "放回队首的那条不许被 slice(-50) 挤掉（它现在排在第 %r 位）" % (q.get("first"),),
+        )
+        self.assertEqual(q.get("last"), {"n": 50}, "最后一条仍是最新的那条")
 
     # ---------------- 超时窗口 ----------------
 
@@ -2315,6 +2382,21 @@ class WordsIngestContractTest(unittest.TestCase):
         self.assertIn("window.open(buildIssueUrl(", body, "老办法要真的打开 GitHub 页面")
 
 
+
+    def test_the_static_explanation_stays_neutral(self):
+        """★ index.html 里那条静态说明**不许断言「现在走哪条路」**。
+
+        （通道现在是关着的 ⇒ 「点「交上去」直接送到训练家图鉴的服务端」
+        与实际行为**相反** ⇒ 她读到的第一句就是错的。）
+        """
+        html = WORDS_HTML.read_text(encoding="utf-8")
+        self.assertIn("通道开着", html, "静态说明要把两条路**并列**说清楚")
+        self.assertIn("通道没开", html, "静态说明要把两条路**并列**说清楚")
+        self.assertNotIn(
+            "这条报告会送到训练家图鉴的服务端（不用登录 GitHub）；",
+            html,
+            "静态说明不许断言「直接送服务端」是默认且唯一的路",
+        )
     def test_the_button_waits_for_the_registry(self):
         """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
         body = _function_body(self.js, "function renderSubmit(")
@@ -2427,6 +2509,8 @@ class WordsSubmitHintBrowserTest(unittest.TestCase):
         self.page_errors = []
         self.registry_response = None
         self.ingest_requests = []
+        # mock 的投递端点回什么（默认成功；测 XSS 时换成带 HTML 的错误消息）
+        self.ingest_response = {"ok": True, "id": "mock-1"}
         self.page = self._new_page()
 
     def tearDown(self):
@@ -2460,8 +2544,10 @@ class WordsSubmitHintBrowserTest(unittest.TestCase):
 
         def handle_ingest(route):
             self.ingest_requests.append(route.request.url)
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"ok": True, "id": "mock-1"}))
+            payload = self.ingest_response
+            route.fulfill(status=200 if payload.get("ok") else 400,
+                          content_type="application/json",
+                          body=json.dumps(payload))
 
         page.route("**/sources.json", handle_registry)
         page.route("**/ingest-mock", handle_ingest)
@@ -2614,6 +2700,39 @@ class WordsSubmitHintBrowserTest(unittest.TestCase):
         self.assertTrue(
             after["sameChild"],
             "提示内容被重写了（里面的子元素被换掉了）—— 内容没变就不该重写",
+        )
+
+
+    def test_the_error_message_is_shown_as_text_not_html(self):
+        """★ 服务端回来的错误消息**按纯文本**显示（不许当 HTML 插）。
+
+        为什么值得钉：ingest token 是**公开的**（在 site/sources.json 里）⇒
+        任何人都能往 Worker 灌任意 source/days；而 Worker 的错误消息会
+        **回显**客户端送过去的字段（worker/lib/validate.cjs 的
+        「不认识这个源：」/「日期在未来：」）⇒ 这条回显路径是外部可控的。
+        今天还构不成真漏洞，但这是一层**承重的、只差一行代码就破掉**的防御。
+        """
+        self.ingest_response = {"ok": False, "error": "<img src=x onerror=window.__xss=1>"}
+        page = self._new_page()
+        try:
+            self._open(page, channel=True)
+            self._fill(page, "150")
+            page.click("#submitBtn")
+            self._wait_hint(
+                page,
+                "() => (document.querySelector('#submitHint').textContent || '')"
+                ".indexOf('暂时交不上去') >= 0",
+            )
+            # ★ 等一下：若那段文字被当成了 HTML，图片加载失败会触发 onerror
+            page.wait_for_timeout(400)
+            xss = page.evaluate("() => window.__xss")
+            hint = self._hint(page)
+        finally:
+            page.close()
+        self.assertIsNone(xss, "错误消息被当 HTML 插了（脚本被执行了）")
+        self.assertIn(
+            "<img src=x onerror=window.__xss=1>", hint,
+            "提示行里要能看到**字面**的 <img …>（证明它是当文本显示的，不是被解析成元素）",
         )
 
     def test_the_result_hint_does_not_linger_after_switching_day(self):
@@ -3103,6 +3222,17 @@ async function main() {
   };
 
   /* ---- ★ 超时窗口要盖住读 body（body 迟迟不来 ⇒ 必须抛错，不能永远挂着） ---- */
+  /* ---- ★ 队列满 50 条时，放回队首的那条不许被挤掉 ---- */
+  reset();
+  for (let i = 1; i <= 50; i += 1) api.enqueueReport({ n: i });
+  api.enqueueReport({ id: 'NEW' }, true);
+  const fullList = api.pendingQueue();
+  obs.fullQueueToFront = {
+    len: fullList.length,
+    first: fullList[0] || null,
+    last: fullList[fullList.length - 1] || null,
+  };
+
   reset();
   api.state.ingest = INGEST;
   fetchImpl = function (url, opts) {
@@ -3335,6 +3465,23 @@ class KoreaderIngestBehaviorTest(unittest.TestCase):
             "存储不可用时要提示「待发队列用不了」（现在的提示：%r）" % (texts,),
         )
 
+
+
+    # ---------------- 队列满 50 条时放回队首的那条 ----------------
+
+    def test_the_report_put_back_at_the_head_is_never_dropped(self):
+        """★ 队列满 50 条时，放回队首的那条**一定还在**。
+
+        （savePending 存的是 slice(-50) ⇒ 留的是**最后** 50 条 ⇒
+        unshift 到 index 0 的那条会被挤掉 ⇒ 那份报告就永远丢了。）
+        """
+        q = self.obs.get("fullQueueToFront") or {}
+        self.assertEqual(q.get("len"), 50, "队列上限还是 50 条")
+        self.assertEqual(
+            q.get("first"), {"id": "NEW"},
+            "放回队首的那条不许被 slice(-50) 挤掉（它现在排在第 %r 位）" % (q.get("first"),),
+        )
+        self.assertEqual(q.get("last"), {"n": 50}, "最后一条仍是最新的那条")
 
     # ---------------- 超时窗口 ----------------
 
@@ -3634,6 +3781,21 @@ class KoreaderIngestContractTest(unittest.TestCase):
         self.assertIn("window.open(", body, "老办法要真的打开 GitHub 页面")
 
 
+
+    def test_the_static_explanation_stays_neutral(self):
+        """★ index.html 里那条静态说明**不许断言「现在走哪条路」**。
+
+        （通道现在是关着的 ⇒ 「点「交上去」直接送到训练家图鉴的服务端」
+        与实际行为**相反** ⇒ 她读到的第一句就是错的。）
+        """
+        html = KO_HTML.read_text(encoding="utf-8")
+        self.assertIn("通道开着", html, "静态说明要把两条路**并列**说清楚")
+        self.assertIn("通道没开", html, "静态说明要把两条路**并列**说清楚")
+        self.assertNotIn(
+            "点「交上去」直接送到训练家图鉴的服务端（不用登录 GitHub）；",
+            html,
+            "静态说明不许断言「直接送服务端」是默认且唯一的路",
+        )
     def test_the_button_waits_for_the_registry(self):
         """★ 注册表还没读到 ⇒ 按钮要置灰（别让她点出一个老办法降级）。"""
         body = _function_body(self.js, "function renderDays(")
@@ -3765,6 +3927,8 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
         self.page_errors = []
         self.registry_response = None
         self.ingest_requests = []
+        # mock 的投递端点回什么（默认成功；测 XSS 时换成带 HTML 的错误消息）
+        self.ingest_response = {"ok": True, "id": "mock-1"}
         self.page = self._new_page()
 
     def tearDown(self):
@@ -3801,8 +3965,10 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
                 "url": route.request.url,
                 "body": route.request.post_data,
             })
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"ok": True, "id": "mock-1"}))
+            payload = self.ingest_response
+            route.fulfill(status=200 if payload.get("ok") else 400,
+                          content_type="application/json",
+                          body=json.dumps(payload))
 
         page.route("**/sources.json", handle_registry)
         page.route("**/ingest-mock", handle_ingest)
@@ -4002,6 +4168,63 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
             "已记录", hint,
             "补录了一天之后「已记录 ✓」还挂着 —— 那是**过时**的提示（她已经换了数）",
         )
+
+
+    def test_the_error_message_is_shown_as_text_not_html(self):
+        """★ 服务端回来的错误消息**按纯文本**显示（不许当 HTML 插）。
+
+        为什么值得钉：ingest token 是**公开的**（在 site/sources.json 里）⇒
+        任何人都能往 Worker 灌任意 source/days；而 Worker 的错误消息会
+        **回显**客户端送过去的字段（worker/lib/validate.cjs 的
+        「不认识这个源：」/「日期在未来：」）⇒ 这条回显路径是外部可控的。
+        今天还构不成真漏洞，但这是一层**承重的、只差一行代码就破掉**的防御。
+        """
+        self.ingest_response = {"ok": False, "error": "<img src=x onerror=window.__xss=1>"}
+        page = self._new_page()
+        try:
+            self._open(page, channel=True)
+            page.click("#submitBtn")
+            self._wait_hint(
+                page,
+                "() => (document.querySelector('#submitHint').textContent || '')"
+                ".indexOf('暂时交不上去') >= 0",
+            )
+            # ★ 等一下：若那段文字被当成了 HTML，图片加载失败会触发 onerror
+            page.wait_for_timeout(400)
+            xss = page.evaluate("() => window.__xss")
+            hint = self._hint(page)
+        finally:
+            page.close()
+        self.assertIsNone(xss, "错误消息被当 HTML 插了（脚本被执行了）")
+        self.assertIn(
+            "<img src=x onerror=window.__xss=1>", hint,
+            "提示行里要能看到**字面**的 <img …>（证明它是当文本显示的，不是被解析成元素）",
+        )
+
+
+    def test_the_page_flushes_the_queue_even_without_days_in_the_link(self):
+        """★ 不带 `?days=` 参数打开落地页 ⇒ 上次攒着的待发报告**也要补发**。
+
+        （以前没解出天数时这一支直接 return ⇒ 走不到 loadRegistry() ⇒
+        走不到 flushPending() ⇒ 队列就一直卡着，要等下次扫码进来才补上。）
+        """
+        page = self._new_page()
+        pending = {"v": 1, "source": "koreader", "days": {"2026-11-20": 50}}
+        page.add_init_script(
+            "window.localStorage.setItem('pendingIngest.koreader', JSON.stringify([%s]));" % json.dumps(pending)
+        )
+        try:
+            self.registry_response = self._registry(True)
+            page.goto(self.base, wait_until="commit")     # ★ **不带** days
+            for _ in range(60):
+                if self.ingest_requests:
+                    break
+                page.wait_for_timeout(100)
+        finally:
+            page.close()
+        self.assertTrue(self.ingest_requests, "不带天数参数打开时也要补发待发队列")
+        body = json.loads(self.ingest_requests[0]["body"])
+        self.assertEqual(body, pending, "补发发出去的应该是队列里那条报告")
 
     def test_the_page_flushes_the_queue_when_it_opens(self):
         """页面打开 ⇒ 把上次没交上去的补发掉。"""
