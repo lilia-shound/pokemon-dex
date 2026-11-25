@@ -60,6 +60,19 @@ def validate_config(cfg: dict) -> None:
             raise SourceConfigError(f"源 {sid} 的 mode 必须是 pull 或 push，实际 {s.get('mode')!r}")
         if "maxPerDay" in s and (not _is_int(s["maxPerDay"]) or s["maxPerDay"] < 1):
             raise SourceConfigError(f"源 {sid} 的 maxPerDay 必须是 >=1 的整数")
+    # 免登录投递通道的配置（顶层 ingest 段）。
+    # **可选** —— 没这一段就当通道没开（客户端走 GitHub 老路）。
+    # 写了就必须是能用的形状：enabled 是布尔、url 与 token 是字符串。
+    # ⚠️ 这里**不校验 url 非空** —— 通道关着的时候 url 就是空串。
+    if "ingest" in cfg:
+        ingest = cfg["ingest"]
+        if not isinstance(ingest, dict):
+            raise SourceConfigError("sources.json 的 ingest 必须是对象")
+        if not isinstance(ingest.get("enabled"), bool):
+            raise SourceConfigError("ingest.enabled 必须是布尔值，实际 %r" % ingest.get("enabled"))
+        for key in ("url", "token"):
+            if not isinstance(ingest.get(key), str):
+                raise SourceConfigError("ingest.%s 必须是字符串，实际 %r" % (key, ingest.get(key)))
 
 
 def load_config(path) -> dict:

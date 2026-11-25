@@ -4,6 +4,11 @@
   "maxPerDay": 1,
   "maxBackfill": 3,
   "ledgerDays": 30,
+  "ingest": {
+    "url": "",
+    "token": "",
+    "enabled": false
+  },
   "sources": {
     "weread": {
       "name": "微信读书",
