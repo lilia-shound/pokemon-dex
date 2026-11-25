@@ -56,8 +56,22 @@ MAX_REPORT_DAYS = 30
 
 
 def _is_int(v) -> bool:
-    """是不是整数。**bool 不算** —— Python 里 True 是 int 的子类。"""
-    return isinstance(v, int) and not isinstance(v, bool)
+    """是不是整数。**bool 不算** —— Python 里 True 是 int 的子类。
+
+    ★ **整数值浮点也算**（`1440.0` ⇒ 1440）——
+      JSON 的数字字面量没有「整数 / 浮点」之分，`1440` 与 `1440.0` 解析出来可能长得一样，
+      **JavaScript 的 `JSON.parse` 更是彻底分不出来**（两者都是同一个 number）
+      ⇒ Worker 侧的 `Number.isInteger(1440.0)` 是 true、它会**收下**这份报告。
+      若这边一律拒 ⇒ 「Worker 收下、服务端静默丢掉」⇒ 两边结论不一致。
+      所以**整数值浮点当整数收**，`parse_report` 里再 `int(amount)` 归一成整数；
+      但 `1.5` 这类**非整数值**仍然拒（它压根不是一个整数天），布尔仍然拒。
+    """
+    if isinstance(v, bool):
+        return False          # bool 先挡掉：Python 里 True 是 int 的子类
+    if isinstance(v, int):
+        return True
+    # float.is_integer() 对 inf / nan 都是 False ⇒ 不用另外判
+    return isinstance(v, float) and v.is_integer()
 
 
 def _is_date(s) -> bool:
