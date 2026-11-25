@@ -25,6 +25,14 @@ const SILHOUETTE = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
   '<circle cx="50" cy="50" r="40" fill="none" stroke="#8b7bff" stroke-opacity=".35" stroke-width="2"/>' +
   '</svg>');
 
+/* ---------- 免登录投递通道 ---------- */
+/** 待发队列的 localStorage 键 —— 交不上去的先存这儿，下次打开页面自动补发。 */
+const PENDING_KEY = 'pendingIngest';
+/** 单次投递的超时（毫秒） */
+const INGEST_TIMEOUT_MS = 15000;
+/** 免登录通道的配置（从 sources.json 顶层读，见 loadList） */
+let INGEST = null;
+
 /** 全局宝可梦清单（来自 pokedex-lite.json） */
 let POKEMON = [];
 /** 服务端已收服的 id 集合（来自图鉴页的 dex.json）——用来优先派没收集过的 */
@@ -601,6 +609,99 @@ function buildIssueUrl() {
   return ISSUE_NEW + '?title=' + encodeURIComponent(title) +
     '&body=' + encodeURIComponent(JSON.stringify(buildReport()));
 }
+
+/* ---------- 投递（免登录通道） ---------- */
+
+/** 读待发队列（坏数据当空队列）。 */
+function pendingQueue() {
+  try {
+    const raw = window.localStorage.getItem(PENDING_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+/** 写待发队列（只留最近 50 条）。 */
+function savePending(list) {
+  try {
+    window.localStorage.setItem(PENDING_KEY, JSON.stringify((list || []).slice(-50)));
+  } catch (e) { /* 存不住就算了 —— 顶多这次没交上 */ }
+}
+/**
+ * 把一份报告排进待发队列。
+ * @param {Object} report 要排队的报告
+ * @param {boolean} toFront true = 塞回队首（补发失败时用，保持「最老在前」）
+ */
+function enqueueReport(report, toFront) {
+  const list = pendingQueue();
+  if (toFront) list.unshift(report); else list.push(report);
+  savePending(list);
+}
+/** 取出队首（没有就 null）。 */
+function shiftPending() {
+  const list = pendingQueue();
+  if (!list.length) return null;
+  const head = list.shift();
+  savePending(list);
+  return head;
+}
+
+/**
+ * 把一份报告 POST 到免登录通道。
+ * 成功返回服务端的回包；失败**抛异常**（调用方负责提示与排队）。
+ */
+async function postIngest(report) {
+  if (!ingestAvailable()) {
+    throw new Error('免登录通道没开');
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(function () { ctrl.abort(); }, INGEST_TIMEOUT_MS);
+  let resp = null;
+  try {
+    resp = await fetch(INGEST.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Dex-Token': INGEST.token || '' },
+      body: JSON.stringify(report),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await resp.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) { data = null; }
+  if (!resp.ok || !data || data.ok !== true) {
+    throw new Error((data && data.error) ? data.error : ('HTTP ' + resp.status));
+  }
+  return data;
+}
+
+/** 免登录通道现在能不能用？（配置在、开着、有地址） */
+function ingestAvailable() {
+  return !!(INGEST && INGEST.enabled === true && INGEST.url);
+}
+
+/** 把上次没交上去的补发掉（页面打开时调一次）。 */
+async function flushPending() {
+  if (!ingestAvailable()) return;      // 通道没开 ⇒ 没有可补的（也别把它越攒越多）
+  let sent = 0;
+  let report = shiftPending();
+  while (report) {
+    try {
+      await postIngest(report);
+      sent++;
+    } catch (e) {
+      // 还是交不上去 ⇒ **放回队首**（不是队尾！）—— 队列是「最老在前」的，
+      // 放回队尾会把它排到最后，越攒越晚才交上去。
+      enqueueReport(report, true);
+      break;
+    }
+    report = shiftPending();
+  }
+  if (sent) { toast('补发了 ' + sent + ' 条', 3000); renderSync(); }
+}
+/** 上次写进 #syncHint 的内容 —— 变了才重写 DOM（render() 每 200ms 调一次 renderSync）。 */
+let lastSyncHintHTML = '';
 function renderSync() {
   const box = $('#syncBox');
   if (!box) return;
@@ -626,21 +727,52 @@ function renderSync() {
   if (sub) sub.textContent = dayCount ? dayCount + ' 天' : '';
   const hint = $('#syncHint');
   if (hint) {
-    hint.innerHTML = dayCount
-      ? '点同步会打开 GitHub 的新建 issue 页面，<b style="opacity:.9">在那个页面上点一下 Submit</b> 才算交上去。交完这里会记一笔时间。'
-      : '还没有攒下分钟数 —— 完成一轮专注再来。';
+    let html;
+    if (!dayCount) {
+      html = '还没有攒下分钟数 —— 完成一轮专注再来。';
+    } else {
+      // ★ 老办法的链接**照样留着**（workers.dev 在国内可能抽风，这是兜底）
+      const oldWay = '<a id="syncOldWay" href="' + esc(buildIssueUrl()) +
+        '" target="_blank" rel="noopener noreferrer">用 GitHub 提交（老办法）</a>';
+      html = ingestAvailable()
+        ? '点「同步到图鉴」直接交上去（不用登录 GitHub）。连不上？' + oldWay
+        : '点同步会打开 GitHub 的新建 issue 页面，<b style="opacity:.9">在那个页面上点一下 Submit</b> 才算交上去。也可以直接' + oldWay;
+    }
+    // ★ 内容没变就别重写 —— render() 每 200ms 调一次 renderSync()，
+    //   每次重建这个 <a> 会把「按下鼠标」到「松开鼠标」之间那个元素换掉 ⇒ 点击会丢。
+    if (html !== lastSyncHintHTML) {
+      hint.innerHTML = html;
+      lastSyncHintHTML = html;
+    }
   }
 }
 function doSync() {
   const days = syncDays();
   if (!Object.keys(days).length) { toast('还没有能交上去的分钟数'); return; }
-  const url = buildIssueUrl();
-  window.open(url, '_blank', 'noopener');
-  S().lastSyncAt = Date.now();
-  S().syncedDays = Object.keys(days);
-  Store.write();
-  renderSync();
-  toast('已打开提交页 —— 在 GitHub 那个页面上点一下 Submit', 4200);
+  // ★ 通道没开（还没部署、或被回滚关了）⇒ **退回老办法**：
+  //   直接开 GitHub 的新建 issue 页。少了这个分支，部署窗口里她点同步只会报错。
+  if (!ingestAvailable()) {
+    window.open(buildIssueUrl(), '_blank', 'noopener');
+    S().lastSyncAt = Date.now();
+    S().syncedDays = Object.keys(days);
+    Store.write();
+    renderSync();
+    toast('已打开提交页 —— 在 GitHub 那个页面上点一下 Submit', 4200);
+    return;
+  }
+  const report = buildReport();
+  postIngest(report).then(function () {
+    S().lastSyncAt = Date.now();
+    S().syncedDays = Object.keys(days);
+    Store.write();
+    renderSync();
+    toast('已记录 ' + Object.keys(days).length + ' 天', 3000);
+  }).catch(function (err) {
+    enqueueReport(report);
+    renderSync();
+    toast('暂时交不上去（' + (err && err.message ? err.message : '未知原因') +
+      '）—— 已存着，下次打开自动补发', 4200);
+  });
 }
 
 /* ---------- 加载清单与服务端已收集 ---------- */
@@ -674,6 +806,12 @@ function loadList() {
     .then(d => {
       const per = d && d.sources && d.sources[SOURCE_ID] && d.sources[SOURCE_ID].per;
       if (per > 0) { UNIT_PER_CREDIT = per; renderSync(); }
+      // 免登录通道的配置 —— **同一份 sources.json**，不再多发一个请求
+      INGEST = (d && d.ingest && typeof d.ingest === 'object') ? d.ingest : null;
+      // 配置到了 ⇒ 把上次没交上去的补发掉
+      // ★ 这里必须挂 .catch —— flushPending 是异步的，漏了会在控制台留一条
+      //   "Unhandled promise rejection"，页面看着像坏了（浏览器的 console 错误）。
+      flushPending().catch(() => { /* 补发失败就下次再说 */ });
     })
     .catch(() => { /* 用默认 25 */ });
 }
