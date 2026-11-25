@@ -7,7 +7,7 @@
    （`tests/fixtures/koreader_wire_cases.txt`）逐例对拍。
    用例只有一份 ⇒ Lua / Python / JS 三端不可能各自漂移。
 2. **真实浏览器里的观感断言**（Playwright）—— 数字对不对、额度算的是 4 不是 5、
-   坏数据按规则整段丢掉、没有有效日期时给友好提示、按钮的 href 是合法的
+   坏数据按规则整段丢掉、没有有效日期时给友好提示、老办法那个链接的 href 是合法的
    GitHub 新建 issue 链接（title/body 能解回正确的值）、手机宽度下不横向溢出。
 
 跑法：
@@ -570,12 +570,17 @@ class KoreaderLandingBrowserTest(unittest.TestCase):
         self.wait_rendered()
         self.assertTrue(self.page.is_visible("#badBox"))
 
-    def test_the_button_points_at_a_valid_new_issue_url(self):
-        """按钮的 href 必须是合法的 GitHub 新建 issue 链接（title/body 能解回正确的值）。"""
+    def test_the_old_way_link_points_at_a_valid_new_issue_url(self):
+        """老办法那个链接的 href 必须是合法的 GitHub 新建 issue 链接（title/body 能解回正确的值）。
+
+        ★ 主按钮 `#submitBtn` 现在是 `<button>`（点一下直接交，不再跳 GitHub）⇒
+          预填好的 issue 链接搬到了老办法那个链接 `#oldWayBtn` 上。
+          这里跟着换过来 —— 断言的还是「页面生成的那份 issue URL」。
+        """
         self.registry_response = _registry(per=15)
         self.open_page()
         self.wait_registry_applied()
-        url = self.page.get_attribute("#submitBtn", "href")
+        url = self.page.get_attribute("#oldWayBtn", "href")
         self.assertTrue(
             url.startswith("https://github.com/lilia-shound/pokemon-dex/issues/new?"),
             url[:80],
@@ -603,7 +608,7 @@ class KoreaderLandingBrowserTest(unittest.TestCase):
         self.assertIn("2000", note)
         self.assertIn("1440", note)
         # 提交给服务端的是夹过的值
-        url = self.page.get_attribute("#submitBtn", "href")
+        url = self.page.get_attribute("#oldWayBtn", "href")
         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         body = json.loads(q["body"][0])
         self.assertEqual(body.get("days"), {"2026-11-21": 1440})
@@ -621,7 +626,7 @@ class KoreaderLandingBrowserTest(unittest.TestCase):
         self.registry_response = _registry(per=15)
         self.open_page()
         self.wait_registry_applied()
-        url = self.page.get_attribute("#submitBtn", "href")
+        url = self.page.get_attribute("#oldWayBtn", "href")
         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         self.assertEqual(self.page.inner_text("#issueTitle"), q["title"][0])
 
@@ -630,7 +635,7 @@ class KoreaderLandingBrowserTest(unittest.TestCase):
         self.registry_response = _registry(per=15)
         self.open_page()
         self.wait_registry_applied()
-        url = self.page.get_attribute("#submitBtn", "href")
+        url = self.page.get_attribute("#oldWayBtn", "href")
         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         cfg = src.load_config(SOURCES_JSON)
         days, err = cr.parse_report(q["body"][0], cfg, "2026-11-21")
