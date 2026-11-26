@@ -134,9 +134,11 @@ class TestsWorkflowGuardTest(unittest.TestCase):
 
         ⇒ CI 必须显式检查 skipped 数：不为 0 就红。
         （依赖没装好时 unittest 是 skip 而不是 error —— 这是最容易骗过 CI 的地方。）
+
+        ★ 检查的逻辑放在 `scripts/check_no_skipped.py`（那儿有它自己的测试）——
+          写在 workflow 的内联脚本里 ⇒ 逻辑错了 CI 就永远绿/永远红，没人发现。
         """
-        self.assertIn("skipped=", self.code)
-        self.assertIn("test.log", self.code)
+        self.assertIn("check_no_skipped.py", self.code)
 
 
 if __name__ == "__main__":
