@@ -1180,7 +1180,10 @@ function bindMain() {
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol === 'file:') return;   // file:// 下没有 SW
-  navigator.serviceWorker.register('sw.js').catch(() => { /* 装不上也不影响用 */ });
+  // ★ 版本号：**改了 sw.js 就改这个数** ——
+  //   SW 脚本本身走 HTTP 缓存 ⇒ 不换 URL 的话浏览器可能一直用旧的那份
+  //   （缓存名是 pomodoro-shell-v2，里面的 app.js?v=1 也要跟 index.html 一致）。
+  navigator.serviceWorker.register('sw.js?v=2').catch(() => { /* 装不上也不影响用 */ });
 }
 
 /* ---------- 启动 ---------- */

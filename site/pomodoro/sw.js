@@ -3,11 +3,11 @@
    图片走图鉴页 CDN 自带的 HTTP 缓存 —— 把上千张 webp 塞进 SW 缓存
    会把手机存储吃掉几十 MB，而且图鉴更新后还得手动清缓存。
 */
-const CACHE = 'pomodoro-shell-v1';
+const CACHE = 'pomodoro-shell-v2';
 const SHELL = [
   './',
   './index.html',
-  './app.js',
+  './app.js?v=1',   // ★ 版本号要跟 index.html 里的一致
   './style.css',
   './manifest.webmanifest',
   './icon.svg',
