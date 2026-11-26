@@ -44,18 +44,29 @@ DEX_PATH = pathlib.Path(os.environ.get("DEX_PATH", ROOT / "data" / "dex.json"))
 SOURCES_PATH = pathlib.Path(os.environ.get("SOURCES_PATH", ROOT / "data" / "sources.json"))
 
 # 拉队列与 ack 的超时（秒）。★ 必须设 —— cron 不该被一个不响应的 Worker 挂住。
-# ★ 120 而不是 30/60：**实测从国内打这个接收端，首包（新的 Cloudflare 边缘 IP / 冷启动）
-#   要 7~45 秒**（同一个 IP 上的后续请求只要 1~4 秒）⇒ 30 秒会间歇性把整轮拉取拖超时，
-#   60 秒也偶发不够（实测有一次 47.9 秒才返回）。cron 一轮才跑一次，120 秒完全够用。
-TIMEOUT = 120
+# ★ 60 而不是 120：**2026-11-26 实测，这一路的失败形态不是「慢」而是「响应丢了」** ——
+#   服务端把活干完了（ack 的三个 key 确实被删了），但响应没回到沙箱 ⇒
+#   客户端只能等满超时。**超时定多少，失败一次的代价就是多少** ⇒
+#   60 秒 × 3 次（最坏 3 分钟）比 120 秒 × 2 次（最坏 4 分钟）多一次机会、还少等一分钟。
+# ★ 成功的那些请求是 2~21 秒（首包/冷启动 7~45 秒）⇒ 60 秒够用。
+TIMEOUT = 60
 
 # 拉队列的重试次数与间隔（秒）。
-# ★ 实测这条链路会抖（TLS 掐断、冷启动慢）⇒ 一次失败就放弃，
-#   意味着这一轮的报告要等 3 小时后的下一轮才被拉走。
-PULL_ATTEMPTS = 2
+# ★ 实测这条链路会抖（TLS 掐断、冷启动慢、响应丢失）⇒ 一次失败就放弃，
+#   意味着这一轮的报告要等下一轮才被拉走。
+# ★ **2026-11-26 实测**：两次拉取里，第一次挂满超时、第二次 15 秒就成了；
+#   另一次两次都挂满 ⇒ 2 次尝试**不够** ⇒ 提到 3 次。
+# ★ 重试是安全的：/pull 是**只读**的（不删队列），响应丢了只是这轮没读到，
+#   下轮重读一遍就行（并账取 max ⇒ 幂等，不会多算）。
+PULL_ATTEMPTS = 3
 PULL_RETRY_PAUSE = 3
-# ack 的重试次数（ack 天然幂等 ⇒ 重试安全）
-ACK_ATTEMPTS = 3
+
+# ack 的超时（秒）与重试次数。
+# ★ ack 用更短的预算：它失败**不致命** —— 条目还在队列里，下轮会重拉、重并账（取 max，幂等），
+#   再 ack 一次。实测 ack 的响应也经常丢（服务端删完了、响应没回来）⇒ 重试照样安全。
+#   但没必要为它等太久 ⇒ 45 秒 × 2 次就收手，别把一整轮 cron 的时间都耗在 ack 上。
+ACK_TIMEOUT = 45
+ACK_ATTEMPTS = 2
 
 # Cloudflare 前面会按「浏览器签名」封掉 urllib 的默认 UA（`Python-urllib/x.y`）
 # ⇒ 报 `HTTP 403 error code: 1010`。
@@ -105,7 +116,7 @@ def pull_items(url: str, admin_token: str, timeout: int = TIMEOUT) -> list[dict]
     return data["items"]
 
 
-def ack_items(url: str, admin_token: str, ids, timeout: int = TIMEOUT) -> int:
+def ack_items(url: str, admin_token: str, ids, timeout: int = ACK_TIMEOUT) -> int:
     """确认已并账，把这些条目从队列里删掉。返回**真删掉**的条数。
 
     ★ 用服务端回的 `removed`，不用「我们请求删了几条」——
@@ -160,7 +171,7 @@ def _ack_with_retry(url: str, admin_token: str, ids) -> int:
     last_exc = None
     for attempt in range(ACK_ATTEMPTS):
         try:
-            return ack_items(url, admin_token, ids, timeout=TIMEOUT)
+            return ack_items(url, admin_token, ids, timeout=ACK_TIMEOUT)
         except RuntimeError as exc:
             last_exc = exc
             if "HTTP 401" in str(exc):
