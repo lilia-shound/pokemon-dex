@@ -46,6 +46,10 @@ KOReader（Kindle / Android）
 
 **真正的执行者是 Mavis 的 cron 任务**，不是 GitHub Actions。
 
+- 📄 **cron 的运维口径（schedule、两条通道、排查方法）⇒ 见 [`docs/ops/cron-notes.md`](docs/ops/cron-notes.md)**。
+  ⚠️ **cron 现在是每天 4 次（`17 8,13,18,23 * * *`），不再是每 3 小时** ——
+  2026-11-26 降的频：那个常驻会话已经 67 万 token，每轮都要把它的历史重带一遍，
+  一天 8 轮就是 540 万 token/天 ⇒ 额度必然烧光 ⇒ 平台连续失败后把任务自动暂停了。
 - `WEREAD_API_KEY` 配在 **Mavis cron 的环境里**，**不在** Actions secrets
   （本仓库的 Actions secrets 实测是 0 个）。
 - `.github/workflows/daily-award.yml` 只是**备用**执行器，而且**只在手动触发时跑**
