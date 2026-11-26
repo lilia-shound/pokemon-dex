@@ -121,6 +121,23 @@ class TestsWorkflowGuardTest(unittest.TestCase):
         """浏览器层的断言要 chromium —— 少装一步，那些用例会静默跳过（等于没测）。"""
         self.assertIn("playwright install", self.code)
 
+    def test_it_installs_the_lua_runtime_the_lua_tests_need(self):
+        """KOReader 插件的 Lua 单测要 fengari —— 少装一步 ⇒ 那 19 条被静默跳过。"""
+        self.assertIn("npm ci", self.code)
+
+    def test_it_fetches_the_dataset_the_real_data_tests_need(self):
+        """进化链的真实数据测试要素材缓存 —— 不拉 ⇒ 那 9 条被静默跳过。"""
+        self.assertIn("pokemon-dataset-zh", self.code)
+
+    def test_it_refuses_to_pass_when_a_test_was_skipped(self):
+        """★★ **跳过不算失败** —— 少测 28 条也是「绿的」⇒ 等于没测。
+
+        ⇒ CI 必须显式检查 skipped 数：不为 0 就红。
+        （依赖没装好时 unittest 是 skip 而不是 error —— 这是最容易骗过 CI 的地方。）
+        """
+        self.assertIn("skipped=", self.code)
+        self.assertIn("test.log", self.code)
+
 
 if __name__ == "__main__":
     unittest.main()

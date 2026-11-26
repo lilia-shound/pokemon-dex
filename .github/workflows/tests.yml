@@ -37,5 +37,33 @@ jobs:
           pip install playwright
           python -m playwright install --with-deps chromium
 
+      # ★ fengari —— KOReader 插件的 Lua 单测要它（不装 ⇒ 那 19 条会被**静默跳过**）
+      - name: 装 fengari（KOReader 插件的 Lua 运行环境）
+        run: npm ci
+
+      # ★ 宝可梦素材缓存 —— 进化链的**真实数据**测试要它（不拉 ⇒ 那 9 条会被静默跳过）
+      - name: 拉宝可梦素材缓存（真实数据测试用）
+        run: |
+          mkdir -p .cache
+          git clone --depth 1 https://github.com/42arch/pokemon-dataset-zh.git \
+            .cache/pokemon-dataset-zh
+
       - name: 跑整套测试
-        run: python3 -B run_tests.py
+        shell: bash
+        run: python3 -B run_tests.py 2>&1 | tee test.log
+
+      # ★★ **不许有测试被静默跳过** ——
+      #   跳过不算失败 ⇒ 少测 28 条也是「绿的」⇒ 等于没测。
+      #   （依赖没装好时 unittest 会 skip 而不是 error —— 这是最容易骗过 CI 的地方。）
+      - name: 检查有没有测试被跳过
+        run: |
+          python3 - <<'EOF'
+          import re, sys
+          text = open('test.log', encoding='utf-8', errors='replace').read()
+          m = re.search(r'skipped=(\d+)', text)
+          n = int(m.group(1)) if m else -1
+          if n != 0:
+              print('有 %s 条测试被跳过 —— CI 没测到它们（依赖装好了吗？）' % n)
+              sys.exit(1)
+          print('全部测试都跑了，没跳过。')
+          EOF
