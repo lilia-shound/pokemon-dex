@@ -4362,8 +4362,6 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
                       "要告诉她「已存着，下次打开自动补发」：%r" % (hint,))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 # --------------------------------------------------------------------------
@@ -4600,6 +4598,63 @@ class PomodoroIngestBrowserTest(unittest.TestCase):
         self.assertIn("下次打开自动补发", toast_text,
                       "要告诉她「已存着，下次打开自动补发」：%r" % (toast_text,))
         self.assertTrue(old_way, "老办法入口（用 GitHub 提交）必须还在")
+
+
+class ScriptVersionGuardTest(unittest.TestCase):
+    """★ 改了 app.js 就得改版本号 —— 不然 CDN 会把旧版发给浏览器。
+
+    **背景**：2026-11-26 部署完时区修复，线上拿到的还是旧 app.js
+    （gh-pages 分支上明明是新的）⇒ GitHub Pages 的 CDN 缓存旧文件。
+    图鉴页一直有 `app.js?v=N` 的机制，**三个子页却没有** ⇒ 这次补上。
+
+    ⚠️ 番茄钟页还多一层：Service Worker 会缓存应用外壳
+    ⇒ sw.js 的缓存名与 SHELL 里的 app.js 版本号都要跟着变。
+    """
+
+    PAGES = [
+        ("pomodoro", ROOT / "site" / "pomodoro" / "index.html"),
+        ("words", ROOT / "site" / "words" / "index.html"),
+        ("koreader", ROOT / "site" / "koreader" / "index.html"),
+    ]
+
+    def _script_src(self, html_path: pathlib.Path) -> str:
+        html = html_path.read_text(encoding="utf-8")
+        m = re.search(r'<script\s+src="([^"]*app\.js[^"]*)"', html)
+        self.assertIsNotNone(m, "%s 里找不到 app.js 的 script 引用" % html_path.name)
+        return m.group(1)
+
+    def test_every_page_pins_a_version_on_its_script(self):
+        """★ 三个子页的 app.js 引用都要带 `?v=N`（图鉴页本来就有）。"""
+        for name, html_path in self.PAGES:
+            src = self._script_src(html_path)
+            self.assertIn("?v=", src,
+                          "%s 页的 app.js 引用没有版本号（%s）⇒ 改了 JS 浏览器还拿旧的"
+                          % (name, src))
+
+    def test_the_dex_page_pins_a_version_on_its_script(self):
+        """图鉴页的 app.js 引用（本来就带版本号，别把它弄丢了）。"""
+        src = self._script_src(ROOT / "site" / "index.html")
+        self.assertIn("?v=", src, "图鉴页的 app.js 引用没有版本号：%s" % (src,))
+
+    def test_the_service_worker_caches_the_same_version_as_the_page(self):
+        """★ SW 缓存里的 app.js 版本号要跟页面引用的**一样**。
+
+        不一样的话 ⇒ SW 命中的是旧 app.js ⇒ 她看到的还是老行为（而且更难察觉：
+        因为连「刷新一下」都不管用）。
+        """
+        page_src = self._script_src(ROOT / "site" / "pomodoro" / "index.html")
+        version = page_src.split("?v=")[1]
+        sw = (ROOT / "site" / "pomodoro" / "sw.js").read_text(encoding="utf-8")
+        self.assertIn("app.js?v=%s" % version, sw,
+                      "sw.js 缓存的 app.js 版本（app.js?v=%s）跟页面对不上" % (version,))
+
+    def test_the_service_worker_cache_name_carries_a_version(self):
+        """SW 的缓存名也要带版本 —— 不 bump 的话浏览器不会重新装外壳。"""
+        sw = (ROOT / "site" / "pomodoro" / "sw.js").read_text(encoding="utf-8")
+        m = re.search(r"const CACHE = 'pomodoro-shell-v(\d+)';", sw)
+        self.assertIsNotNone(m, "sw.js 里找不到带版本号的缓存名")
+        self.assertGreaterEqual(int(m.group(1)), 2,
+                                "SW 缓存名还是 v1 —— 改了 app.js 不会被重新缓存")
 
 
 if __name__ == "__main__":
