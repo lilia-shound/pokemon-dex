@@ -146,18 +146,33 @@
       "form": "0361",
       "chain": "雪童子",
       "evolutionStage": 0
+    },
+    {
+      "id": "0449",
+      "nameZh": "沙河马",
+      "shiny": false,
+      "at": "2026-11-26T17:46:50.767640+08:00",
+      "date": "2026-11-26",
+      "sources": [
+        "weread",
+        "pom"
+      ],
+      "form": "0449",
+      "chain": "沙河马",
+      "evolutionStage": 0
     }
   ],
-  "streak": 6,
-  "lastAwardDate": "2026-11-25",
+  "streak": 7,
+  "lastAwardDate": "2026-11-26",
   "today": {
     "date": "2026-11-26",
-    "seconds": 1055,
+    "seconds": 1508,
     "threshold": 1800,
     "sources": {
-      "weread": 1055
+      "weread": 1508,
+      "pom": 25
     },
-    "credit": 1,
+    "credit": 2,
     "perAward": 2
   },
   "ledger": {
@@ -201,7 +216,8 @@
       "weread": 5403
     },
     "2026-11-26": {
-      "weread": 1055
+      "weread": 1508,
+      "pom": 25
     }
   },
   "chains": {
@@ -224,7 +240,11 @@
     "雪童子": {
       "firstDate": "2026-11-25",
       "lastShinyDate": null
+    },
+    "沙河马": {
+      "firstDate": "2026-11-26",
+      "lastShinyDate": null
     }
   },
-  "updatedAt": "2026-11-25T15:17:57.835984+08:00"
+  "updatedAt": "2026-11-26T17:46:50.767640+08:00"
 }
