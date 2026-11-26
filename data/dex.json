@@ -152,10 +152,12 @@
   "lastAwardDate": "2026-11-25",
   "today": {
     "date": "2026-11-26",
-    "seconds": 0,
+    "seconds": 1055,
     "threshold": 1800,
-    "sources": {},
-    "credit": 0,
+    "sources": {
+      "weread": 1055
+    },
+    "credit": 1,
     "perAward": 2
   },
   "ledger": {
@@ -197,6 +199,9 @@
     },
     "2026-11-25": {
       "weread": 5403
+    },
+    "2026-11-26": {
+      "weread": 1055
     }
   },
   "chains": {
