@@ -24,6 +24,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "daily-award.yml"
+TESTS_WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 DEPLOY = ROOT / "scripts" / "deploy.sh"
 
 
@@ -72,6 +73,53 @@ class WorkflowGuardTest(unittest.TestCase):
         deploy = DEPLOY.read_text(encoding="utf-8")
         self.assertIn("GITHUB_TOKEN", deploy)
         self.assertIn("secrets.GITHUB_TOKEN", self.code)
+
+
+class TestsWorkflowGuardTest(unittest.TestCase):
+    """`.github/workflows/tests.yml` 的守卫：**只跑测试，什么都不改**。
+
+    ★ 为什么要单独守：
+      2026-11-24 出过事 —— 一个带 `schedule:` 的 workflow 成了 main 的**第二个写者**
+      （它自己 `git push`），还把瘦身后的图鉴覆盖回完整版、每 3 小时给姜来发一封失败邮件。
+      ⇒ 这个「只跑测试」的 workflow 也得守住同样的纪律：
+        **不定时触发、不推分支、不碰发布**。
+    """
+
+    def setUp(self):
+        self.assertTrue(TESTS_WORKFLOW.exists(), "测试 workflow 不见了")
+        self.text = TESTS_WORKFLOW.read_text(encoding="utf-8")
+        # 断言要看的是**真正执行的代码**，不是注释
+        self.code = "\n".join(
+            line for line in self.text.split("\n")
+            if not line.strip().startswith("#")
+        )
+
+    def test_it_runs_the_test_suite(self):
+        """它得真的把整套测试跑起来（不然就是个空 workflow）。"""
+        self.assertIn("run_tests.py", self.code)
+
+    def test_it_has_no_scheduled_trigger(self):
+        """★ 不许定时触发 —— 没人看着的时候自己跑，出问题只会变成噪音。"""
+        self.assertNotIn("schedule:", self.code)
+        self.assertNotIn("cron:", self.code)
+
+    def test_it_does_not_push_anything(self):
+        """★ 它不能推分支 —— 那是 Mavis cron / deploy.sh 的活。"""
+        self.assertNotIn("git push", self.code)
+        self.assertNotIn("git subtree push", self.code)
+
+    def test_it_does_not_publish_the_site(self):
+        """发布只走 scripts/deploy.sh（唯一的发布路径）。"""
+        self.assertNotIn("scripts/deploy.sh", self.code)
+        self.assertNotIn("gh-pages", self.code)
+
+    def test_it_can_also_be_run_by_hand(self):
+        """能手动跑一次（排查问题时用）。"""
+        self.assertIn("workflow_dispatch:", self.code)
+
+    def test_it_installs_the_browser_the_browser_tests_need(self):
+        """浏览器层的断言要 chromium —— 少装一步，那些用例会静默跳过（等于没测）。"""
+        self.assertIn("playwright install", self.code)
 
 
 if __name__ == "__main__":

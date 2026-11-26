@@ -1,0 +1,41 @@
+name: 测试
+
+# ★ 这个 workflow **只跑测试**，不改任何东西：
+#   - 不推分支（`git push` 一律不许出现）
+#   - 不定时触发（schedule 会在没人看着的时候自己跑，还可能失败）
+#   - 不碰 data/ 与 site/（发布走 scripts/deploy.sh，由 Mavis cron 负责）
+#
+# 为什么需要它：Worker 的校验逻辑、三个子页的投递逻辑，
+# 以前**没有任何自动化在跑**（只有 Mavis cron 在发奖，它不跑测试）
+# ⇒ 改坏了要等姜来手动点一次页面才发现。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ★ node 是 Worker 那两份规格的运行环境
+      #   （tests/worker_validate_spec.js / tests/worker_handler_spec.mjs，
+      #     由 tests/test_worker_node_spec.py 接进 Python 测试里跑）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 装 playwright（浏览器层的断言要它）
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: 跑整套测试
+        run: python3 -B run_tests.py
