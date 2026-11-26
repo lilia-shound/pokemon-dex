@@ -356,6 +356,18 @@ python3 scripts/collect_reports.py --dry-run  # 看 issue 投递箱里有什么
 bash scripts/deploy.sh            # 发布
 ```
 
+### CI
+
+`.github/workflows/tests.yml` —— **push / PR / 手动触发都只跑测试**（`python3 -B run_tests.py`），
+**不定时、不推分支、不碰发布**（发布只走 `scripts/deploy.sh`）。
+
+- ⚠️ **「跳过」不算失败**：被 skip 的测试在 CI 上也是绿的 ⇒ CI 额外跑一步
+  `scripts/check_no_skipped.py`，断言**一个都没被跳过**（unittest 零 skip 时根本不打印 `skipped=`，
+  所以那个脚本要把「没匹配到」当 0 处理）。
+- ⚠️ **CI 步骤引用的脚本必须已经在仓库里** —— 2026-11-26 踩过：先把 workflow 推上去、脚本后推，
+  中间那次 CI 就红在「检查有没有测试被跳过」（脚本还不存在）。**脚本和 workflow 同一个 commit 推。**
+- 浏览器层的断言用 playwright；**别在测试里写死 chromium 的版本路径**（`tests/browser_path.py` 会自己找）。
+
 ### 环境变量
 
 | 变量 | 必需 | 用途 |
