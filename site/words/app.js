@@ -223,9 +223,15 @@
   }
 
   /* ---------- 日期小工具 ---------- */
-  const pad = n => String(n).padStart(2, '0');
-  const dateKey = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-  const todayKey = () => dateKey(new Date());
+  /**
+   * 北京时间（UTC+8）的今天。
+   *
+   * ★ 与服务端（worker/lib/validate.cjs 的 todayCst、scripts/dex_core.py）**同一个口径**。
+   *   以前这里用的是浏览器本地时区 ⇒ 她的设备不在中国时区时（出差、换设备、
+   *   手动改过时区），本地算出来的「今天」会和服务端差一天 ⇒
+   *   记的那天算错，甚至被服务端当成「未来的日期」整份拒收。
+   */
+  const todayKey = () => todayCst();
   const isKey = k => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
   const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
   function weekdayOf(key) {
@@ -236,13 +242,16 @@
   function shortLabel(key) {
     return isKey(key) ? key.slice(5) : key;
   }
-  /** 最近 n 天的日期键（**从早到晚**） */
+  /**
+   * 最近 n 天的日期键（**从早到晚**，按北京时间）。
+   *
+   * ★ 北京时间**没有夏令时** ⇒ 一天正好 86400000 毫秒 ⇒ 往前推一天就是减 86400000。
+   */
   function lastDays(n) {
     const out = [];
-    const d = new Date();
+    const now = Date.now();
     for (let i = n - 1; i >= 0; i--) {
-      const t = new Date(d.getFullYear(), d.getMonth(), d.getDate() - i);
-      out.push(dateKey(t));
+      out.push(todayCst(now - i * 86400000));
     }
     return out;
   }

@@ -236,16 +236,25 @@ function creditForDay(dayMap) {
   return total;
 }
 
+/**
+ * 北京时间（UTC+8）的日期键。
+ *
+ * ★ 与服务端（scripts/dex_core.py、worker/lib/validate.cjs）**同一口径** ——
+ *   浏览器本地时区不一定是中国时区 ⇒ 热力图的窗口会和服务端的「今天」差一天，
+ *   她会看到「今天」那一格是空的。
+ */
+function cstDayKey(ms) {
+  return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 /** 最近 N 天的日期串（今天在前）。 */
 function lastDayKeys(n) {
   // ★ **升序**（最早的在左、最晚的在右）—— 日历要这样扫，
   //   倒序（今天在左上）看着别扭，而且跟给她看的示意图不一致。
   const out = [];
-  const now = new Date();
+  const now = Date.now();
   for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-    const p = (x) => (x < 10 ? '0' + x : '' + x);
-    out.push(d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()));
+    out.push(cstDayKey(now - i * 86400000));
   }
   return out;
 }
@@ -375,12 +384,11 @@ function stateToday() {
   return (typeof d === "string" && d) ? d : "";
 }
 
-/** 算天数差用的基准日：优先状态文件里的今天（服务端同一个口径），拿不到就用本地日期。 */
+/** 算天数差用的基准日：优先状态文件里的今天（服务端同一个口径），拿不到就用北京时间。 */
 function referenceDate() {
   const d = stateToday();
   if (d) return d;
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return cstDayKey(Date.now());
 }
 
 /** 两个 ISO 日期之间隔了几天（按 UTC 算，不受浏览器时区影响）。 */

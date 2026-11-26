@@ -61,10 +61,14 @@ let LIST_OK = false;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const pad = n => String(n).padStart(2, '0');
-const todayStr = () => {
-  const d = new Date();
-  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-};
+/**
+ * 北京时间（UTC+8）的今天 —— 与服务端 worker/lib/validate.cjs 的 todayCst 同一口径。
+ *
+ * ★ 以前这里用的是浏览器本地时区 ⇒ 她的设备不在中国时区时（出差、换设备、手动改过时区），
+ *   这里算出来的「今天」会和服务端差一天 ⇒ 记的那天算错，
+ *   甚至被服务端当成「未来的日期」整份拒收。
+ */
+const todayStr = () => todayCst();
 const dayDiff = (a, b) => {
   if (!a) return 99;
   const t = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
@@ -509,10 +513,10 @@ function renderDex() {
 }
 function renderStats() {
   const days = [];
+  const now = Date.now();
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const k = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-    days.push({ k, label: ['日', '一', '二', '三', '四', '五', '六'][d.getDay()], v: (S().days[k] || {}).minutes || 0, today: i === 0 });
+    const k = todayCst(now - i * 86400000);
+    days.push({ k, label: weekdayOfCst(k), v: (S().days[k] || {}).minutes || 0, today: i === 0 });
   }
   const max = Math.max(30, ...days.map(d => d.v));
   $('#bars').innerHTML = days.map(d =>
@@ -533,15 +537,25 @@ function renderStats() {
 
 /* ---------- 补录：改过去某一天的分钟数 ---------- */
 
-/** 最近 N 天的日期串（今天在前）。 */
+/**
+ * 最近 N 天的日期串（今天在前，按北京时间）。
+ *
+ * ★ 与 todayStr() 同一口径 —— 不然她看到的「今天」那一格 ≠ 实际记进去的那天。
+ */
 function pickDays(n) {
   const out = [];
+  const now = Date.now();
   for (let i = 0; i < n; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    out.push(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+    out.push(todayCst(now - i * 86400000));
   }
   return out;
+}
+
+/** 北京时间那一天的星期几（'日'…'六'）—— 按日期键算，不受浏览器时区影响。 */
+function weekdayOfCst(dayKey) {
+  const p = String(dayKey || '').split('-').map(Number);
+  if (p.length !== 3 || p.some(x => !Number.isFinite(x))) return '';
+  return ['日', '一', '二', '三', '四', '五', '六'][new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay()];
 }
 
 /** 画那排日期格子 —— 已记过的显示分钟数。 */
@@ -899,8 +913,10 @@ function renderSync() {
   }
   if (S().lastSyncAt) {
     const at = new Date(S().lastSyncAt);
+    // ★ 按**北京时间**显示（和服务端同一个口径）
+    const cs = new Date(at.getTime() + 8 * 3600 * 1000);
     html += '<br><span class="lit">上次同步：' +
-      (at.getMonth() + 1) + '-' + pad(at.getDate()) + ' ' + pad(at.getHours()) + ':' + pad(at.getMinutes()) + '</span>';
+      (cs.getUTCMonth() + 1) + '-' + pad(cs.getUTCDate()) + ' ' + pad(cs.getUTCHours()) + ':' + pad(cs.getUTCMinutes()) + '</span>';
   }
   box.innerHTML = html;
   // ★ 被剔掉的天（未来的日期 / 假日期 / 一次超过 30 天）—— **必须说明，不许静默丢**
