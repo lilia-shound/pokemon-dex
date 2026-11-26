@@ -2788,6 +2788,66 @@ class WordsSubmitHintBrowserTest(unittest.TestCase):
         self.page.click('#quick button[data-add="20"]')
         self.assertEqual(self.page_errors, [])
 
+    def test_a_failing_post_is_queued_and_says_so(self):
+        """★ 交不上去 ⇒ 说清楚 + **报告进待发队列**（下次打开自动补发）。
+
+        为什么：她点了「交上去」却什么都没发生 ⇒ 她以为功能坏了。
+        真正要保证的是：**报告不丢**（进队列）+ **她说清楚交不上去**。
+        """
+        page = self._new_page()
+        try:
+            # 投递端点回 400 ⇒ 交不上去
+            self.ingest_response = {"ok": False, "error": "队列满了"}
+            self._open(page, channel=True)
+            self._fill(page, "150")
+            page.click("#submitBtn")
+            self._wait_hint(
+                page,
+                "() => (document.querySelector('#submitHint').textContent || '').indexOf('交不上去') >= 0",
+            )
+            hint = self._hint(page)
+            queued = page.evaluate(
+                "() => JSON.parse(localStorage.getItem('pendingIngest.words') || '[]')")
+        finally:
+            page.close()
+        self.assertEqual(len(queued), 1,
+                         "交不上去的报告要进待发队列（现在有 %d 条）" % (len(queued),))
+        self.assertEqual(queued[0].get("source"), "words")
+        self.assertIn("下次打开自动补发", hint,
+                      "要告诉她「已存着，下次打开自动补发」：%r" % (hint,))
+
+
+    def test_the_status_hint_differs_between_the_two_channels(self):
+        """★ **提交前**那句状态提示，通道关着与开着也要不一样。
+
+        （点之前她看到的也是一句提示 —— 那句话得说清楚「点下去会发生什么」。）
+
+        ★ 为什么必须**先填个数**再看：
+          这一页的提示行只有一句，优先级是「没记数 → 通道没读到 → 通道开着/关着」
+          ⇒ 没填数时两种通道状态显示的是同一句「还没有记下任何词」，
+          那样这条用例就测不到通道那一句了。
+        """
+        page = self._new_page()
+        try:
+            self._open(page, channel=False)
+            self._fill(page, "150")
+            off_text = self._hint(page)
+        finally:
+            page.close()
+        page = self._new_page()
+        try:
+            self._open(page, channel=True)
+            self._fill(page, "150")
+            on_text = self._hint(page)
+        finally:
+            page.close()
+        self.assertNotEqual(
+            off_text, on_text,
+            "两种通道状态下的状态提示必须不同（现在两句话一样：%r）" % (on_text,),
+        )
+        self.assertIn("直接交", on_text, "通道开着 ⇒ 说「直接交」（不用登录 GitHub）")
+        self.assertIn("Submit", off_text, "通道关着 ⇒ 说老办法（还要点一下 Submit）")
+
 
 # --------------------------------------------------------------------------
 # KOReader 落地页（site/koreader/）的探针。
@@ -4278,6 +4338,29 @@ class KoreaderSubmitHintBrowserTest(unittest.TestCase):
         self.page.click("#manualAdd")
         self.assertEqual(self.page_errors, [])
 
+    def test_a_failing_post_is_queued_and_says_so(self):
+        """★ 交不上去 ⇒ 说清楚 + **报告进待发队列**（下次打开自动补发）。"""
+        page = self._new_page()
+        try:
+            # 投递端点回 400 ⇒ 交不上去
+            self.ingest_response = {"ok": False, "error": "队列满了"}
+            self._open(page, channel=True)
+            page.click("#submitBtn")
+            self._wait_hint(
+                page,
+                "() => (document.querySelector('#submitHint').textContent || '').indexOf('交不上去') >= 0",
+            )
+            hint = self._hint(page)
+            queued = page.evaluate(
+                "() => JSON.parse(localStorage.getItem('pendingIngest.koreader') || '[]')")
+        finally:
+            page.close()
+        self.assertEqual(len(queued), 1,
+                         "交不上去的报告要进待发队列（现在有 %d 条）" % (len(queued),))
+        self.assertEqual(queued[0].get("source"), "koreader")
+        self.assertIn("下次打开自动补发", hint,
+                      "要告诉她「已存着，下次打开自动补发」：%r" % (hint,))
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -4385,3 +4468,139 @@ class RegistryRaceBrowserTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["opened"], [], "配置没读到时不许打开 GitHub 新建 issue 页")
         self.assertIn("还在读通道配置", r["hint"],
                       "要提示「还在读通道配置，稍等一下再点」（现在的提示：%r）" % (r["hint"],))
+
+
+class PomodoroIngestBrowserTest(unittest.TestCase):
+    """番茄钟页的投递通道：**真浏览器**里点一次「同步到图鉴」。
+
+    测两件她真的会碰到的事：
+
+    1. **交上去了** ⇒ 原地显示「已记录 N 天」（不是跳去 GitHub）；
+    2. **交不上去** ⇒ 说清楚交不上去 + 报告**进待发队列**（下次打开自动补发），
+       而且**老办法入口还在**（workers.dev 在国内抽风时她还有一条路）。
+
+    ★ 为什么不能只在 node 里测：这一页的 app.js 是顶层脚本，node 探针顶不掉 DOM
+      ⇒ 「点一下到底写出哪句话」「队列里到底有没有东西」只能在真浏览器里看。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not HAVE_PLAYWRIGHT:
+            raise unittest.SkipTest("没装 playwright，跳过番茄钟页的浏览器测试")
+        if not CHROME:
+            raise unittest.SkipTest("找不到 chromium，跳过番茄钟页的浏览器测试")
+        cls.httpd = _make_server(ROOT / "site")
+        cls.origin = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls._pw = sync_playwright().start()
+        cls.browser = cls._pw.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.browser.close()
+        finally:
+            cls._pw.stop()
+            cls.httpd.shutdown()
+            cls.httpd.server_close()
+
+    def _registry(self):
+        """注册表：带一个**开着**的 ingest 段（通道可用）。"""
+        return {
+            "version": 1, "perAward": 2, "maxPerDay": 1, "maxBackfill": 3, "ledgerDays": 30,
+            "ingest": {"url": "https://ingest.test/ingest", "token": "tok", "enabled": True},
+            "sources": {
+                "pom": {"name": "番茄钟", "icon": "🍅", "unit": "分钟", "per": 25,
+                        "mode": "push", "enabled": True, "maxPerDay": 1440},
+            },
+        }
+
+    def _open(self, ingest_status=200):
+        """开一个标签页：注册表与投递端点都拦下来，返回（页面, 发出去的请求体列表）。
+
+        ★ CDN 上的 dex.json / sources.json 一并拦掉 ——
+          沙箱连不上 github.io，不拦的话页面会一直挂着等超时（又慢又不稳）。
+        ★ sw.js 也拦掉 —— service worker 会把页面缓存起来，测试里不需要它。
+        """
+        page = self.browser.new_page(viewport={"width": 390, "height": 844})
+        posted = []
+
+        def handle_registry(route):
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps(self._registry()))
+
+        def handle_ingest(route):
+            posted.append(route.request.post_data)
+            if ingest_status == 200:
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"ok": True, "id": "q:1"}))
+            else:
+                route.fulfill(status=500, content_type="application/json",
+                              body=json.dumps({"ok": False, "error": "队列满了"}))
+
+        page.route("**/sources.json", handle_registry)
+        page.route("**/ingest", handle_ingest)
+        page.route("**/dex.json", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"collected": []})))
+        page.route("**/sw.js", lambda route: route.abort())
+
+        page.goto(self.origin + "/pomodoro/index.html", wait_until="load")
+        # 等注册表到（INGEST 有 url）⇒ 按钮解禁
+        page.wait_for_function(
+            "() => typeof INGEST === 'object' && INGEST && INGEST.url", timeout=30000)
+        # 造 25 分钟（★ 改完数据**必须调 renderSync()** —— 按钮的 disabled 是它设的）
+        page.evaluate("() => { S().days[todayStr()] = {minutes: 25, poms: 1}; "
+                      "Store.write(); renderSync(); }")
+        return page, posted
+
+    def _toast(self, page):
+        return page.evaluate("() => (document.querySelector('#toast') || {}).textContent || ''")
+
+    # -- 用例 -----------------------------------------------------------
+
+    def test_clicking_sync_posts_the_report_and_says_it_is_recorded(self):
+        """★ 交上去了 ⇒ 一个 POST 出去 + 原地显示「已记录」。"""
+        page, posted = self._open(ingest_status=200)
+        try:
+            today = page.evaluate("() => todayStr()")
+            page.click("#btnSync")
+            page.wait_for_function(
+                "() => ((document.querySelector('#toast') || {}).textContent || '').includes('已记录')",
+                timeout=30000)
+            toast_text = self._toast(page)
+        finally:
+            page.close()
+
+        self.assertEqual(len(posted), 1, "应该只发出去一个请求（实际 %d 个）" % (len(posted),))
+        body = json.loads(posted[0])
+        self.assertEqual(body.get("v"), 1)
+        self.assertEqual(body.get("source"), "pom")
+        self.assertIn(today, body.get("days", {}), "报告里要有今天那一天")
+        self.assertEqual(body["days"][today], 25, "报告里今天的分钟数不对")
+        self.assertIn("已记录", toast_text, "她看到的提示不是「已记录」：%r" % (toast_text,))
+
+    def test_a_failing_post_is_queued_and_the_old_way_is_still_offered(self):
+        """★ 交不上去 ⇒ 说清楚 + **报告进待发队列** + 老办法入口还在。"""
+        page, posted = self._open(ingest_status=500)
+        try:
+            page.click("#btnSync")
+            page.wait_for_function(
+                "() => ((document.querySelector('#toast') || {}).textContent || '').includes('交不上去')",
+                timeout=30000)
+            toast_text = self._toast(page)
+            queued = page.evaluate(
+                "() => JSON.parse(localStorage.getItem('pendingIngest') || '[]')")
+            old_way = page.evaluate("() => !!document.querySelector('#syncOldWay')")
+        finally:
+            page.close()
+
+        self.assertTrue(posted, "请求应该发出去了（服务端返回 500）")
+        self.assertEqual(len(queued), 1, "交不上去的报告要进待发队列（现在有 %d 条）" % (len(queued),))
+        self.assertEqual(queued[0].get("source"), "pom")
+        self.assertIn("下次打开自动补发", toast_text,
+                      "要告诉她「已存着，下次打开自动补发」：%r" % (toast_text,))
+        self.assertTrue(old_way, "老办法入口（用 GitHub 提交）必须还在")
+
+
+if __name__ == "__main__":
+    unittest.main()
