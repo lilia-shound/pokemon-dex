@@ -92,7 +92,51 @@ S8 起有两条上报通道，**cron 的第 1 步和第 1.5 步都要跑**：
 ⚠️ **第 1 步是旁路** —— 它失败**绝不能**因此不发奖。
 ⚠️ **别用 `&&` 把 `collect_worker.py` 和 `award.py` 串起来** —— 前者失败会把后者一起带崩。
 
-## 别自己动的东西
+## 投递通道实测（2026-11-26 上午，手工自检）
+
+在沙箱里手工把整条通道走了一遍（投一条合成报告 → 拉 → 并账 → ack），三个结论：
+
+1. **通道本身是通的**：`POST /ingest` 2~5 秒返回；`/health`、`/pull`、`/ack` 都正常。
+2. **失败形态不是「慢」，是「响应丢了」** ——
+   ★ **服务端把活干完了，响应没回到沙箱**：ack 的请求在客户端看着是「挂死」，
+   但事后用 wrangler 直接看 KV，那三个 key **确实被删掉了**（队列从 3 变 0）。
+   ⇒ 所以 `pull` 超时**不等于数据丢了**：条目还在队列里，下一轮会重拉。
+3. **重试次数不够**：连着两次拉取，第一次挂满超时、第二次 15 秒就成了；
+   另一次两次都挂满 ⇒ 已把 `PULL_ATTEMPTS` 从 2 提到 3、单次超时 120 → 60 秒
+   （ack 也收紧成 45 秒 × 2 次，别把一整轮 cron 的时间耗在 ack 上）。
+
+### 症状对照
+
+| cron 输出 | 含义 | 要不要管 |
+|---|---|---|
+| `[投递] 队列是空的` | 通道正常，这轮没人交东西 | 不用管 |
+| `[投递] 采纳 q:… pom {…} → 额度 {…}` | 有新报告进账本了 | 不用管（deploy 会推上去） |
+| `[投递] 拒收 q:… <原因>` | 服务端拒收了一条（如实说一句，别自己动手修） | 提一句 |
+| `[投递] 拉取失败：…，跳过` | **这一轮的量没进账本**（但数据还在队列里，下轮会补上） | 提一句「投递通道这一轮没拉到」 |
+
+### 手工自检（沙箱里，不碰她的账本）
+
+```bash
+cd /workspace/pokemon-reading-dex
+TOKEN=$(python3 -c "import json;print(json.load(open('data/sources.json'))['ingest']['token'])")
+# 1) 投一条合成报告（1 分钟番茄钟 = 0 个额度，不会触发发奖）
+curl -sS -m 90 -A 'Mozilla/5.0' -X POST "${WORKER_URL}/ingest" \
+  -H "Content-Type: application/json" -H "X-Dex-Token: $TOKEN" \
+  -d '{"v":1,"source":"pom","days":{"2026-11-26":1}}'
+# 2) 看队列
+curl -sS -m 90 -A 'Mozilla/5.0' "${WORKER_URL}/health"
+# 3) 只看不写（不并账、不 ack）
+python3 scripts/collect_worker.py --dry-run
+# 4) 跑真的，但账本写副本 ⇒ 队列清掉、她的真账本一个字都不动
+cp data/dex.json /tmp/dex-copy.json
+DEX_PATH=/tmp/dex-copy.json python3 scripts/collect_worker.py
+```
+
+★ **别用真账本跑第 4 步**（那会把合成数据写进她的图鉴）。
+★ 队列卡住清不掉时，可以直接用 wrangler 删键：
+`wrangler kv key list --namespace-id 43e6d8148b6a49c3999a5d8a7ee96738`。
+
+
 
 - `data/sources.json` 的 `perAward`（现在 2）、各源的 `per`
   （weread 900 秒 / pom 25 分钟 / koreader 15 分钟 / words 100 个）
