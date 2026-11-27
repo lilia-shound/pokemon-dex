@@ -162,16 +162,14 @@
       "evolutionStage": 0
     }
   ],
-  "streak": 7,
+  "streak": 0,
   "lastAwardDate": "2026-11-26",
   "today": {
-    "date": "2026-11-27",
-    "seconds": 1784,
+    "date": "2026-11-28",
+    "seconds": 0,
     "threshold": 1800,
-    "sources": {
-      "weread": 1784
-    },
-    "credit": 1,
+    "sources": {},
+    "credit": 0,
     "perAward": 2
   },
   "ledger": {
