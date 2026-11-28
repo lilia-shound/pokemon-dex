@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192" role="img" aria-label="背单词记数">
+  <!--
+    记数页的主屏图标：**一张字母卡 + 一个「记好了」的勾**。
+    —— 为什么是字母卡而不是一个「词」字：文字得靠系统字体渲染，
+       在她的手机上（还有电子墨水屏上）不一定有这个字形 ⇒ 认不出来。
+       卡片 + 字母 A 是纯路径画出来的 ⇒ 任何设备上都长一个样。
+    —— 为什么是纯色块、没有渐变：电子墨水屏是灰度的，渐变会糊成一片。
+  -->
+  <rect width="192" height="192" rx="42" fill="#5b63c8"/>
+  <!-- 卡片 -->
+  <rect x="36" y="28" width="112" height="124" rx="18" fill="#fffdf8"/>
+  <!-- 字母 A（两条腿 + 一横，纯路径） -->
+  <g fill="none" stroke="#5b63c8" stroke-width="15" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 130 L96 56 L128 130"/>
+    <path d="M75 104 L117 104"/>
+  </g>
+  <!-- 记好了的勾 -->
+  <circle cx="142" cy="140" r="25" fill="#4a7a4a"/>
+  <path d="M130 140 L139 149 L155 131" fill="none" stroke="#fffdf8"
+        stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

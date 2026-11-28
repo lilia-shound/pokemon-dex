@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 「添加到主屏幕」用的那几行（viewport 本身一个字没动） -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png" type="image/png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="背单词记数">
+<meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171310" media="(prefers-color-scheme: dark)">
+<meta name="description" content="背单词记数页：记下今天背了多少个词，折算成额度交回训练家图鉴">
+<title>背单词记数 · 训练家图鉴</title>
+<!-- 图标走**本地文件**（不许外链，外链在她那边会挂；也不做 data-URI 大图标） -->
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+
+  <header class="top">
+    <div class="badge" aria-hidden="true">🔤</div>
+    <h1>背单词记数</h1>
+    <p class="sub">交回训练家图鉴 · 只报数，不抽卡</p>
+    <noscript><p class="hint center">这一页要用 JavaScript 才能把词数算成额度 —— 请在浏览器里允许它运行。</p></noscript>
+    <!-- 「加到主屏」的提示：已经加过（standalone 模式）就藏起来；不是就一行小字，不弹窗 -->
+    <p class="hint center" id="installNote" hidden></p>
+    <!-- 独立打开这一页时的「回图鉴」入口（被 iframe 套着时由 app.js 藏掉） -->
+    <p class="hint center backHome"><a href="../#words">← 回训练家图鉴</a></p>
+  </header>
+
+  <!-- 记数 -->
+  <section class="card">
+    <h2 id="dayTitle">今天背了多少个词</h2>
+
+    <div class="counter">
+      <input id="countInput" type="number" inputmode="numeric" min="0" step="1"
+             placeholder="0" autocomplete="off" enterkeyhint="done" aria-label="今天背了多少个词">
+    </div>
+    <p class="unit">个</p>
+
+    <div class="quick" id="quick">
+      <button type="button" class="chip" data-add="10">+10</button>
+      <button type="button" class="chip" data-add="20">+20</button>
+      <button type="button" class="chip" data-add="50">+50</button>
+      <button type="button" class="chip ghost" data-add="0">清零</button>
+    </div>
+
+    <p class="credit-line empty" id="creditLine">今天还没记</p>
+    <!-- 预填提示（今天还没记时，把上次的数字填进了输入框；有才显示，默认藏着） -->
+    <p class="hint" id="prefillNote" hidden></p>
+    <p class="hint" id="perNote">100 个 = 1 个额度（按天算，零头不计）</p>
+    <p class="hint" id="awardNote">攒满 2 个额度掉 1 只宝可梦（当天最多 1 只）</p>
+    <!-- 链接参数带来的提示（?words= 预填 / ?day= 太老；有才显示，默认藏着） -->
+    <p class="hint" id="linkNote" hidden></p>
+    <!-- 源被停用时的提示（注册表里 enabled 不为 true；默认藏着） -->
+    <p class="hint warn" id="disabledNote" hidden></p>
+    <!-- 单日超过上限时的提示（有夹取才显示，默认藏着） -->
+    <p class="hint warn" id="clampNote" hidden></p>
+    <!-- 被剔掉的天（未来的日期 / 假日期 / 一次超过 30 天；有才显示，默认藏着） -->
+    <p class="hint warn" id="droppedNote" hidden></p>
+    <!-- 本机存储不可用时的提示（默认藏着） -->
+    <p class="hint warn" id="storeNote" hidden></p>
+  </section>
+
+  <!-- 最近 7 天 -->
+  <section class="card">
+    <h2>最近 7 天</h2>
+    <div class="days" id="dayList"></div>
+    <div class="sum">
+      <span class="sl">近 7 天</span>
+      <span class="sv" id="weekTotal">0 个</span>
+      <span class="sc" id="weekCredit">0 个额度</span>
+    </div>
+    <p class="hint">点某一天可以补录 —— 额度<b>按天</b>算，今天的零头不会带到明天。</p>
+  </section>
+
+  <!-- 提交 -->
+  <!-- 主按钮改成 <button>：它不再跳去 GitHub，而是「点一下就交上去」。
+       .btn 是类选择器 ⇒ 样式不变；border/font-family/cursor 是 <button> 的 UA 默认值，
+       在行里补上，免得按钮跟原来那个链接看起来不一样。 -->
+  <button class="btn" id="submitBtn" type="button"
+          style="border:0;font-family:inherit;cursor:pointer">交上去</button>
+  <p class="hint center" id="submitHint">点「交上去」直接交（不用登录 GitHub）。</p>
+  <!-- 老办法：**永远留着** —— 通道没开、或 workers.dev 抽风时，用它顶一下 -->
+  <p class="hint center"><a id="oldWayBtn" href="#" target="_blank" rel="noopener noreferrer">用 GitHub 提交（老办法）</a></p>
+  <!-- 报告里含有「最近 7 天」之外的日期时的提示（有才显示，默认藏着） -->
+  <p class="hint warn center" id="extraDaysNote" hidden></p>
+
+  <section class="card">
+    <h2>交上去之后</h2>
+    <ol class="steps">
+      <li>点「交上去」把这条报告交上去：通道开着就直接送到训练家图鉴的服务端（不用登录 GitHub），通道没开就打开 GitHub 的新建 issue 页、在那个页面上点一下 Submit 才算交上去；用老办法的话，它会变成 <b>lilia-shound/pokemon-dex</b> 这个仓库的 issue，标题长这样：<code id="issueTitle">[report] words …</code>。</li>
+      <li>服务端的定时任务读它 → 校验（源、日期、数值）→ 并进逐日账本（同源同一天取最大值，重复交不吃亏）。</li>
+      <li>当天额度凑够了，就从还没收服的池子里掉一只宝可梦，进你的图鉴。</li>
+      <li>抽卡权只在服务端 —— 这一页只报「我背了多少个词」，不会自己去改你的图鉴。</li>
+    </ol>
+  </section>
+
+</main>
+<!-- 版本号：改了 app.js 就改这个数（浏览器/CDN 会缓存旧版） -->
+<script src="app.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>训练家图鉴</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 统一入口：图鉴 / 背单词 / KOReader / 番茄钟 —— 都在这一个网址里切（hash 路由） -->
+<nav class="tabs" id="tabs">
+  <button type="button" class="tab on" data-view="dex">图鉴</button>
+  <button type="button" class="tab" data-view="words">背单词</button>
+  <button type="button" class="tab" data-view="koreader">KOReader</button>
+  <button type="button" class="tab" data-view="pomodoro">番茄钟</button>
+</nav>
+
+<!-- 图鉴视图（默认） -->
+<div id="viewDex">
+<header class="top">
+  <div class="ring" id="ring"><span id="ringText">—</span></div>
+  <div class="meta">
+    <h1>训练家图鉴</h1>
+    <p id="summary">载入中…</p>
+    <p id="streak" class="dim"></p>
+  </div>
+</header>
+
+<!-- 今日额度：四个源各一行（原始量 → 折算出的额度），下面一条总进度 -->
+<section class="creditPanel" id="creditPanel" hidden>
+  <div class="cpHead">
+    <span class="cpTitle">今日额度</span>
+    <span class="cpTotal" id="cpTotal"></span>
+  </div>
+  <div class="cpRows" id="cpRows"></div>
+  <div class="cpBar"><i class="cpFill" id="cpFill"></i></div>
+  <div class="cpNote" id="cpNote"></div>
+</section>
+
+<!-- 最近 30 天：左边日历热力图（当天读了多少），右边每天一根柱子（额度，四源堆叠） -->
+<section class="historyPanel" id="historyCard" hidden>
+  <div class="cpHead">
+    <span class="cpTitle">最近 30 天</span>
+    <span class="cpTotal" id="historyTotal"></span>
+  </div>
+  <div class="historyRow">
+    <div class="heatWrap">
+      <div class="heat" id="heatMap"></div>
+      <div class="heatLegend">
+        <span>少</span>
+        <i class="h0"></i><i class="h1"></i><i class="h2"></i><i class="h3"></i><i class="h4"></i>
+        <span>多</span>
+        <span class="heatTip">颜色 = 当天微信读书的秒数 · 空白 = 那天没读</span>
+      </div>
+    </div>
+    <div class="barWrap">
+      <div class="cbar" id="creditBars"></div>
+      <div class="cbarLegend">
+        <span><i style="background:#c8623a"></i>微信读书</span>
+        <span><i style="background:#e2a06a"></i>番茄钟</span>
+        <span><i style="background:#7f9a8e"></i>KOReader</span>
+        <span><i style="background:#c9a227"></i>背单词</span>
+      </div>
+      <p class="cpNote">柱子高度是<b>额度</b> —— 跟上面的「今日额度」一个口径。</p>
+    </div>
+  </div>
+  <div class="cpNote" id="historyNote"></div>
+</section>
+
+<section class="today" id="today" hidden>
+  <p class="todayLabel" id="todayLabel"></p>
+  <div class="card" id="todayCard"></div>
+</section>
+
+<!-- 链级养成：每条链养满 30 天就有一次保底闪光 -->
+<section class="chains" id="chains" hidden>
+  <p class="chainsLabel">链级养成 · 每条链养满 30 天就有一次保底闪光</p>
+  <div class="chainList" id="chainList"></div>
+</section>
+
+<nav class="filters" id="filters"></nav>
+
+<main class="grid" id="grid"></main>
+
+<!-- 工具箱：装插件、看日志这类冷门入口 —— 放在这里就不用记别的网址了 -->
+<section class="toolbox" id="toolbox">
+  <p class="toolboxLabel">工具箱</p>
+  <ul class="toolboxList">
+    <li><a href="weread-dex.user.js">微信读书油猴脚本</a><span>装上以后微信读书网页版右上角出现图鉴胶囊</span></li>
+    <li><a href="bcz-dex.user.js">百词斩油猴脚本</a><span>网页版背单词时自动认词数（手机 App 用不了）</span></li>
+    <li><a href="koreader-dex.koplugin/">KOReader 插件</a><span>Kindle / 安卓上把阅读时长并进图鉴</span></li>
+    <li><a href="words/">背单词记数页</a><span>单独打开这一页也行</span></li>
+    <li><a href="koreader/">KOReader 落地页</a><span>Kindle 上扫码用的那一页</span></li>
+    <li><a href="pomodoro/">番茄钟</a><span>单独打开也行</span></li>
+  </ul>
+</section>
+</div>
+
+<!-- 其它视图：子页面用 iframe 承载（代码不重复，旧网址也全部保留） -->
+<div id="viewFrame" hidden>
+  <iframe id="frame" title="训练家图鉴 · 子页面"></iframe>
+</div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheetInner" id="sheetInner"></div>
+</div>
+
+<!-- 版本号：改了 app.js 就改这个数，浏览器/CDN 缓存旧版的问题就绕开了 -->
+<script src="app.js?v=11"></script>
+</body>
+</html>

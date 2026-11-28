@@ -1,0 +1,128 @@
+/* ============================================================
+   KOReader 阅读时长落地页 · 手机优先
+   —— 单栏、字大、按钮大（单手能点）；深色模式友好（她常在夜里读 Kindle）。
+   —— 不外链任何字体/框架/图片：全部用系统字体 + 内联图标。
+   ============================================================ */
+
+:root{
+  --bg:#f6f1e7; --card:#fffdf8; --ink:#2f2823; --dim:#8d8175;
+  --line:#e7ddcc; --accent:#c8623a; --accent-soft:#f3d9cc;
+  --ok:#4a7a4a; --shadow:0 8px 26px rgba(90,64,40,.10);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#171310; --card:#221c17; --ink:#f0e7d9; --dim:#a29484;
+    --line:#3a3128; --accent:#e2825a; --accent-soft:#3d2a20;
+    --ok:#8fc98f; --shadow:0 8px 26px rgba(0,0,0,.45);
+  }
+}
+
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg); color:var(--ink);
+  font:17px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+[hidden]{display:none !important}
+
+/* ── 版心：单栏，手机上一屏一件事 ───────────────── */
+.wrap{max-width:520px;margin:0 auto;padding:22px 18px 40px}
+
+/* ── 头部 ─────────────────────────────────────── */
+.top{text-align:center;padding:6px 0 20px}
+.badge{
+  width:56px;height:56px;margin:0 auto 10px;border-radius:18px;
+  background:var(--accent-soft);display:grid;place-items:center;font-size:28px;
+}
+h1{font-size:23px;font-weight:700;letter-spacing:.5px}
+.top .sub{color:var(--dim);font-size:14px;margin-top:4px}
+
+/* ── 卡片 ─────────────────────────────────────── */
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:18px;
+  padding:18px 18px 20px;box-shadow:var(--shadow);margin-bottom:16px;
+}
+.card h2{font-size:16px;font-weight:700;margin-bottom:12px;color:var(--dim);letter-spacing:.6px}
+.card.warn{border-color:var(--accent);background:var(--accent-soft)}
+.card.warn h2{color:var(--ink)}
+.big{font-size:19px;font-weight:600;margin-top:2px}
+.hint{color:var(--dim);font-size:13.5px;line-height:1.8;margin-top:12px}
+.hint.warn{color:var(--accent)}
+.hint.center{text-align:center;margin-top:12px}
+.hint b{color:var(--ink)}
+
+/* ── 每天一行 ─────────────────────────────────── */
+.days{list-style:none;margin-bottom:4px}
+.days li{
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  padding:11px 0;border-bottom:1px solid var(--line);
+}
+.days li:last-child{border-bottom:none}
+.days .d{font-size:16px;font-variant-numeric:tabular-nums;letter-spacing:.3px}
+.days .m{font-size:19px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent)}
+.days .c{
+  margin-left:auto;font-size:13px;color:var(--dim);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+
+/* ── 合计 ─────────────────────────────────────── */
+.sum{
+  display:flex;align-items:baseline;gap:10px;justify-content:center;
+  padding:14px 0 4px;border-top:1px solid var(--line);margin-top:6px;
+}
+.sum .sl{color:var(--dim);font-size:14px}
+.sum .sv{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ── 额度（大字） ─────────────────────────────── */
+.credit{text-align:center;margin-top:14px}
+.cnum{
+  font-size:58px;line-height:1;font-weight:800;letter-spacing:-1px;
+  color:var(--accent);font-variant-numeric:tabular-nums;
+}
+.clab{font-size:15px;color:var(--dim);margin-top:6px}
+.clab b{color:var(--ink);font-size:18px}
+
+/* ── 按钮（单手点得着） ───────────────────────── */
+.btn{
+  display:block;width:100%;text-align:center;text-decoration:none;
+  background:var(--accent);color:#fff;font-size:19px;font-weight:700;
+  padding:18px 20px;border-radius:16px;box-shadow:0 8px 20px rgba(200,98,58,.32);
+  margin-top:4px;transition:transform .12s ease,opacity .12s ease;
+}
+.btn:active{transform:scale(.985);opacity:.92}
+.btn[disabled]{opacity:.45;box-shadow:none;pointer-events:none}
+
+/* ── 步骤 ─────────────────────────────────────── */
+.steps{margin-left:20px}
+.steps li{margin:9px 0;font-size:15px;line-height:1.75}
+.steps li::marker{color:var(--accent);font-weight:700}
+.steps b{color:var(--accent)}
+code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:13px;background:var(--accent-soft);color:var(--ink);
+  padding:1px 6px;border-radius:6px;overflow-wrap:break-word;
+}
+
+/* ── 窄屏再收一点 ─────────────────────────────── */
+@media (max-width:340px){
+  .wrap{padding:18px 14px 32px}
+  .cnum{font-size:48px}
+  .btn{font-size:18px;padding:16px 14px}
+}
+
+/* 独立打开时回图鉴的入口 */
+.backHome a{color:var(--accent);text-decoration:none}
+.backHome a:hover{text-decoration:underline}
+
+
+/* ---------- 补录 ---------- */
+#manualDay .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+#manualDay input{flex:1;min-width:110px;border:1px solid var(--line);border-radius:12px;
+                 padding:11px 12px;font-size:16px;background:var(--bg);color:var(--ink);
+                 font-family:inherit}
+#manualDay button{border:0;border-radius:12px;background:var(--accent);color:#fffdf8;
+                  padding:11px 20px;font-size:15px;font-weight:600;font-family:inherit;
+                  cursor:pointer}
+#manualDay button:active{transform:translateY(1px)}

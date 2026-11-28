@@ -1,0 +1,15 @@
+{
+  "name": "宝可梦番茄钟 · 训练家图鉴",
+  "short_name": "番茄钟",
+  "description": "专注时宝可梦会探头，点一下就收下；专注分钟数汇进训练家图鉴",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a0b2e",
+  "theme_color": "#1a0b2e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

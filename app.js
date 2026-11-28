@@ -1,0 +1,937 @@
+let POKEDEX = null;
+let DEX = { collected: [], streak: 0, today: {} };
+let SOURCES = null;   // 源注册表（sources.json）—— 额度的权威来源
+/** 最近 30 天的历史原始量：{ 'YYYY-MM-DD': {源 id: 原始量} } */
+let historyDays = {};
+/** 历史窗口的天数 —— 与服务器 ledgerDays / history 的保留天数一致 */
+const HISTORY_DAYS = 30;
+let FILTER = "all";
+const IMG = "img/";
+let POKEDEX_BY_ID = new Map();   // id → 图鉴记录（查形态用，别线性找）
+let POKEDEX_BY_NAME = new Map(); // 名字 → 图鉴记录（进化链按名字查阶数用）
+
+const $ = (id) => document.getElementById(id);
+const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+
+// 世代边界
+const GENS = [
+  [1, 151], [152, 251], [252, 386], [387, 493], [494, 649],
+  [650, 721], [722, 809], [810, 905], [906, 1025], [1026, 9999],
+];
+// 预告世代：游戏还没发售，资料来自公开预告，编号暂定
+const PREVIEW_GENS = new Set([10]);
+function genOf(id) {
+  const n = Number(id);
+  for (let i = 0; i < GENS.length; i++) if (n >= GENS[i][0] && n <= GENS[i][1]) return i + 1;
+  return GENS.length;
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ── 额度（必须与服务端 scripts/sources.py 逐字同构） ────────────────────
+   额度是中枢的中间货币：不同行为的单位不可通约（秒 / 分钟 / 个词），
+   但「每天掉一只宝可梦」的名额是统一的。
+   服务端的算式（scripts/sources.py 的 credit_for_day）：
+       min(raw, maxPerDay) → max(0, …) → // per     # 每个源各自 floor
+   当天总额度 = 各启用源的额度之和。
+   **差一个额度就是「她明明凑够了，页面却说没够」** ⇒ 这段口径不许改。
+*/
+
+/** 一个源今天折算出多少额度（与服务端 credit_for_day 同一算式）。 */
+function creditForSource(raw, src) {
+  const per = Number(src && src.per);
+  if (!(per >= 1)) return 0;          // per 不对就当 0（宁可不发也不错发）
+  let amount = Number(raw);
+  if (!Number.isFinite(amount)) amount = 0;
+  amount = Math.trunc(amount);        // 服务端 int()：向零取整
+  const cap = src.maxPerDay;
+  if (cap !== undefined && cap !== null) {
+    const c = Number(cap);
+    if (Number.isFinite(c)) amount = Math.min(amount, c);
+  }
+  amount = Math.max(0, amount);
+  return Math.floor(amount / per);
+}
+
+/** 注册表里启用的源（与服务端 enabled_sources 同一口径：enabled 为假就不算）。 */
+function registrySources() {
+  const reg = SOURCES && SOURCES.sources;
+  if (!reg || typeof reg !== "object") return [];
+  const out = [];
+  for (const sid of Object.keys(reg)) {
+    const s = reg[sid];
+    if (!s || typeof s !== "object") continue;
+    if (!s.enabled) continue;         // 停用的源不列、不结算
+    out.push({
+      id: sid,
+      name: s.name || sid,
+      icon: s.icon || "",
+      unit: s.unit || "",
+      cfg: s,
+    });
+  }
+  return out;
+}
+
+/** 今天各源的原始量（today.sources；**没有这个键就是 0**）。 */
+function todayRawAmounts() {
+  const map = (DEX.today || {}).sources;
+  return (map && typeof map === "object") ? map : {};
+}
+
+/** 今日各源明细：原始量 + 折算出来的额度。 */
+function sourceCredits() {
+  const raw = todayRawAmounts();
+  return registrySources().map((s) => {
+    const n = Number(raw[s.id]);
+    const amount = Number.isFinite(n) ? n : 0;
+    return {
+      id: s.id,
+      name: s.name,
+      icon: s.icon,
+      unit: s.unit,
+      raw: amount,
+      credit: creditForSource(amount, s.cfg),
+    };
+  });
+}
+
+/** 攒够几个额度掉 1 只（注册表优先；拿不到就用状态文件里那个）。 */
+function perAwardOf() {
+  const fromReg = Number(SOURCES && SOURCES.perAward);
+  if (Number.isFinite(fromReg) && fromReg >= 1) return Math.floor(fromReg);
+  const fromState = Number((DEX.today || {}).perAward);
+  if (Number.isFinite(fromState) && fromState >= 1) return Math.floor(fromState);
+  return 0;
+}
+
+/** 原始量按注册表里的单位写出来（1753 秒 / 25 分钟 / 0 个）。 */
+function formatRaw(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return unit ? `${n} ${unit}` : `${n}`;
+}
+
+/** 面板里那一行的原始量：**秒的源两种单位都给**（1753 秒（约 29 分钟））——
+ *  秒太抽象，自己心算才知道读了多少；别的源保留自己的单位（25 分钟 / 0 个）
+ *  —— 分钟、个不用再折一次。 */
+function formatPanelRaw(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  if (unit === "秒") return `${n} 秒（约 ${Math.round(n / 60)} 分钟）`;
+  return formatRaw(n, unit);
+}
+
+/** 秒太多就折成分钟（1800 秒 ⇒ 30 分钟）—— 用在「几个额度 ≈ 多少」那种文案里。 */
+function formatNice(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  if (unit === "秒" && n % 60 === 0) return `${n / 60} 分钟`;
+  return formatRaw(n, unit);
+}
+
+/** 拉一个 JSON，带超时与重试。
+ *
+ * **必须有超时**：GitHub Pages 的 CDN 偶尔会把大文件传成爬行速度
+ * （实测 130KB 的 gzip 版传了 110 秒还没完），fetch 一直挂着，
+ * 整页就永远停在「载入中…」—— 看起来像网站坏了，其实只是没超时。
+ */
+async function fetchJSON(name, timeout = 30000, retries = 2) {
+  let lastErr = null;
+  for (let i = 0; i <= retries; i++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeout);
+    try {
+      const r = await fetch(name, { signal: ctl.signal, cache: "no-cache" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return await r.json();
+    } catch (e) {
+      lastErr = e;
+      if (i < retries) await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr;
+}
+
+async function load() {
+  // 三个文件各自兜底：状态没到不影响图鉴墙，阈值没到只影响兜底文案
+  const [pd, dx, reg, hist] = await Promise.all([
+    fetchJSON("pokedex.json").catch(() => null),
+    fetchJSON("dex.json").catch(() => null),
+    fetchJSON("sources.json").catch(() => null),
+    fetchJSON("history.json").catch(() => null),
+  ]);
+  if (!pd || !pd.pokemon) {
+    setText("summary", "图鉴数据没加载上（网络问题）");
+    const btn = document.createElement("button");
+    btn.className = "retryBtn";
+    btn.textContent = "重试";
+    btn.onclick = () => { btn.remove(); setText("summary", "载入中…"); load(); };
+    const box = $("summary").parentElement;
+    if (box && !box.querySelector(".retryBtn")) box.appendChild(btn);
+    return;
+  }
+  POKEDEX = pd.pokemon;
+  POKEDEX_BY_ID = buildPokedexMap(POKEDEX);
+  POKEDEX_BY_NAME = new Map();
+  for (const p of POKEDEX) POKEDEX_BY_NAME.set(String(p.nameZh), p);
+  DEX = dx || { collected: [], streak: 0, today: {} };
+  SOURCES = reg;
+  setHistoryDays((hist && hist.days) || {});
+  // 深链：?gen=10 直接打开第 10 世代（那一页只有 3 格，图片不用等懒加载）
+  //      ?owned=1 直接打开「已获得」视图（已收服的那几只，不用在 1028 格里翻）
+  try {
+    const q = new URL(location.href).searchParams;
+    if (q.get("owned") === "1") {
+      FILTER = "owned";
+    } else {
+      const g = q.get("gen");
+      if (g && (g === "all" || (Number(g) >= 1 && Number(g) <= GENS.length))) FILTER = g;
+    }
+  } catch (e) { /* 忽略 */ }
+  render();
+  renderHistory();
+  if (!dx) {
+    // 状态没加载上要说清楚 —— 不然「图鉴 0/1028」会让人以为全丢了
+    setText("summary", "图鉴数据加载了，但状态没加载上（网络问题），刷新再试");
+  }
+}
+
+/* ---------- 最近 30 天历史 ---------- */
+
+/** 写进历史原始量。 */
+function setHistoryDays(days) { historyDays = days || {}; }
+
+/**
+ * 某天每个源折出来的额度（堆叠柱用）。
+ * ★ 折算走现有的 `creditForSource()` —— 它与服务端 `scripts/sources.py` 的
+ *   `credit_for_day` 逐字同构（评审用 3731 组跨语言对拍守着）。
+ * @param {Object<string, number>} dayMap {源 id: 原始量}
+ * @returns {Object<string, number>} {源 id: 额度}
+ */
+function creditsBySource(dayMap) {
+  const map = dayMap || {};
+  const out = {};
+  for (const s of registrySources()) {
+    out[s.id] = creditForSource(map[s.id] || 0, s.cfg);
+  }
+  return out;
+}
+
+/**
+ * 某天的总额度。
+ * @param {Object<string, number>} dayMap {源 id: 原始量}
+ * @returns {number}
+ */
+function creditForDay(dayMap) {
+  const map = dayMap || {};
+  let total = 0;
+  for (const s of registrySources()) {
+    total += creditForSource(map[s.id] || 0, s.cfg);
+  }
+  return total;
+}
+
+/**
+ * 北京时间（UTC+8）的日期键。
+ *
+ * ★ 与服务端（scripts/dex_core.py、worker/lib/validate.cjs）**同一口径** ——
+ *   浏览器本地时区不一定是中国时区 ⇒ 热力图的窗口会和服务端的「今天」差一天，
+ *   她会看到「今天」那一格是空的。
+ */
+function cstDayKey(ms) {
+  return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/** 最近 N 天的日期串（今天在前）。 */
+function lastDayKeys(n) {
+  // ★ **升序**（最早的在左、最晚的在右）—— 日历要这样扫，
+  //   倒序（今天在左上）看着别扭，而且跟给她看的示意图不一致。
+  const out = [];
+  const now = Date.now();
+  for (let i = n - 1; i >= 0; i--) {
+    out.push(cstDayKey(now - i * 86400000));
+  }
+  return out;
+}
+
+/** 热力图那一格的颜色档（跟着额度刻度走：<1 / 1 / 2 / 3+ 个额度）。 */
+function heatLevel(seconds) {
+  const s = Number(seconds || 0);
+  if (s <= 0) return 0;
+  if (s < 900) return 1;
+  if (s < 1800) return 2;
+  if (s < 2700) return 3;
+  return 4;
+}
+
+/** 画热力图 + 堆叠柱。 */
+function renderHistory() {
+  const heat = document.getElementById('heatMap');
+  const bars = document.getElementById('creditBars');
+  const note = document.getElementById('historyNote');
+  const card = document.getElementById('historyCard');
+  const total = document.getElementById('historyTotal');
+  if (!heat || !bars) return;
+  const keys = lastDayKeys(HISTORY_DAYS);
+  // —— 热力图：颜色 = 当天微信读书的秒数 ——
+  heat.innerHTML = keys.map((k) => {
+    const sec = (historyDays[k] || {}).weread || 0;
+    const lv = heatLevel(sec);
+    return '<div class="hcell h' + lv + '" title="' + k + ' · ' + sec + ' 秒">' +
+      k.slice(5) + '</div>';
+  }).join('');
+  // —— 堆叠柱：Y 轴 = 额度（每源按自己的 per 折算后 floor 再相加）——
+  const colors = { weread: '#c8623a', pom: '#e2a06a', koreader: '#7f9a8e', words: '#c9a227' };
+  const srcs = registrySources();
+  // 第一遍：只算数字（每源折出几个额度）
+  const rows = keys.map((k) => {
+    const per = creditsBySource(historyDays[k] || {});
+    let sum = 0;
+    for (const s of srcs) sum += per[s.id] || 0;
+    return { key: k, total: sum, per: per };
+  });
+  // 一个额度多少像素（满格 = 120px）—— 外层和每段**用同一把尺子**，
+  // 否则会出现「外层缩放、内层固定高」⇒ 柱子只有该有的三分之一高。
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  const unit = 120 / max;
+  // 第二遍：出 HTML
+  bars.innerHTML = rows.map((r) => {
+    const parts = srcs.map((s) => {
+      const c = r.per[s.id] || 0;
+      if (c <= 0) return '';
+      return '<i style="height:' + (c * unit).toFixed(1) + 'px;background:' +
+        (colors[s.id] || '#c8623a') + '"></i>';
+    }).join('');
+    return '<div class="cbcol" title="' + r.key + ' · ' + r.total + ' 个额度">' +
+      (r.total > 0
+        ? '<span class="cbs" style="height:' + (r.total * unit).toFixed(1) + 'px">' + parts + '</span>'
+        // 那天没读 ⇒ 留一道浅色底纹，让「30 天里哪几天有数据」一眼看得见
+        : '<span class="cbs zero"></span>') +
+      '</div>';
+  }).join('');
+  const days = Object.keys(historyDays).length;
+  if (card) card.hidden = false;
+  if (total) total.textContent = days ? days + ' 天有记录' : '';
+  if (note) {
+    note.textContent = days
+      ? ('共 ' + days + ' 天的记录。空白格 = 那天没读；柱子高度是当天的额度。')
+      : '还没有历史数据。';
+  }
+}
+
+function ownedMap() {
+  const m = new Map();
+  for (const c of DEX.collected || []) {
+    const prev = m.get(c.id);
+    if (!prev) { m.set(c.id, c); continue; }
+    // 同一只收集过多次时，保留闪光的那次（闪光更值钱，不能被后来的普通版盖掉）
+    if (c.shiny && !prev.shiny) m.set(c.id, c);
+  }
+  return m;
+}
+
+/** id → 图鉴记录（1028 只，别每次线性找）。 */
+function buildPokedexMap(list) {
+  const m = new Map();
+  for (const p of list || []) m.set(String(p.id), p);
+  return m;
+}
+
+/**
+ * 收服时的那只形态 —— collected[].form（进化了也显示进化形态，别再显示基础形态）。
+ *
+ * **两级回退：form → id**。
+ * 老数据没有 form ⇒ 回退到 id；万一 form 在图鉴里查不到 ⇒ 也回退到 id。
+ * （**没有第三级「剪影」**：墙上的格子是按图鉴的 id 生成的 ⇒ 按 id 必然命中。）
+ * 真的连 id 都查不到（状态文件里有一条图鉴里没有的记录）⇒ 返回 null，
+ * 由调用方自己兜底：图鉴墙回退到基础那条记录，今日捕获卡干脆不显示。
+ */
+function formEntry(c) {
+  if (!c) return null;
+  const formId = (c.form !== undefined && c.form !== null && c.form !== "")
+    ? String(c.form) : String(c.id);
+  return POKEDEX_BY_ID.get(formId) || POKEDEX_BY_ID.get(String(c.id)) || null;
+}
+
+/** 「妙蛙种子 → 妙蛙花」：形态和基础形态不是同一只时写这一行。 */
+function formLine(base, form) {
+  if (!base || !form || String(base.id) === String(form.id)) return "";
+  return `${base.nameZh} → ${form.nameZh}`;
+}
+
+// 页面**不再**拿 today.threshold 当任何数字：
+// 那是发放器按「微信读书专用口径」写的快照（perAward × sources.weread.per），
+// 拿它算多源额度就会算错（它看不见另外三个源）。
+// ⇒ 原来的 registryThreshold() / thresholdSeconds() 一并删掉了；
+//   多源额度一律走 creditForSource（与服务端 credit_for_day 同构）。
+
+/** 今日各源的额度明细 + 合计（顶栏与文案都用它）。 */
+function todayInfo() {
+  const rows = sourceCredits();
+  const perAward = perAwardOf();
+  const total = rows.reduce((sum, r) => sum + r.credit, 0);
+  return { rows, perAward, total, date: stateToday() };
+}
+
+/** 状态文件里那个「今天」（服务端口径；没有就是空串）。 */
+function stateToday() {
+  const d = (DEX.today || {}).date;
+  return (typeof d === "string" && d) ? d : "";
+}
+
+/** 算天数差用的基准日：优先状态文件里的今天（服务端同一个口径），拿不到就用北京时间。 */
+function referenceDate() {
+  const d = stateToday();
+  if (d) return d;
+  return cstDayKey(Date.now());
+}
+
+/** 两个 ISO 日期之间隔了几天（按 UTC 算，不受浏览器时区影响）。 */
+function daysBetween(fromISO, toISO) {
+  const a = Date.parse(`${fromISO}T00:00:00Z`);
+  const b = Date.parse(`${toISO}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/** 「N 个额度 ≈ 多少」的等价值文案。 */
+function equivalentsText(perAward) {
+  const parts = [];
+  for (const s of registrySources()) {
+    const per = Number(s.cfg.per);
+    if (!(per >= 1)) continue;
+    parts.push(`${s.name} ${formatNice(per * perAward, s.unit)}`);
+  }
+  // 注册表没加载上 ⇒ **不说具体数字**（宁可少说一句，也不说错的）：
+  // today.threshold 是微信读书专用的旧口径，不能拿它当多源的等价值。
+  return parts.join(" / ");
+}
+
+// 「凑满多少额度」的文案 —— 额度口径拿不到时不说具体数字（宁可少说一句，也不说错的）
+function thresholdSentence(preview) {
+  const perAward = perAwardOf();
+  if (!perAward) {
+    return preview
+      ? "凑满今天的额度，照样能在图鉴里遇上它。"
+      : "今天凑够额度就能遇上新的宝可梦。";
+  }
+  const eq = equivalentsText(perAward);
+  const head = eq ? `凑满 ${perAward} 个额度（${eq}）` : `凑满 ${perAward} 个额度`;
+  return preview
+    ? `${head}，照样能在图鉴里遇上它。`
+    : `${head}就能遇上新的宝可梦。`;
+}
+
+/**
+ * 画顶栏的「今日额度」面板。
+ *
+ * 每个启用的源一行：图标 + 名字 + 今日原始量 → 折算出的额度；
+ * 下面一条总进度 = 合计额度 / perAward。
+ *
+ * **额度口径与服务端 scripts/sources.py 的 credit_for_day 逐字同构** ——
+ * 每个源各自 floor，零头不跨天凑（见 creditForSource）。
+ */
+function renderCreditPanel() {
+  const panel = $("creditPanel");
+  if (!panel) return;
+  const rowsBox = $("cpRows");
+  const totalBox = $("cpTotal");
+  const fillBox = $("cpFill");
+  const noteBox = $("cpNote");
+  const t = todayInfo();
+
+  if (!t.rows.length) {
+    // 注册表没加载上（或一个启用的源都没有）⇒ 各源明细说不清，
+    // 但**不能一个字都不说**：总额度还有状态文件里那个（服务端自己算的）。
+    panel.hidden = false;
+    rowsBox.innerHTML = "";
+    const credit = Number((DEX.today || {}).credit);
+    totalBox.textContent = (Number.isFinite(credit) && credit >= 0 && t.perAward)
+      ? `${credit} / ${t.perAward} 个额度`
+      : "今日额度";
+    if (fillBox) fillBox.style.width = "0%";
+    noteBox.textContent = (SOURCES && SOURCES.sources)
+      ? "注册表里一个启用的源都没有（源全被停用了）"
+      : "各源明细暂时读不到（源注册表没加载上）";
+    return;
+  }
+
+  panel.hidden = false;
+  rowsBox.innerHTML = t.rows.map((r) => `
+    <div class="cpRow" data-src="${esc(r.id)}">
+      <span class="cpIcon">${esc(r.icon)}</span>
+      <span class="cpName">${esc(r.name)}</span>
+      <span class="cpRaw">${esc(formatPanelRaw(r.raw, r.unit))}</span>
+      <span class="cpArrow">→</span>
+      <span class="cpCredit">${r.credit} 个额度</span>
+    </div>`).join("");
+  totalBox.textContent = t.perAward
+    ? `${t.total} / ${t.perAward} 个额度`
+    : `${t.total} 个额度`;
+  if (fillBox) {
+    const pct = t.perAward > 0 ? Math.min(100, (t.total / t.perAward) * 100) : 0;
+    fillBox.style.width = `${pct}%`;
+  }
+  if (!t.perAward) {
+    // perAward 读不到有**两种**原因，别说错：
+    // 注册表整个没加载上（网络问题）/ 注册表加载了但里面没有可用的 perAward（配置问题）。
+    const why = (SOURCES && SOURCES.sources)
+      ? "注册表和状态文件里都没有 perAward"
+      : "源注册表没加载上";
+    noteBox.textContent = `还差几个额度才能掉一只，暂时算不出来（${why}）`;
+  } else if (t.total >= t.perAward) {
+    noteBox.textContent = "今天已经凑够啦 —— 新的宝可梦在等你。";
+  } else {
+    noteBox.textContent = `还差 ${t.perAward - t.total} 个额度就能遇上新的宝可梦。`;
+  }
+}
+
+/**
+ * 一条链的养成进度。
+ *
+ * **基准日**：进化链的保底规则是「这条链首次被收服后养满 30 天，再次抽到它就必定闪光」
+ * ⇒ 基准日 = firstDate；兑现过一次保底（lastShinyDate）之后重新计时
+ *   ⇒ 基准日 = lastShinyDate（与服务端 chain_shiny_ready 的实际口径一致）。
+ * **「今天」用状态文件里的 today.date**（服务端同一个口径），拿不到才用本地日期。
+ *
+ * 这里有**两个量**，别混成一个（评审提的问题：旧写法在边界那天自相矛盾）：
+ * - `cycles`（保底可用数）= floor(d / 30)：已经攒够几次保底。
+ * - `remain`（还差几天就绪）= `(本轮已过天数 === 0) ? 0 : 30 - 本轮已过天数`
+ *   —— 刚好养满一轮的那天（d = 30、60…）本轮已过 0 天 ⇒ remain = 0 ⇒ **已就绪**。
+ *   （d = 0 是「这条链刚开始」，本轮才起头 ⇒ 第一次保底在 30 天后 ⇒ remain = 30。）
+ * - `nextWait`（下一轮还差几天）= 满一轮之后重新计时 ⇒ 30；否则 = 30 - 本轮已过天数。
+ *
+ * 旧的写法在边界那天会说「保底可用 1 次 · 还要再等 30 天 · 条已经满了」——
+ * 三个信号互相打架。现在拆开：攒到了就写「已就绪」，**不再同时说还要等多久**；
+ * 没攒到才写「还差 N 天」。
+ *
+ * **进度条**：满 30 天就满格，而且**满格之后不倒退** ——
+ * 保底一旦就绪就一直就绪（页面看不出它什么时候被用掉），
+ * 只有这条链真的掉出闪光（基准日重置）才会重新从 0% 开始。
+ */
+function chainProgress(chain) {
+  const base = (chain && chain.lastShinyDate) ? chain.lastShinyDate
+    : (chain && chain.firstDate);
+  if (!base) return null;
+  const days = daysBetween(base, referenceDate());
+  if (days === null) return null;
+  const d = Math.max(0, days);
+  const cycles = Math.floor(d / 30);        // 保底可用数（已经攒够几次）
+  const inCycle = d % 30;                   // 本轮已过天数（0 = 刚好养满一轮）
+  const remain = inCycle === 0 ? (d === 0 ? 30 : 0) : 30 - inCycle;
+  const nextWait = inCycle === 0 ? 30 : 30 - inCycle;   // 下一轮还差几天
+  const ready = cycles > 0;                 // 保底已经就绪（可用数 ≥ 1）
+  // 满 30 天就满格；满格之后不倒退（d = 31 还是 100%，不是掉回 3.3%）
+  const filled = Math.min(d, 30);
+  const stateText = ready
+    ? `保底可用 ${cycles} 次 · 已就绪（下一轮还差 ${nextWait} 天）`
+    : `保底可用 ${cycles} 次 · 还差 ${remain} 天`;
+  return { base, days: d, cycles, inCycle, remain, nextWait, ready, stateText,
+           pct: (filled / 30) * 100 };
+}
+
+/**
+ * 一条链的**当前形态**（S6）。
+ *
+ * 链推进 = 这条链收服了阶更高的成员 ⇒ 链内已收服成员的展示形态会被推进。
+ * 这里算的是「这条链现在显示成什么」：
+ * 取链内**阶最高**的那只已收服成员（阶相同取最近收服的）——
+ * 兄弟形态同阶，谁先来谁生效（与服务端 `dex_core.advance_chain_form` 同一个口径）。
+ *
+ * 数据来自 `collected[].chain` / `collected[].evolutionStage`（服务端写好的）。
+ */
+function chainForms() {
+  const map = new Map();      // 链根 -> {stage, id, nameZh, date}
+  for (const c of (DEX.collected || [])) {
+    const chain = c.chain || "";
+    if (!chain) continue;
+    const stage = Number(c.evolutionStage || 0);
+    const cur = map.get(chain);
+    if (!cur) { map.set(chain, { stage, id: c.id, nameZh: c.nameZh, date: c.date || "" }); continue; }
+    // 阶更高就换；阶相同取**最近收服**的（日期新的优先，同日按 collected 顺序）
+    if (stage > cur.stage ||
+        (stage === cur.stage && String(c.date || "") > String(cur.date || ""))) {
+      map.set(chain, { stage, id: c.id, nameZh: c.nameZh, date: c.date || "" });
+    }
+  }
+  return map;
+}
+
+/**
+ * 进化链的显示文本。
+ *
+ * ★ S6 起 `evolution` 是**同链所有成员**的一致数组（evo_tree 重建的真树），
+ *   不是一条线性路径 —— 伊布链有 9 个成员（1 个根 + 8 个 1 阶分支），
+ *   直接 join(" → ") 会误导成「伊布 → 仙子伊布 → 冰伊布 → …」（其实它们是兄弟）。
+ *
+ * 按阶分组：同阶的用「/」分隔，不同阶之间用「→」——
+ * 「伊布 → 仙子伊布 / 冰伊布 / 火伊布 / …」。
+ */
+function evolutionText(entry) {
+  const evo = (entry && entry.evolution) || [];
+  if (!evo.length) return "-";
+  // 按 id 查每只的阶数（pokedex 里有 evolutionStage）
+  const groups = new Map();
+  for (const name of evo) {
+    const rec = POKEDEX_BY_NAME.get(name);
+    const stage = rec && rec.evolutionStage !== undefined
+      ? Number(rec.evolutionStage) : 0;
+    if (!groups.has(stage)) groups.set(stage, []);
+    groups.get(stage).push(name);
+  }
+  const stages = Array.from(groups.keys()).sort((a, b) => a - b);
+  return stages.map((s) => groups.get(s).join(" / ")).join(" → ");
+}
+
+/** 画链级养成那一块（chains 为空 ⇒ 整块不显示，别留一个空标题）。 */
+function renderChains() {
+  const sec = $("chains");
+  if (!sec) return;
+  const box = $("chainList");
+  const chains = DEX.chains || {};
+  const forms = chainForms();
+  const rows = [];
+  for (const name of Object.keys(chains)) {
+    const pr = chainProgress(chains[name]);
+    if (!pr) continue;
+    rows.push({ name, pr, form: forms.get(name) || null });
+  }
+  if (!rows.length) {
+    sec.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  sec.hidden = false;
+  box.innerHTML = rows.map((r) => `
+    <div class="chainRow" data-chain="${esc(r.name)}">
+      <div class="chainTop">
+        <span class="chainName">${esc(r.name)}</span>
+        <span class="chainSince">自 ${esc(String(r.pr.base))} 养成</span>
+        <span class="chainState">${esc(r.pr.stateText)}</span>
+      </div>
+      <div class="chainBar"><i style="width:${r.pr.pct}%"></i></div>
+      ${r.form ? `<div class="chainForm">当前形态 ${esc(r.form.nameZh)}${
+        r.form.stage > 0 ? `（第 ${r.form.stage} 阶）` : ""}</div>` : ""}
+    </div>`).join("");
+}
+
+function render() {
+  const owned = ownedMap();
+  const n = owned.size;
+  const total = POKEDEX.length;
+
+  $("ring").style.setProperty("--p", total ? (n / total) * 100 : 0);
+  setText("ringText", `${n}/${total}`);
+  setText("summary", `图鉴 ${n}/${total} · 完成 ${((n / total) * 100).toFixed(1)}%`);
+  setText("streak", `连读 ${DEX.streak || 0} 天 · 闪光概率 ${
+    DEX.streak >= 100 ? "100%" :
+    DEX.streak >= 30 ? "1/16" :
+    DEX.streak >= 7 ? "1/32" :
+    DEX.streak >= 3 ? "1/48" : "1/96"}`);
+
+  // 今日额度（多源）：每个源一行 —— 原始量 → 折算出的额度，下面一条总进度
+  renderCreditPanel();
+
+  const t = todayInfo();
+
+  // 今日开箱卡
+  const collected = DEX.collected || [];
+  const todays = collected.filter((c) => c.date === t.date);
+  const last = todays.length ? todays[todays.length - 1]
+    : (collected.length ? collected[collected.length - 1] : null);
+  const lp = last ? formEntry(last) : null;
+  if (last && lp && DEX.lastAwardDate === t.date) {
+    $("today").hidden = false;
+    setText("todayLabel", `今日捕获 · ${t.date}`);
+    const art = last.shiny && lp.artShiny ? lp.artShiny : lp.art;
+    $("todayCard").innerHTML = `
+      <img src="${IMG}${art}" alt="${esc(lp.nameZh)}" onerror="this.classList.add('broken')">
+      <div class="body">
+        <div class="nm">${esc(lp.nameZh)}${last.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
+        <div class="sub">No.${esc(lp.id)} · ${esc((lp.types || []).join(" / "))} · ${esc(lp.category)}
+          · 特性 ${esc((lp.abilities || []).join("、"))}</div>
+        <div class="flavor">${esc(lp.flavor)}</div>
+      </div>`;
+  } else {
+    $("today").hidden = true;
+  }
+
+  // 链级养成（chains 为空 ⇒ 整块不显示）
+  renderChains();
+
+  // 筛选条
+  // 「已获得」放在最后并用强调色区分 —— 她目前只有 5 只，在 1028 格里翻很松散，
+  // 一键只显示收服过的那几只才对。按钮上带实时计数。
+  $("filters").innerHTML =
+    [["all", "全部"], ["owned", `已获得 ${owned.size}`], ...GENS.map((g, i) => [
+      i + 1, `第 ${i + 1} 世代${PREVIEW_GENS.has(i + 1) ? " · 预告" : ""}`])]
+      .map(([v, label]) =>
+        `<button data-f="${v}" class="${String(v) === String(FILTER) ? "on" : ""}${v === "owned" ? " fOwned" : ""}">${label}</button>`)
+      .join("");
+  $("filters").querySelectorAll("button").forEach((b) => {
+    b.onclick = () => {
+      FILTER = b.dataset.f;
+      // 写回地址栏，这样「?gen=10」「?owned=1」可以直接分享/收藏
+      try {
+        const u = new URL(location.href);
+        u.searchParams.delete("gen");
+        u.searchParams.delete("owned");
+        if (FILTER === "owned") u.searchParams.set("owned", "1");
+        else if (FILTER !== "all") u.searchParams.set("gen", FILTER);
+        history.replaceState(null, "", u);
+      } catch (e) { /* file:// 下没有 history，忽略 */ }
+      render();
+    };
+  });
+
+  // 图鉴墙
+  // 「已获得」视图：只显示收服过的那几只，按获得日期倒序（最新收服的排最前），
+  // 并在卡片上标出哪天收的 —— 这样一眼能看到「我最近收服了哪几只」。
+  const list = FILTER === "owned"
+    ? POKEDEX.filter((p) => owned.has(p.id)).sort((a, b) =>
+        String(owned.get(b.id).date || "").localeCompare(String(owned.get(a.id).date || "")))
+    : POKEDEX.filter((p) => FILTER === "all" || genOf(p.id) === Number(FILTER));
+  if (!list.length) {
+    $("grid").innerHTML = `<div class="gridEmpty">${
+      FILTER === "owned"
+        ? "图鉴还是空的 —— 今天凑够额度就会掉一只进来"
+        : "这一代没有宝可梦"}</div>`;
+  } else {
+  $("grid").innerHTML = list.map((p) => {
+    const c = owned.get(p.id);
+    // 显示的是**收服时的那只形态**（collected[].form），不是基础形态
+    const fe = c ? formEntry(c) : null;
+    const shown = fe || p;
+    const art = c && c.shiny && shown.artShiny ? shown.artShiny : shown.art;
+    // 预告世代的条目：名字直接亮出来（本来就是公开资料），并挂个「预告」标记
+    const prev = !!p.preview;
+    const known = c || prev;
+    const cls = c ? "" : (prev ? "preview" : "locked");
+    const fl = c && fe ? formLine(p, fe) : "";
+    return `<div class="cell ${cls} ${c && c.shiny ? "shiny" : ""}" data-id="${esc(p.id)}">
+      <div class="no">No.${esc(p.id)}${prev && p.provisionalNo ? "（暂定）" : ""}</div>
+      <img src="${IMG}${art}" alt="${esc(shown.nameZh)}" ${prev ? 'loading="eager"' : 'loading="lazy"'} onerror="this.classList.add('broken')">
+      <div class="nm">${known ? esc(shown.nameZh) : "???"}${prev ? '<span class="prevTag">预告</span>' : ""}</div>
+      ${fl ? `<div class="form">${esc(fl)}</div>` : ""}
+      <div class="ty">${esc((shown.types || []).join("/"))}</div>
+      ${FILTER === "owned" && c && c.date ? `<div class="dt">${esc(String(c.date).slice(5))} 获得</div>` : ""}
+    </div>`;
+  }).join("");
+  }
+  $("grid").querySelectorAll(".cell").forEach((el) => {
+    el.onclick = () => openSheet(el.dataset.id);
+  });
+}
+
+function openSheet(id) {
+  // 用 Map 查（1028 只，别每次线性找）
+  const p = POKEDEX_BY_ID.get(String(id));
+  if (!p) return;
+  const c = ownedMap().get(id);
+  const sheet = $("sheet");
+  const inner = $("sheetInner");
+  if (!c) {
+    if (p.preview) {
+      inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
+        <img src="${IMG}${p.art}" alt="${esc(p.nameZh)}" onerror="this.classList.add('broken')">
+        <div class="nm">${esc(p.nameZh)}<span class="prevTag">预告</span></div>
+        <div class="sub">No.${esc(p.id)}${p.provisionalNo ? "（编号暂定）" : ""} · ${esc((p.types || []).join(" / "))} · ${esc(p.category || "")}</div>
+        <div class="rows">
+          <div class="row"><b>特性</b><span>${esc((p.abilities || []).join("、") || "-")}</span></div>
+          <div class="row"><b>身高</b><span>${esc(p.height || "-")}</span></div>
+          <div class="row"><b>体重</b><span>${esc(p.weight || "-")}</span></div>
+          <div class="row"><b>进化链</b><span>${esc(evolutionText(p))}</span></div>
+          <div class="row"><b>日文名</b><span>${esc(p.nameJa || "-")}</span></div>
+        </div>
+        <div class="flavor">${esc(p.flavor)}</div>
+        <div class="lockedMsg">第 10 世代《风/波》，2026-02-27 公布，游戏 2027 年发售。<br>编号与资料均为暂定 —— 但${thresholdSentence(true)}</div>`;
+    } else {
+      inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
+        <img src="${IMG}${p.art}" alt="" onerror="this.classList.add('broken')">
+        <div class="nm">???</div>
+        <div class="sub">No.${esc(p.id)} · ${esc((p.types || []).join(" / "))}</div>
+        <div class="lockedMsg">还没收服这一只。<br>${thresholdSentence(false)}</div>`;
+    }
+  } else {
+    // 已收服：显示的是**收服时的那只形态**（collected[].form）
+    const fe = formEntry(c) || p;
+    const art = c.shiny && fe.artShiny ? fe.artShiny : fe.art;
+    const fl = formLine(p, fe);
+    inner.innerHTML = `<button class="close" id="sheetClose">✕</button>
+      <img src="${IMG}${art}" alt="${esc(fe.nameZh)}">
+      <div class="nm">${esc(fe.nameZh)}${c.shiny ? '<span class="shinyTag">✦ 闪光</span>' : ""}</div>
+      ${fl ? `<div class="form">${esc(fl)}</div>` : ""}
+      <div class="sub">No.${esc(fe.id)} · ${esc((fe.types || []).join(" / "))} · ${esc(fe.category)}</div>
+      <div class="rows">
+        <div class="row"><b>捕获日</b><span>${esc(c.date || c.at || "-")}</span></div>
+        <div class="row"><b>特性</b><span>${esc((fe.abilities || []).join("、") || "-")}</span></div>
+        <div class="row"><b>身高</b><span>${esc(fe.height || "-")}</span></div>
+        <div class="row"><b>体重</b><span>${esc(fe.weight || "-")}</span></div>
+        <div class="row"><b>进化链</b><span>${esc(evolutionText(fe))}</span></div>
+        <div class="row"><b>日文名</b><span>${esc(fe.nameJa || "-")}</span></div>
+      </div>
+      <div class="flavor">${esc(fe.flavor)}</div>`;
+  }
+  sheet.hidden = false;
+  $("sheetClose").onclick = () => { sheet.hidden = true; };
+}
+
+$("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) $("sheet").hidden = true; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sheet").hidden = true; });
+
+// 给测试看的小窗口（页面自己不用它）—— 与 site/words/app.js 的 WordsLanding 同一套路：
+// ─────────────────────────────────────────────────────────────
+// 统一入口：图鉴 / 背单词 / KOReader / 番茄钟 —— 同一个网址里切
+//
+// ★ 为什么用 iframe 承载子页面，而不是把它们的代码搬进来：
+//   三个子页面各自是**能独立跑的完整单页**（番茄钟 211KB、记数页、落地页），
+//   搬代码会重复三份逻辑 + 打架样式；iframe 里它们跑的是同一份文件，
+//   本地存储（localStorage）同源共享，逻辑改动不用改两处。
+// ★ 旧的独立网址**全部保留**（Kindle 扫码、主屏图标、老书签都不能断）。
+// ─────────────────────────────────────────────────────────────
+
+const VIEWS = {
+  dex: { el: "viewDex", src: null },
+  words: { el: "viewFrame", src: "words/" },
+  koreader: { el: "viewFrame", src: "koreader/" },
+  // ★ 番茄钟**不能**放进 iframe（2026-11-22）：
+  //   它的摸鱼检测是「专注期间 document.hidden 超过 3 秒就算摸鱼」，
+  //   而 iframe 被藏起来时 document.hidden 就是 true
+  //   ⇒ 她在同一个网址里切一下 tab，这轮专注就会被判成摸鱼。
+  //   所以它保持独立页面，点 tab 直接跳过去（页面里有「← 回训练家图鉴」）。
+  pomodoro: { el: null, src: "pomodoro/", jump: true },
+};
+
+/** 当前视图名（默认图鉴）。 */
+let currentView = "dex";
+
+/** 把 iframe 里的「← 回训练家图鉴」藏掉（同源，父页可以直接改子页的 DOM）。 */
+function hideFrameBackLink() {
+  try {
+    const doc = $("frame") && $("frame").contentDocument;
+    if (!doc) return;
+    for (const el of doc.querySelectorAll(".backHome")) el.hidden = true;
+  } catch (e) {
+    /* 跨域就读不到 —— 无所谓，那个链接本来就该显示 */
+  }
+}
+
+/** iframe 加载完之后再补一次藏（load 事件与 DOM 解析完成的时序不总是对齐）。 */
+function hideFrameBackLinkSoon() {
+  hideFrameBackLink();
+  setTimeout(hideFrameBackLink, 300);
+  setTimeout(hideFrameBackLink, 1200);
+}
+
+/**
+ * 切视图。
+ *
+ * `hash` 是路由：`#words` / `#koreader` / `#pomodoro` / `#dex`（默认）。
+ * 走 hash 而不是 query ⇒ **不刷新页面**就能切（手机上尤其重要：
+ * 切一次要重新拉 pokedex.json 的话，在弱网下会卡好几秒）。
+ */
+function showView(name, updateHash = true) {
+  if (!VIEWS[name]) name = "dex";
+  const cfg = VIEWS[name];
+  // ★ 要跳走的（番茄钟）：直接跳，不在 iframe 里跑（摸鱼检测会误判）
+  if (cfg.jump) {
+    location.href = cfg.src;
+    return;
+  }
+  currentView = name;
+  for (const btn of document.querySelectorAll("#tabs .tab")) {
+    btn.classList.toggle("on", btn.dataset.view === name);
+  }
+  const dex = $("viewDex");
+  const frameWrap = $("viewFrame");
+  if (name === "dex") {
+    dex.hidden = false;
+    frameWrap.hidden = true;
+  } else {
+    dex.hidden = true;
+    frameWrap.hidden = false;
+    const f = $("frame");
+    const src = cfg.src;
+    // ★ 懒加载：第一次切到才建 src（别一进页面就把三个子页都拉起来）
+    if (f && f.getAttribute("src") !== src) {
+      // ★ 监听器必须**先**挂上再设 src ——
+      //   iframe 命中缓存时 load 事件几乎立刻触发，
+      //   先设 src 再挂监听 ⇒ 事件已经过去了 ⇒ 永远等不到（2026-11-22 踩过）。
+      f.addEventListener("load", hideFrameBackLinkSoon, { once: true });
+      f.setAttribute("src", src);
+      // 同源 ⇒ 父页能直接改 iframe 里的 DOM ⇒ 把子页的「← 回训练家图鉴」藏掉
+      // （父页顶部已经有导航了，重复反而乱）。
+      // ★ 用父页来做，而不是让子页引一个脚本 —— 子页的纪律是「只许发一个网络请求」，
+      //   多引一个文件就破了自己的测试（2026-11-22 踩过）。
+    }
+    // 立刻也试一次：iframe 可能已经加载好了（第二次切回来时）
+    hideFrameBackLinkSoon();
+  }
+  if (updateHash) {
+    const h = name === "dex" ? "" : "#" + name;
+    if (location.hash !== h) {
+      history.replaceState(null, "", location.pathname + location.search + h);
+    }
+  }
+}
+
+function currentViewFromHash() {
+  const h = (location.hash || "").replace(/^#/, "");
+  return VIEWS[h] ? h : "dex";
+}
+
+/** 图鉴视图里滚动到顶（切回来时别停在半截）。 */
+function scrollTop() {
+  try { window.scrollTo({ top: 0, behavior: "instant" }); } catch (e) { window.scrollTo(0, 0); }
+}
+
+function initTabs() {
+  const tabs = $("tabs");
+  if (!tabs) return;
+  tabs.addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab");
+    if (!btn) return;
+    showView(btn.dataset.view);
+    scrollTop();
+  });
+  window.addEventListener("hashchange", () => {
+    showView(currentViewFromHash(), false);
+    scrollTop();
+  });
+  // 初始：按地址栏上的 hash 决定开哪个视图
+  showView(currentViewFromHash(), false);
+}
+
+// 整份 dex.json 不挂在 window 上（挂上去谁都能读），
+// 但测试要能**在浏览器里**问出「页面算出来的额度是多少」，才好跟服务端对拍。
+window.DexPage = {
+  creditForSource,
+  sourceCredits,
+  perAwardOf,
+  thresholdSentence,
+  stateToday,
+  referenceDate,
+  daysBetween,
+  chainProgress,
+  chainForms,
+  evolutionText,
+  formEntry,
+  formLine,
+  showView,
+  currentView: () => currentView,
+  // —— S7c 最近 30 天 ——
+  historyDays: () => historyDays,
+  creditsBySource,
+  creditForDay,
+  renderHistory,
+  // 名字 → 图鉴记录（进化链按名字查阶数用；调试/测试也要用）
+  pokedexByName: () => POKEDEX_BY_NAME,
+};
+
+initTabs();
+load().catch((e) => { setText("summary", "载入失败：" + e.message); });

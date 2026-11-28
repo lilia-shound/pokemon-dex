@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>训练家图鉴 · KOReader 插件</title>
+<style>
+body { font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       max-width: 40rem; margin: 0 auto; padding: 2rem 1.25rem; line-height: 1.7;
+       color: #171310; background: #f6f1e7; }
+h1 { font-size: 1.4rem; margin: 0 0 .6rem; }
+p.sub { color: #6b5b4a; margin: 0 0 1.5rem; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { background: #fff; border: 1px solid #e3d8c6; border-radius: 10px;
+     padding: .7rem 1rem; margin-bottom: .6rem; }
+a { color: #c8623a; font-weight: 600; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { background: #efe7d8; border-radius: 4px; padding: 0 .3em; }
+.note { color: #6b5b4a; font-size: .92rem; margin-top: 1.5rem; }
+</style>
+</head>
+<body>
+<h1>训练家图鉴 · KOReader 插件</h1>
+<p class="sub">这一页是<b>索引</b>：下面是插件目录里的 4 个文件。下载后放进一个叫
+<code>koreader-dex.koplugin</code> 的文件夹（<b>目录名不能改</b>，KOReader 靠它认出插件），
+再把整个文件夹拷进设备的 <code>plugins/</code> 目录，然后重启 KOReader。</p>
+<ul>
+  <li><a href="main.lua">main.lua</a> —— 插件主体（读库、弹窗、弹二维码）</li>
+  <li><a href="koreader_dex_report.lua">koreader_dex_report.lua</a> —— 纯计算部分（拼链接、算额度、算日历窗口）</li>
+  <li><a href="_meta.lua">_meta.lua</a> —— 插件的名字和简介</li>
+  <li><a href="README.md">README.md</a> —— 插件自己的说明书</li>
+</ul>
+<p class="note">完整的手把手操作 + 对账步骤见仓库里的 <code>docs/koreader-setup.md</code>；
+插件文件在仓库里的 <code>plugin/koreader-dex.koplugin/</code>（同一个 clone 里，不用下载也行）。</p>
+</body>
+</html>
